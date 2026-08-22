@@ -36,7 +36,11 @@ export function ComposerAgentPicker() {
   const [chrome, setChrome] = useState<Chrome | null>(null);
   const [agent, setAgent] = useState("build");
   const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const [menuPos, setMenuPos] = useState({
+    top: 0,
+    left: 0,
+    maxHeight: 280,
+  });
   const agentRef = useRef(agent);
   agentRef.current = agent;
 
@@ -107,14 +111,39 @@ export function ComposerAgentPicker() {
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const place = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      setMenuPos({ top: rect.bottom + 6, left: rect.left });
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const menu = menuRef.current;
+      const menuWidth = menu?.offsetWidth ?? 240;
+      const menuHeight = menu?.offsetHeight ?? 200;
+      const margin = 8;
+      const gap = 6;
+      const spaceBelow = window.innerHeight - rect.bottom - margin;
+      const spaceAbove = rect.top - margin;
+      const openUp =
+        spaceBelow < Math.min(menuHeight, 220) && spaceAbove > spaceBelow;
+      const maxHeight = Math.max(
+        120,
+        (openUp ? spaceAbove : spaceBelow) - gap,
+      );
+      const height = Math.min(menuHeight, maxHeight);
+      let top = openUp ? rect.top - height - gap : rect.bottom + gap;
+      top = Math.min(
+        Math.max(margin, top),
+        window.innerHeight - Math.min(height, maxHeight) - margin,
+      );
+      let left = rect.right - menuWidth;
+      left = Math.min(left, window.innerWidth - menuWidth - margin);
+      left = Math.max(margin, left);
+      setMenuPos({ top, left, maxHeight });
     };
     place();
+    const frame = window.requestAnimationFrame(place);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
     return () => {
+      window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
     };
@@ -171,7 +200,11 @@ export function ComposerAgentPicker() {
                   className="oc-agent-menu"
                   role="listbox"
                   aria-label="Primary agents"
-                  style={{ top: menuPos.top, left: menuPos.left }}
+                  style={{
+                    top: menuPos.top,
+                    left: menuPos.left,
+                    maxHeight: menuPos.maxHeight,
+                  }}
                 >
                   <div className="oc-agent-menu__heading">Primary agents</div>
                   {options.map((option) => (
