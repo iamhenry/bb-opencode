@@ -310,8 +310,12 @@ export default async function plugin(bb: BbPluginApi) {
       if (!hostId) return { commands: [] };
       return host.call("listCommands", { directory }, { hostId });
     },
-    async undo({ threadId }) {
-      return revertThread(bb, host, threadId, "revert");
+    async undo({ threadId, messageID, role, text }) {
+      return revertThread(bb, host, threadId, "revert", {
+        messageID,
+        role,
+        text,
+      });
     },
     async redo({ threadId }) {
       return revertThread(bb, host, threadId, "unrevert");
@@ -655,6 +659,7 @@ async function revertThread(
   host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
   threadId: string,
   kind: "revert" | "unrevert",
+  target?: { messageID?: string; role?: "user" | "assistant"; text?: string },
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
     const thread = threadFields(await bb.sdk.threads.get({ threadId }));
@@ -668,7 +673,16 @@ async function revertThread(
       return { ok: false, error: "Thread is not bound to an OpenCode session" };
     }
     if (kind === "revert") {
-      await host.call("revert", { sessionId }, { hostId });
+      await host.call(
+        "revert",
+        {
+          sessionId,
+          messageID: target?.messageID,
+          role: target?.role,
+          text: target?.text,
+        },
+        { hostId },
+      );
     } else {
       await host.call("unrevert", { sessionId }, { hostId });
     }

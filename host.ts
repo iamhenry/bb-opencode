@@ -45,11 +45,11 @@ export default experimental_defineHostEntry({
       );
     },
     async revert(input, context) {
-      return handleRevert(
-        context.experimental_paths.dataDir,
-        input.sessionId,
-        input.messageID,
-      );
+      return handleRevert(context.experimental_paths.dataDir, input.sessionId, {
+        messageID: input.messageID,
+        role: input.role,
+        text: input.text,
+      });
     },
     async unrevert(input, context) {
       return handleUnrevert(context.experimental_paths.dataDir, input.sessionId);

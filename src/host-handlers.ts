@@ -3,6 +3,7 @@ import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
 import { attachOrSpawn, readLock } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { hydrateBoundSession, recentUnknownLogLines } from "./bridge.js";
+import { resolveRevertMessageId } from "./revert-target.js";
 
 const clients = new Map<string, OpenCodeClient>();
 
@@ -113,10 +114,20 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
 export async function handleRevert(
   dataDir: string,
   sessionId: string,
-  messageID?: string,
+  target?: { messageID?: string; role?: "user" | "assistant"; text?: string },
 ) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
+  const messages = (await client.sessionMessages(sessionId)) as Array<{
+    info: { id?: string; role?: string };
+    parts: Array<{ type?: string; text?: string }>;
+  }>;
+  const messageID = resolveRevertMessageId({
+    messages,
+    messageID: target?.messageID,
+    role: target?.role,
+    text: target?.text,
+  });
   await client.revert(sessionId, messageID ? { messageID } : {});
   await hydrateBoundSession(sessionId);
   return { ok: true };

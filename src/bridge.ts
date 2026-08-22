@@ -18,7 +18,12 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
-import { hydrateDeltas, lastUserAgent, type HydrateMessage } from "./hydrate.js";
+import {
+  assistantsAfterLastUser,
+  hydrateDeltas,
+  lastUserAgent,
+  type HydrateMessage,
+} from "./hydrate.js";
 import {
   closeOpenedItems,
   closeText,
@@ -398,6 +403,11 @@ async function onOpenCodeEvent(event: {
       live.liveChildIds.delete(sessionId);
       return;
     }
+    if (live.promptIssued && !live.parentBoundaryEmitted) {
+      /* POST /message is still the source of truth; idle must not
+         close the turn before settle can flush tool/text leftovers. */
+      return;
+    }
     if (!live.parentBoundaryEmitted) {
       live.parentBoundaryEmitted = true;
       for (const [id, text] of live.textBuffers) {
@@ -498,25 +508,31 @@ async function denyPermissionAsk(args: {
       /* already settled */
     }
   }
+  const denyKey = {
+    providerItemId: `perm-deny-${args.requestId ?? "unknown"}`,
+  };
+  const denyPresentation = {
+    label: { pending: "Permission denied", completed: "Permission denied" },
+    icon: { glyph: "ShieldOff" },
+    detail: args.reason.slice(0, 280),
+  };
   emitDeltas(args.threadId, [
     {
       kind: "item.open",
-      key: { id: `perm-deny-${args.requestId ?? "unknown"}` },
-      item: {
-        type: "tool",
-        tool: "permission",
-        title: "Permission denied",
-        detail: args.reason,
-      },
+      key: denyKey,
+      item: { type: "tool", tool: "permission" },
+      presentation: denyPresentation,
     },
     {
       kind: "item.close",
-      key: { id: `perm-deny-${args.requestId ?? "unknown"}` },
+      key: denyKey,
+      status: "failed",
       item: {
         type: "tool",
         tool: "permission",
         error: args.reason,
       },
+      presentation: denyPresentation,
     },
   ]);
 }
@@ -970,20 +986,19 @@ async function settleIssuedTurn(
   const liveAfter = liveTurns.get(threadId);
   if (!liveAfter || liveAfter.parentBoundaryEmitted) return;
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
-  const lastAssistant = [...messages]
-    .reverse()
-    .find((message) => message.info.role === "assistant");
   const leftovers: ThreadDelta[] = [];
-  for (const part of lastAssistant?.parts ?? []) {
-    leftovers.push(
-      ...mapPartDelta({
-        state: liveAfter.mapState,
-        part,
-        sessionId,
-      }),
-    );
-    if (part.type === "text" && part.text && part.id) {
-      leftovers.push(...closeText(part.id, part.text));
+  for (const message of assistantsAfterLastUser(messages)) {
+    for (const part of message.parts) {
+      leftovers.push(
+        ...mapPartDelta({
+          state: liveAfter.mapState,
+          part,
+          sessionId,
+        }),
+      );
+      if (part.type === "text" && part.text && part.id) {
+        leftovers.push(...closeText(part.id, part.text));
+      }
     }
   }
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);

@@ -7,7 +7,7 @@ export interface ThreadDelta {
 
 export interface MapDeltaState {
   unknownTally: Map<string, number>;
-  itemKeys: Map<string, { channel: string } | { id: string }>;
+  itemKeys: Map<string, { channel: string } | { providerItemId: string }>;
   emittedText: Map<string, string>;
   openedItems: Map<string, "command" | "tool">;
 }
@@ -69,6 +69,71 @@ interface PartLike {
   };
 }
 
+function stringField(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function coreToolItem(
+  toolName: string,
+  part: PartLike,
+): Record<string, unknown> {
+  const input = part.state?.input;
+  const metadata =
+    part.state?.metadata && typeof part.state.metadata === "object"
+      ? (part.state.metadata as Record<string, unknown>)
+      : undefined;
+  if (toolName === "read" || toolName === "read_file") {
+    return {
+      type: "fileRead",
+      path:
+        stringField(input, "filePath") ??
+        stringField(input, "path") ??
+        "unknown",
+    };
+  }
+  if (toolName === "grep" || toolName === "glob" || toolName === "list") {
+    const query =
+      stringField(input, "pattern") ?? stringField(input, "query") ?? "";
+    if (query || toolName === "list") {
+      return {
+        type: "search",
+        mode:
+          toolName === "glob" ? "path" : toolName === "list" ? "list" : "content",
+        query,
+        path: stringField(input, "path"),
+      };
+    }
+  }
+  if (toolName === "task" || toolName === "Task") {
+    const child =
+      stringField(part.state as Record<string, unknown> | undefined, "sessionID") ??
+      stringField(part.state as Record<string, unknown> | undefined, "sessionId") ??
+      stringField(metadata, "sessionID") ??
+      stringField(metadata, "sessionId") ??
+      part.id ??
+      part.callID ??
+      "task";
+    return {
+      type: "delegation",
+      childRef: child,
+      label: part.state?.title || "Task",
+      background: false,
+      summary:
+        typeof part.state?.output === "string" ? part.state.output : undefined,
+    };
+  }
+  return {
+    type: "tool",
+    tool: toolName,
+    args: input,
+    result: part.state?.output,
+  };
+}
+
 export function mapPartDelta(args: {
   state: MapDeltaState;
   part: PartLike;
@@ -111,7 +176,7 @@ export function mapPartDelta(args: {
   if (type === "tool") {
     const toolName = part.tool ?? "tool";
     const itemId = part.id ?? part.callID ?? toolName;
-    const key = { id: itemId };
+    const key = { providerItemId: itemId };
     args.state.itemKeys.set(itemId, key);
     args.state.openedItems.set(
       itemId,
@@ -143,13 +208,14 @@ export function mapPartDelta(args: {
         deltas.push({
           kind: "command.outputSnapshot",
           key,
-          output,
+          text: output,
         });
       }
       if (part.state?.status === "completed" || part.state?.status === "error") {
         deltas.push({
           kind: "item.close",
           key,
+          status: part.state.status === "error" ? "failed" : "completed",
           item: {
             type: "command",
             command,
@@ -167,16 +233,12 @@ export function mapPartDelta(args: {
       },
       icon: { glyph: toolName === "task" ? "Bot" : "Wrench" },
     };
+    const item = coreToolItem(toolName, part);
     const deltas: ThreadDelta[] = [
       {
         kind: "item.open",
         key,
-        item: {
-          type: "tool",
-          tool: toolName,
-          args: part.state?.input,
-          result: part.state?.output,
-        },
+        item,
         presentation,
       },
     ];
@@ -184,15 +246,18 @@ export function mapPartDelta(args: {
       deltas.push({
         kind: "item.close",
         key,
+        status: part.state.status === "error" ? "failed" : "completed",
         item: {
-          type: "tool",
-          tool: toolName,
-          args: part.state?.input,
-          result: part.state?.output,
-          error:
-            part.state.status === "error"
-              ? String(part.state.error ?? part.state.output ?? "error")
-              : undefined,
+          ...item,
+          ...(item.type === "tool"
+            ? {
+                result: part.state?.output,
+                error:
+                  part.state.status === "error"
+                    ? String(part.state.error ?? part.state.output ?? "error")
+                    : undefined,
+              }
+            : {}),
         },
         presentation,
       });
@@ -230,7 +295,8 @@ export function closeOpenedItems(state: MapDeltaState): ThreadDelta[] {
   for (const [itemId, kind] of state.openedItems) {
     deltas.push({
       kind: "item.close",
-      key: { id: itemId },
+      key: { providerItemId: itemId },
+      status: "interrupted",
       item:
         kind === "command"
           ? { type: "command", command: "", cwd: "", aggregatedOutput: "" }

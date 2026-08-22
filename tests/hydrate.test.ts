@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { hydrateDeltas, lastUserAgent } from "../src/hydrate.js";
+import {
+  assistantsAfterLastUser,
+  hydrateDeltas,
+  lastUserAgent,
+} from "../src/hydrate.js";
 
 describe("hydrate", () => {
   it("replays a full refetch starting with session.reset (ISC-11)", () => {
@@ -17,6 +21,26 @@ describe("hydrate", () => {
       ],
     });
     expect(deltas[0]).toEqual({ kind: "session.reset" });
+    expect(
+      assistantsAfterLastUser([
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "hi" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [{ type: "tool", tool: "read", id: "r1" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [{ type: "tool", tool: "task", id: "t1" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [{ type: "text", text: "done" }],
+        },
+      ]).map((message) => message.parts[0]?.tool ?? message.parts[0]?.type),
+    ).toEqual(["read", "task", "text"]);
     expect(lastUserAgent([
       { info: { role: "user", agent: "plan" }, parts: [] },
       { info: { role: "assistant" }, parts: [] },

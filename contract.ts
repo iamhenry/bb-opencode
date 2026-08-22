@@ -59,6 +59,8 @@ export const hostContract = defineRpcContract({
       .object({
         sessionId: z.string().min(1),
         messageID: z.string().min(1).optional(),
+        role: z.enum(["user", "assistant"]).optional(),
+        text: z.string().optional(),
       })
       .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
@@ -203,7 +205,14 @@ export const rpcContract = defineRpcContract({
     output: z.object({ threadId: z.string() }).strict(),
   },
   undo: {
-    input: z.object({ threadId: z.string().min(1) }).strict(),
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        messageID: z.string().min(1).optional(),
+        role: z.enum(["user", "assistant"]).optional(),
+        text: z.string().optional(),
+      })
+      .strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
   redo: {

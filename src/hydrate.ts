@@ -37,6 +37,21 @@ export function lastUserAgent(messages: readonly HydrateMessage[]): string | und
   return undefined;
 }
 
+export function assistantsAfterLastUser(
+  messages: readonly HydrateMessage[],
+): HydrateMessage[] {
+  let lastUser = -1;
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i]?.info.role === "user") lastUser = i;
+  }
+  if (lastUser < 0) {
+    return messages.filter((message) => message.info.role === "assistant");
+  }
+  return messages
+    .slice(lastUser + 1)
+    .filter((message) => message.info.role === "assistant");
+}
+
 export function hydrateDeltas(args: {
   sessionId: string;
   messages: readonly HydrateMessage[];

@@ -40,7 +40,21 @@ describe("map-delta", () => {
     });
     expect(tool[0]).toMatchObject({
       kind: "item.open",
-      item: { type: "tool", tool: "task" },
+      item: { type: "delegation", label: "Explore" },
+    });
+    const read = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "s",
+      part: {
+        id: "read-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "completed", input: { filePath: "package.json" } },
+      },
+    });
+    expect(read[0]).toMatchObject({
+      kind: "item.open",
+      item: { type: "fileRead", path: "package.json" },
     });
     const bash = mapPartDelta({
       state: createMapDeltaState(),
@@ -108,7 +122,27 @@ describe("map-delta", () => {
         },
       },
     });
-    expect(first[0]).toMatchObject({ key: { id: "bash-1" } });
-    expect(second[0]).toMatchObject({ key: { id: "bash-1" } });
+    expect(first[0]).toMatchObject({ key: { providerItemId: "bash-1" } });
+    expect(second[0]).toMatchObject({ key: { providerItemId: "bash-1" } });
+    const done = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "bash-1",
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "ls" },
+          metadata: { output: "a" },
+        },
+      },
+    });
+    expect(done.some((delta) => delta.kind === "command.outputSnapshot")).toBe(
+      true,
+    );
+    expect(
+      done.find((delta) => delta.kind === "command.outputSnapshot"),
+    ).toMatchObject({ text: "a" });
   });
 });

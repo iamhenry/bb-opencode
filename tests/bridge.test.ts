@@ -140,6 +140,79 @@ describe("provider bridge", () => {
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
   });
 
+  it("settles Read/Task rows even if session.idle fires first (ISC-71)", async () => {
+    const fake = installFake();
+    fake.promptImpl = async (id) => {
+      fake.messages.set(id, [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "read" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [
+            {
+              id: "r1",
+              type: "tool",
+              tool: "read",
+              state: {
+                status: "completed",
+                input: { filePath: "package.json" },
+              },
+            },
+          ],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [
+            {
+              id: "k1",
+              type: "tool",
+              tool: "task",
+              state: { status: "completed", title: "general" },
+            },
+          ],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [{ id: "t1", type: "text", text: "bb-plugin-opencode" }],
+        },
+      ]);
+      fake.emit({ type: "session.idle", properties: { sessionID: id } });
+      return {};
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "item.open" &&
+          (delta.item as { type?: string } | undefined)?.type === "fileRead",
+      ),
+    ).toBe(true);
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "item.open" &&
+          (delta.item as { type?: string } | undefined)?.type === "delegation",
+      ),
+    ).toBe(true);
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "item.textDelta" &&
+          delta.text === "bb-plugin-opencode",
+      ),
+    ).toBe(true);
+  });
+
   it("does not create a session when Task starts (ISC-71.1)", async () => {
     const fake = installFake();
     send({

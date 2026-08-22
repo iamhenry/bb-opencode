@@ -171,9 +171,9 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-5: `@bb/provider-bridge-protocol/conformance` is a devDependency and is not imported by shipped `server` / `host` / `app`.
 - [x] ISC-6: Declared capabilities include `fork: "none"` and `sessionRestore: true`.
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
-- [x] ISC-8: Composer agent picker and header undo/redo render only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
+- [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
-- [x] ISC-8.2: Header undo/redo is hidden unless that RPC returns `opencode`.
+- [ ] ISC-8.2: Per-message Undo/Redo `run` no-ops unless that RPC returns `opencode`. BB `messageAction` has no `isAvailable`; the icons still appear on other providers.
 
 ### F1 · Sessions
 Why: one BB thread is one OpenCode session, so resume is the same conversation.
@@ -219,10 +219,10 @@ Why: model and OpenCode agent are real start/resume **and later-turn** choices, 
 - [x] ISC-29.5: A follow-up BB queues because `turn/steer` is `-32601` is stamped with the agent selected at enqueue, not the picker value at flush. If that stamped id is no longer a selectable primary at flush, the send is refused (same as ISC-29.3 unknown), not rewritten to the default.
 
 ### F4 · Revert
-Why: undo/redo is OpenCode revert, shown as BB header chrome.
+Why: undo/redo is OpenCode `session.revert({ messageID })` / `unrevert`, shown on the message action bar — not title-bar chrome and not BB session rewind.
 
-- [x] ISC-30: Header undo calls `session.revert` then the same hydrate path as resume.
-- [x] ISC-31: Header redo calls `session.unrevert` then the same hydrate path as resume.
+- [x] ISC-30: Per-message Undo maps the bubble (`role` + `text`) to an OpenCode `messageID`, calls `session.revert`, then the same hydrate path as resume.
+- [x] ISC-31: Per-message Redo calls `session.unrevert` then the same hydrate path as resume.
 - [x] ISC-32: After a successful revert, a following send that is rejected restores the previous tail (no permanent optimistic loss).
 
 ### F5 · Permissions
@@ -277,7 +277,7 @@ Why: one OpenCode on the machine, and the operator can see when it is missing, s
 ### F8 · Task children
 Why: OpenCode Task / `@mention` already creates a child session. BB shows the parent card and can adopt the child; it does not become Voyager or OpenChamber.
 
-- [ ] ISC-71: A parent-session Task tool part renders as a BB tool item on the parent thread (generic card, not a custom Task card). Mapper unit is green; live timeline still needs a human probe.
+- [x] ISC-71: Read maps to `fileRead`, Task to `delegation`, bash to `command`, others to generic `tool`. Live `thr_yxpq8846ww` emitted `item/started` `fileRead` for `package.json`. Invalid `{ id }` keys were dropping the whole leftover batch.
 - [x] ISC-71.1: Anti: the plugin does not call `session.create` because Task started.
 - [x] ISC-73: `session.status` idle / `session.idle` for a Task child does not emit `turn.boundary` on the parent BB thread.
 - [x] ISC-74: `permission.asked` whose session is a Task child of the in-flight parent renders on **that parent BB thread's** generic permission card only (never as a timeline item; ISC-22 still holds for items). Once / always / reject are written back to that same child request. Uncorrelated asks, including child asks after the parent `turn.boundary` and asks with no resolvable session, are not approved and are not attached to any thread.
@@ -477,7 +477,7 @@ src/probe.ts
 src/bridge.ts             # provider bridge handleLine
 src/host-handlers.ts
 src/app/composer-agent.tsx
-src/app/header-revert.tsx
+src/app/message-revert.ts
 src/app/settings-section.tsx
 src/app/import-control.tsx
 tests/*.test.ts
@@ -511,7 +511,7 @@ tests/*.test.ts
 - [x] ISA review round 3 (agent-switch delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
-- [ ] Hard blockers / remaining live: ISC-33/34 (generic card; 1.18 dialect fix landed, re-smoke required), ISC-63 (`opencode.json` deny under `full`), ISC-71 live Task row.
+- [ ] Hard blockers / remaining live: ISC-33/34 (need `bash: ask` + human card), ISC-8.2 (`messageAction` has no `isAvailable` so Undo/Redo icons leak onto other providers). ISC-63 deny and ISC-71 Read item/* are live-proven.
 - [ ] Polish live-verify: streaming suffixes, tool flush, title poll, Stop, `/` autocomplete, reasoning chip actually changes the turn.
 
 ## Live smoke (operator thread, 2026-08-22 evening)
