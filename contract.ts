@@ -219,6 +219,21 @@ export const rpcContract = defineRpcContract({
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
+  forkFromMessage: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        sourceSeqEnd: z.number().int().nonnegative(),
+      })
+      .strict(),
+    output: z
+      .object({
+        threadId: z.string().nullable(),
+        projectId: z.string().nullable(),
+        error: z.string().nullable(),
+      })
+      .strict(),
+  },
   listCommands: {
     input: z
       .object({

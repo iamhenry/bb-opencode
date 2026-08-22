@@ -320,6 +320,30 @@ export default async function plugin(bb: BbPluginApi) {
     async redo({ threadId }) {
       return revertThread(bb, host, threadId, "unrevert");
     },
+    async forkFromMessage({ threadId, sourceSeqEnd }) {
+      try {
+        const thread = threadFields(await bb.sdk.threads.get({ threadId }));
+        if (thread.providerId !== PROVIDER_ID) {
+          return { threadId: null, projectId: null, error: null };
+        }
+        const created = await bb.sdk.threads.fork({
+          sourceThreadId: threadId,
+          sourceSeqEnd,
+          workspace: "reuse",
+        });
+        return {
+          threadId: created.id,
+          projectId: created.projectId,
+          error: null,
+        };
+      } catch (error) {
+        return {
+          threadId: null,
+          projectId: null,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
   });
 
   setTimeout(() => {

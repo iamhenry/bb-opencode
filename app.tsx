@@ -1,6 +1,7 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { ComposerAgentPicker } from "./src/app/composer-agent.js";
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
+import { runMessageFork } from "./src/app/message-fork.js";
 import { runMessageUndo } from "./src/app/message-revert.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 
@@ -22,6 +23,16 @@ export default definePluginApp((app) => {
         threadId,
         role: message.role,
         text: message.text,
+      }),
+  });
+  app.slots.messageAction({
+    id: "fork",
+    title: "Fork into new thread",
+    icon: "Fork",
+    run: ({ threadId, message }) =>
+      runMessageFork({
+        threadId,
+        sourceSeqEnd: message.sourceSeqEnd,
       }),
   });
   app.slots.settingsSection({

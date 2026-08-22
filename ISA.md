@@ -173,7 +173,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
-- [ ] ISC-8.2: Per-message Undo/Redo `run` no-ops unless that RPC returns `opencode`. BB `messageAction` has no `isAvailable`; the icons still appear on other providers.
+- [ ] ISC-8.2: Per-message Revert/Fork `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; icons still appear on other providers. Native fork stays assistant-only; the plugin Fork action is what user bubbles get.
 
 ### F1 · Sessions
 Why: one BB thread is one OpenCode session, so resume is the same conversation.
