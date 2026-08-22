@@ -1,0 +1,47 @@
+.oc-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2rem;
+  max-width: 14rem;
+  padding: 0 0.25rem 0 0.5rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted-foreground, #737373);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
+.oc-agent:hover,
+.oc-agent:focus-within {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: inherit;
+}
+
+.oc-agent__prefix {
+  flex: none;
+  opacity: 0.75;
+}
+
+.oc-agent__select {
+  min-width: 4.5rem;
+  max-width: 9rem;
+  height: 1.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.8125rem;
+}
+
+.oc-agent__select:focus {
+  outline: none;
+}
+
+.oc-agent__error {
+  max-width: 12rem;
+  color: var(--destructive, #dc2626);
+  font-size: 0.7rem;
+}

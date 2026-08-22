@@ -1,0 +1,139 @@
+import type { OpenCodeClient, OpenCodeSession } from "../src/client.js";
+
+export interface FakeOpenCode {
+  client: OpenCodeClient;
+  calls: {
+    create: number;
+    prompt: number;
+    abort: number;
+    revert: number;
+    unrevert: number;
+    reply: Array<{ requestID: string; reply: string }>;
+    get: number;
+    messages: number;
+  };
+  sessions: Map<string, OpenCodeSession>;
+  messages: Map<
+    string,
+    Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
+  >;
+  agents: Array<{
+    name: string;
+    mode?: string;
+    hidden?: boolean;
+    description?: string;
+  }>;
+  emit: (event: { type: string; properties?: unknown }) => void;
+  promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
+  lastPrompt?: { id: string; body: Record<string, unknown> };
+}
+
+export function createFakeOpenCode(): FakeOpenCode {
+  let handler: ((event: { type: string; properties?: unknown }) => void) | undefined;
+  const fake: FakeOpenCode = {
+    calls: {
+      create: 0,
+      prompt: 0,
+      abort: 0,
+      revert: 0,
+      unrevert: 0,
+      reply: [],
+      get: 0,
+      messages: 0,
+    },
+    sessions: new Map(),
+    messages: new Map(),
+    agents: [
+      { name: "build", mode: "primary" },
+      { name: "plan", mode: "primary" },
+      { name: "custom", mode: "primary" },
+      { name: "compaction", mode: "primary", hidden: true },
+      { name: "title", mode: "primary", hidden: true },
+      { name: "explore", mode: "subagent" },
+    ],
+    emit(event) {
+      handler?.(event);
+    },
+    lastPrompt: undefined,
+    client: {
+      url: "http://127.0.0.1:9",
+      async health() {
+        return { healthy: true, version: "1.18.21" };
+      },
+      async createSession(args) {
+        fake.calls.create += 1;
+        const id = `ses_${fake.calls.create}`;
+        const session: OpenCodeSession = {
+          id,
+          directory: args.directory,
+          title: args.title,
+          parentID: args.parentID,
+        };
+        fake.sessions.set(id, session);
+        fake.messages.set(id, []);
+        return session;
+      },
+      async getSession(id) {
+        fake.calls.get += 1;
+        const session = fake.sessions.get(id);
+        if (!session) throw new Error(`missing session ${id}`);
+        return session;
+      },
+      async listSessions() {
+        return [...fake.sessions.values()];
+      },
+      async sessionChildren(id) {
+        return [...fake.sessions.values()].filter((session) => session.parentID === id);
+      },
+      async sessionMessages(id) {
+        fake.calls.messages += 1;
+        return fake.messages.get(id) ?? [];
+      },
+      async prompt(id, body) {
+        fake.calls.prompt += 1;
+        fake.lastPrompt = { id, body };
+        if (fake.promptImpl) return fake.promptImpl(id, body);
+        queueMicrotask(() => {
+          fake.emit({ type: "session.idle", properties: { sessionID: id } });
+        });
+        return {};
+      },
+      async abort() {
+        fake.calls.abort += 1;
+      },
+      async revert() {
+        fake.calls.revert += 1;
+        return {};
+      },
+      async unrevert() {
+        fake.calls.unrevert += 1;
+        return {};
+      },
+      async agents() {
+        return fake.agents;
+      },
+      async providers() {
+        return {
+          providers: [
+            {
+              id: "opencode",
+              models: { "gpt-4.1": {}, "claude-sonnet-4": {} },
+            },
+          ],
+        };
+      },
+      async replyPermission(requestID, reply) {
+        fake.calls.reply.push({ requestID, reply });
+      },
+      async subscribe(next) {
+        handler = next;
+        return {
+          unsubscribe() {
+            handler = undefined;
+          },
+        };
+      },
+    },
+  };
+  return fake;
+}

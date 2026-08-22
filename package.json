@@ -1,0 +1,39 @@
+{
+  "name": "bb-plugin-opencode",
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "First-class OpenCode provider for BB.",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.39",
+    "bbPluginSdk": ">=0.4.14"
+  },
+  "bb": {
+    "name": "OpenCode",
+    "description": "Run BB threads on a detached OpenCode server.",
+    "branding": {
+      "icon": "./assets/icon.svg"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "host": "./host.ts",
+    "skills": []
+  },
+  "scripts": {
+    "build": "bb plugin build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "1.18.21",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.4.14",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  }
+}
