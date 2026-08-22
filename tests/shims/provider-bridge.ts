@@ -8,6 +8,7 @@ export const BRIDGE_REQUEST_METHODS = {
   threadStop: "thread/stop",
   turnStart: "turn/start",
   turnSteer: "turn/steer",
+  skillsConfigure: "skills/configure",
 } as const;
 
 export const BRIDGE_NOTIFICATION_METHODS = {
@@ -67,6 +68,19 @@ export const turnSteerParamsSchema = z
     threadId: z.string(),
     expectedTurnId: z.string(),
     input: z.array(z.any()),
+  })
+  .passthrough();
+export const skillsConfigureParamsSchema = z
+  .object({
+    roots: z.array(
+      z
+        .object({
+          id: z.string().optional(),
+          path: z.string().optional(),
+          skills: z.array(z.any()).optional(),
+        })
+        .passthrough(),
+    ),
   })
   .passthrough();
 

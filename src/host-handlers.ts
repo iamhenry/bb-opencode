@@ -64,6 +64,24 @@ export async function handleListSessions(dataDir: string) {
   };
 }
 
+export async function handleListCommands(
+  dataDir: string,
+  directory?: string,
+) {
+  const attached = await attachOrSpawn({ dataDir });
+  const client = acquire(attached.url);
+  const commands = await client.listCommands(directory);
+  return {
+    commands: commands
+      .filter((command) => typeof command.name === "string" && command.name.length > 0)
+      .map((command) => ({
+        name: command.name,
+        description:
+          typeof command.description === "string" ? command.description : null,
+      })),
+  };
+}
+
 export async function handleListAgents(dataDir: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);

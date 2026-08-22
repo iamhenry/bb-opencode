@@ -3,9 +3,9 @@ task: "First-class OpenCode community plugin for BB"
 slug: 20260822-163200_bb-plugin-opencode-v1
 project: bb-plugin-opencode
 phase: building
-progress: 78/88
+progress: 88/98
 started: 2026-08-22T16:32:00Z
-updated: 2026-08-22T18:45:00Z
+updated: 2026-08-22T19:30:00Z
 principal_stated_goal: "Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
 principal_stated_goal_source: conversation
 principal_stated_goal_signal: 2
@@ -22,7 +22,7 @@ BB already treats Claude, Codex, and Pi as first-class agents. OpenCode today ar
 
 ## Vision
 
-OpenCode is a normal BB agent. The picker says **OpenCode**, not "ACP · opencode". The user chooses a model and an OpenCode agent, can change that agent on the next send, and watches thinking, tools, and live bash land in the BB timeline. `@general` / Task starts a child OpenCode session; the parent shows a Task tool item; the user opens that child only if they choose to, and only after it is idle. Stop, undo, redo, and attachments behave. Permissions use BB's existing card; once/always still write back to OpenCode; `opencode.json` still counts; BB's permission mode is only a ceiling. Resume is the same OpenCode session. Settings and `bb opencode status|version|logs` say when the binary, version, or auth is wrong. Import is a button the user presses — never a sidebar that fills itself. One OpenCode server runs on the machine. Euphoric surprise: it feels like Claude-in-BB, except the agent underneath is OpenCode.
+OpenCode is a normal BB agent. The picker says **OpenCode**, not "ACP · opencode". The user chooses a model and an OpenCode agent, can change that agent on the next send, and watches thinking, tools, and live bash land in the BB timeline. Typing `/name` runs that OpenCode command. BB-injected skills reach the session as a catalog, not a rewritten `opencode.json`. `@general` / Task starts a child OpenCode session; the parent shows a Task tool item; the user opens that child only if they choose to, and only after it is idle. Stop, undo, redo, and attachments behave. Permissions use BB's existing card; once/always still write back to OpenCode; `opencode.json` still counts; BB's permission mode is only a ceiling. Resume is the same OpenCode session. Settings and `bb opencode status|version|logs` say when the binary, version, or auth is wrong. Import is a button the user presses — never a sidebar that fills itself. One OpenCode server runs on the machine. Euphoric surprise: it feels like Claude-in-BB, except the agent underneath is OpenCode.
 
 ## Out of Scope
 
@@ -48,6 +48,9 @@ V1 is OpenCode-in-BB, not OpenChamber-in-BB and not a BB core rewrite.
 - No picker `onChange` host RPC whose only job is to remember the click.
 - No subagents (`@mention`, Task tool, `mode: "subagent"`) in the composer agent picker.
 - No auto-created BB thread when Task spawns a child. No custom Task card.
+- No writing `opencode.json` `skills` / `command` to make BB skills appear.
+- No BB core change to `host.list_commands` (that table only knows `acp-opencode`). Community `/` typeahead rows for `opencode` are therefore not a V1 seam.
+- No `composerActions: ["plan"]`. That is BB plan mode, not OpenCode `/plan` or the plan agent.
 
 ## Language
 
@@ -94,6 +97,18 @@ _Avoid:_ a second auto-accept setting, "BB owns permissions".
 **Fail-closed permission result.** Tagged `{ok | resolved | unknown}`. Unknown does not approve.
 _Avoid:_ treating a timeout or missing reply as allow.
 
+**OpenCode command.** An entry from `GET /command` (`name`, optional `description`/`template`). Invoked with `POST /session/:id/command` `{command, arguments, agent}`.
+_Avoid:_ treating `/name` as a BB skill mention; calling TUI-only `/help` as if it were HTTP.
+
+**Slash send.** The first text part of a turn, if it is exactly `/name` plus optional arguments **and** `name` is listed for that directory, is a command send. Attachments on the same turn stay a normal prompt.
+_Avoid:_ swallowing unknown `/foo`; routing `/undo` through header revert unless it is listed.
+
+**BB skill root.** A `skills/configure` root BB staged for this provider. The bridge appends a text catalog of those skills on the next `session.prompt`. Empty roots clear it.
+_Avoid:_ PATCH `/config` or editing `opencode.json`.
+
+**Command chip.** Composer action listing `GET /command`. Selecting inserts `/name ` into the draft. Execution waits for send (same as the agent chip).
+_Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
+
 ## Principles
 
 - Fail closed. Ambiguous transport, unknown events, unknown permissions, and version skew never guess yes.
@@ -113,6 +128,7 @@ _Avoid:_ treating a timeout or missing reply as allow.
 - Permissions use the provider-bridge grammar and BB's generic card. Honor `opencode.json`. BB mode is the ceiling. A fail-closed `unknown` result never approves, including under BB mode `full`.
 - Manual import only. Refuse running sessions. Dedup on `providerId === "opencode"` + `providerThreadId`. Directory comes from the server-confirmed OpenCode session path. No managed worktree invented. Personal project if the path is outside every project.
 - `turn/steer` refuses with JSON-RPC `-32601` so BB queues. A queued follow-up captures its OpenCode agent at enqueue, not at flush.
+- A listed `/name` send uses `session.command`, not `session.prompt`. Unknown slashes and slash+attachment sends stay `session.prompt`. `skills/configure` is accepted; the plugin never writes OpenCode config files.
 - Every `session.prompt` includes `agent`. Never omit it (OpenCode #21728). Resume and import do not write an agent. A send is refused (no `session.prompt`) while the picker is in the unknown-agent error state, and at flush if the enqueue-stamped agent is no longer a selectable primary.
 - Pin the current stable `@opencode-ai/sdk` / `opencode serve` surface. Do not call V2-only routes.
 - Existing `acp-opencode` threads never migrate. Distinct name and icon.
@@ -129,7 +145,7 @@ _Avoid:_ treating a timeout or missing reply as allow.
 
 "Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
 
-A community plugin registers provider `opencode`. A user can start and resume OpenCode sessions from BB, stream thinking/tools/live bash in the BB timeline, stop, undo, redo, attach what OpenCode accepts, answer permissions on BB's card, pick a model and an OpenCode agent and change that agent on the next send, invoke configured OpenCode subagents via `@mention` / Task without leaving the parent thread as a card, open a Task child only by user-confirmed adopt, and manually import existing sessions — with one detached OpenCode per host and honest Settings/CLI when the binary, version, or auth is wrong.
+A community plugin registers provider `opencode`. A user can start and resume OpenCode sessions from BB, stream thinking/tools/live bash in the BB timeline, stop, undo, redo, attach what OpenCode accepts, answer permissions on BB's card, pick a model and an OpenCode agent and change that agent on the next send, run a listed OpenCode `/command` from the composer, see BB-injected skills in the session catalog, invoke configured OpenCode subagents via `@mention` / Task without leaving the parent thread as a card, open a Task child only by user-confirmed adopt, and manually import existing sessions — with one detached OpenCode per host and honest Settings/CLI when the binary, version, or auth is wrong.
 
 ## Not yet specified
 
@@ -270,6 +286,20 @@ Why: OpenCode Task / `@mention` already creates a child session. BB shows the pa
 - [x] ISC-76.1: Anti: user-confirmed open of a still-running Task child is refused. Open after the child is idle uses the same adopt path as ISC-76. Mid-stream steal / hydrate of a live child is out of V1.
 - [x] ISC-77: Anti: a user prompt containing `@<subagent>` is forwarded in `session.prompt` parts unchanged. The plugin does not rewrite it into `session.create` or a V2 `session.subagent` call.
 
+### F9 · Commands and skills
+Why: OpenCode already has `/commands` and a skill tool. BB has no plugin slash-command API (`/` is skills + plan/goal). First-class means we speak OpenCode's HTTP command API and accept BB's `skills/configure` without mutating the user's config.
+
+- [x] ISC-80: `GET /command` is listed by host RPC `listCommands` and `bb opencode commands`.
+- [x] ISC-81: A send whose first text is `/name args` and whose `name` is listed calls `POST /session/:id/command` once and does not call `session.prompt`.
+- [x] ISC-82: Anti: an unknown `/foo` is forwarded as `session.prompt` text unchanged.
+- [x] ISC-83: Anti: a slash send that also has a non-text attachment is not routed to `session.command` (ISC-21 still fails the whole send if the attachment is unsupported).
+- [x] ISC-84: `skills/configure` is implemented and answers `{ok:true}` (not `-32601`).
+- [x] ISC-85: After a non-empty `skills/configure`, the next `session.prompt` includes a text part cataloguing those skill names.
+- [x] ISC-86: An empty `skills/configure` clears that catalog so a later prompt has no appendix.
+- [x] ISC-87: Anti: the plugin never writes `opencode.json` / `skills.paths` / `command` config to inject BB skills.
+- [x] ISC-88: The composer Command chip renders only with the same OpenCode visibility rule as the Agent chip (ISC-8).
+- [x] ISC-89: Anti: choosing a Command chip row inserts `/name ` into the draft and issues zero `session.command` / `session.prompt` calls.
+
 ## Test Strategy
 
 Probes attach at the seam the user or BB core actually consumes. No claim is closed by a paragraph. Runnable probes stay red until the code exists.
@@ -365,6 +395,16 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-76 | bash | user-confirmed open of listed Task child: `providerThreadId` equals child id; `session.create` not called | id match; create 0 | bb + OpenCode | derived: honest adopt |
 | ISC-76.1 | bash | open a still-running Task child is refused; after that child is idle, open binds `providerThreadId` to the child id | refused then id match | bb + OpenCode | derived: no mid-stream steal |
 | ISC-77 | bun-test | prompt-builder fixture with text `@general look around`: parts contain that text; `session.create` 0; no `session.subagent` symbol | text present; create 0 | bun-test | derived: @mention is text |
+| ISC-80 | bash | `bb opencode commands` lists `/init` (or another `GET /command` name) | name present | bb + OpenCode | literal |
+| ISC-81 | bun-test | `/init repo` on `turn/start` calls `session.command` once and `session.prompt` 0 | command 1; prompt 0 | bun-test | literal |
+| ISC-82 | bun-test | `/not-a-command` calls `session.prompt` with that text; command calls 0 | text present; command 0 | bun-test | derived: do not swallow |
+| ISC-83 | bun-test | `/init` plus a localFile does not call `session.command` | command 0 | bun-test | derived: attachments honest |
+| ISC-84 | bun-test | `skills/configure` returns `{ok:true}` | result ok | bun-test | literal |
+| ISC-85 | bun-test | after configure, next prompt parts include the skill name | name in parts | bun-test | literal |
+| ISC-86 | bun-test | empty roots → `formatSkillAppendix` is null | null | bun-test | derived: clear catalog |
+| ISC-87 | bash | grep shipped src for writes to `opencode.json` skill/command config | 0 matches | grep | derived: no config mutate |
+| ISC-88 | bun-test | Command chip uses the same OpenCode visibility helper as the Agent chip | helper present | bun-test | derived: no chrome leak |
+| ISC-89 | bun-test | command chip onChange only calls `insertCommandToken`; no `session.command` symbol | grep | bun-test | derived: intent until send |
 
 ## Decisions
 
@@ -398,6 +438,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-22 (idle-spawn / open seam): User-confirmed open is plugin RPC `openImported` that writes a one-shot intent then `bb.sdk.threads.spawn` with the user's real first message. `experimental_deriveProviderOptions` attaches `adoptSessionId` only when that intent is present. Unrelated `thread/start` in the same project does not see it (ISC-60). `thread/start` consumes the pending adopt and must not `session.create`. Confirm still invents no BB thread.
 - 2026-08-22 (multi-cwd spike): One detached `opencode serve` 1.18.21 **can** create a session whose directory D ≠ server cwd E. `POST /session?directory=D` recorded `directory=/private/tmp/bb-oc-spike-D` while the server was spawned in `/tmp/bb-oc-spike-E`. Body `{directory}` is ignored. GitHub #23607 is fixed on this window. ISC-68 unblocked. Do not spawn per-directory servers.
 - 2026-08-22 (permission map spike): Tagged result: missing `id`/`sessionID`/`permission` → `unknown`; recognized permission + mappable subject → `ok`; otherwise `resolved` only after a mapped subject is built. Map: `bash`/`shell` → approval subject `command` (command = `metadata.command` or `patterns[0]`); `edit`/`write`/`patch`/`multiedit` → `file_change`; everything else including `task`/`skill`/`webfetch`/`doom_loop`/`external_directory` → `tool_use` with presentation. `unknown` and `opencode.json` deny both beat BB mode `full`. Handshake `approvalEnforcedBy: "provider"` so the runtime does not auto-approve an `unknown` under `full`.
+- 2026-08-22 (commands/skills): BB has no plugin `/` surface (`/` is skills + plan/goal; `host.list_commands` only knows `acp-opencode`). V1 send-path: listed `/name` → `POST /session/:id/command`. Unknown slash stays a prompt. BB skills arrive via `skills/configure` as a prompt appendix. Command chip inserts `/name `; it does not execute. Do not write `opencode.json`. Do not declare `composerActions: ["plan"]`.
 - 2026-08-22 (permission dialect, pin wins): `@opencode-ai/sdk@1.18.21` emits `permission.updated` (`Permission`: `{id, type, pattern, sessionID, messageID, callID, metadata}`) and replies on `POST /session/{id}/permissions/{permissionID}` `{response}`. The earlier spike's `permission.asked` + `POST /permission/{requestID}/reply` is a later dialect. V1 accepts both event names and both reply URLs (1.18 first, 404 → next). Tombstone: treating only `permission.asked` as the live event on this pin.
 - 2026-08-22 (version pin, ISC-52): Pin `@opencode-ai/sdk@1.18.21` and accept `opencode serve` versions `>=1.18.0 <1.19.0`. Attached server outside that window fails and names both versions. Stable HTTP only. Forbidden: `session.switchAgent`, `POST /api/session/:id/agent`, `session.subagent`, `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`, `@opencode-ai/sdk/v2`.
 - 2026-08-22 (agent hydrate fog): 1.18.21 `UserMessage` requires `agent`. ISC-29.3 uses last user `info.agent`. Absent / hidden / system / subagent → default primary. Unknown id → visible error, send refused.
@@ -466,7 +507,8 @@ tests/*.test.ts
 - [x] ISA review round 3 (agent-switch delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
-- [ ] Hard blockers / remaining live: ISC-33/34 (generic card needs a live OpenCode `permission.asked`; not safe to restart the shared serve while `thr_jwmit48asg` is active), ISC-63 (`opencode.json` deny under `full` — same shared-serve boot config).
+- [ ] Hard blockers / remaining live: ISC-33/34 (generic card; 1.18 dialect fix landed, re-smoke required), ISC-63 (`opencode.json` deny under `full`).
+- [ ] Polish still open (not acceptable to ship as rough): live mid-turn streaming, every tool row including Task, title immediacy, permission cards, Stop never leaving a stuck running tool.
 
 ## Live smoke (operator thread, 2026-08-22 evening)
 

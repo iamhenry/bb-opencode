@@ -67,6 +67,25 @@ export const hostContract = defineRpcContract({
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
+  listCommands: {
+    input: z
+      .object({
+        directory: z.string().min(1).optional(),
+      })
+      .strict(),
+    output: z
+      .object({
+        commands: z.array(
+          z
+            .object({
+              name: z.string(),
+              description: z.string().nullable(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
   listAgents: {
     input: z.object({}).strict(),
     output: z
@@ -190,5 +209,24 @@ export const rpcContract = defineRpcContract({
   redo: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  listCommands: {
+    input: z
+      .object({
+        directory: z.string().min(1).optional(),
+      })
+      .strict(),
+    output: z
+      .object({
+        commands: z.array(
+          z
+            .object({
+              name: z.string(),
+              description: z.string().nullable(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
   },
 });

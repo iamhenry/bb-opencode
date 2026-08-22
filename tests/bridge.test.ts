@@ -525,6 +525,99 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
+  it("routes a listed /command through session.command (ISC-81)", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "/init repo", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.command).toEqual([
+      {
+        id: "ses_1",
+        body: { command: "init", arguments: "repo", agent: "build" },
+      },
+    ]);
+  });
+
+  it("does not route a slash send that also has an attachment (ISC-83)", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [
+          { type: "text", text: "/init", mentions: [] },
+          { type: "localFile", path: "/tmp/note.md", name: "note.md" },
+        ],
+      }),
+    });
+    await flush();
+    expect(fake.calls.command).toEqual([]);
+    expect(fake.calls.prompt).toBe(1);
+  });
+
+  it("forwards an unknown slash as a prompt (ISC-82)", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "/not-a-command", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.command).toEqual([]);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      parts: [{ type: "text", text: "/not-a-command" }],
+    });
+  });
+
+  it("appends BB skills after skills/configure (ISC-84, ISC-85)", async () => {
+    const fake = installFake();
+    send({
+      id: "skills",
+      method: "skills/configure",
+      params: {
+        roots: [
+          {
+            id: "plugin",
+            path: "/tmp/bb-skills",
+            skills: [{ name: "bb-cli", description: "Use bb" }],
+          },
+        ],
+      },
+    });
+    await flush();
+    expect(messages.find((message) => message.id === "skills")).toMatchObject({
+      result: { ok: true },
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "hello", mentions: [] }],
+      }),
+    });
+    await flush();
+    const texts = (fake.lastPrompt?.body.parts as Array<{ text?: string }>) ?? [];
+    expect(texts.some((part) => part.text?.includes("bb-cli: Use bb"))).toBe(
+      true,
+    );
+  });
+
   it("forwards @subagent text unchanged (ISC-77)", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });

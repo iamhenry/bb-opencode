@@ -2,6 +2,7 @@ import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
 import {
   handleListAgents,
+  handleListCommands,
   handleListSessions,
   handleLogs,
   handleProbe,
@@ -55,6 +56,12 @@ export default experimental_defineHostEntry({
     },
     async listAgents(_input, context) {
       return handleListAgents(context.experimental_paths.dataDir);
+    },
+    async listCommands(input, context) {
+      return handleListCommands(
+        context.experimental_paths.dataDir,
+        input.directory,
+      );
     },
   },
 });

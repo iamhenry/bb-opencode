@@ -44,6 +44,16 @@ export interface OpenCodeClient {
   unrevert(id: string): Promise<unknown>;
   agents(): Promise<OpenCodeAgentInfo[]>;
   providers(): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
+  listCommands(directory?: string): Promise<Array<{ name: string; description?: string }>>;
+  sessionCommand(
+    id: string,
+    body: {
+      command: string;
+      arguments?: string;
+      agent?: string;
+      model?: string;
+    },
+  ): Promise<unknown>;
   replyPermission(args: {
     requestID: string;
     sessionID: string;
@@ -148,6 +158,28 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
     async providers() {
       const result = unwrap<unknown>(await sdk.provider.list());
       return { providers: listAuthenticatedProviders(result) };
+    },
+    async listCommands(directory) {
+      const query = directory
+        ? `?directory=${encodeURIComponent(directory)}`
+        : "";
+      const response = await fetch(`${url}/command${query}`);
+      if (!response.ok) {
+        throw new Error(`command.list failed: ${response.status}`);
+      }
+      const body = (await response.json()) as unknown;
+      return Array.isArray(body) ? (body as Array<{ name: string; description?: string }>) : [];
+    },
+    async sessionCommand(id, body) {
+      const response = await fetch(`${url}/session/${id}/command`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(`session.command failed: ${response.status} ${await response.text()}`);
+      }
+      return response.json();
     },
     async replyPermission({ requestID, sessionID, reply }) {
       const legacy = await fetch(

@@ -48,6 +48,33 @@ describe("shipped import rules", () => {
     expect(read("src/prompt-builder.ts")).not.toContain("switchAgent");
   });
 
+  it("does not write opencode.json to inject skills (ISC-87)", () => {
+    for (const file of [
+      "src/bridge.ts",
+      "src/client.ts",
+      "src/skill-appendix.ts",
+      "server.ts",
+      "host.ts",
+    ]) {
+      const text = read(file);
+      expect(text).not.toMatch(/writeFile.*opencode\.json/);
+      expect(text).not.toContain("skills.paths");
+    }
+  });
+
+  it("command chip uses OpenCode visibility (ISC-88)", () => {
+    const picker = read("src/app/composer-command.tsx");
+    expect(picker).toContain("shouldRenderOpencodeChrome");
+    expect(picker).toContain("newThreadShowsOpencodeAgent");
+  });
+
+  it("does not issue session.command from the command chip (ISC-89)", () => {
+    const picker = read("src/app/composer-command.tsx");
+    expect(picker).toContain("insertCommandToken");
+    expect(picker).not.toContain("session.command");
+    expect(picker).not.toContain("sessionCommand");
+  });
+
   it("does not issue RPC from picker onChange (ISC-29.2)", () => {
     const picker = read("src/app/composer-agent.tsx");
     expect(picker).toMatch(/onChange=\{\(event\) => \{\s*setAgent/);

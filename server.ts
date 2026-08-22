@@ -296,6 +296,11 @@ export default async function plugin(bb: BbPluginApi) {
         throw error;
       }
     },
+    async listCommands({ directory }) {
+      const hostId = await firstHostId(bb);
+      if (!hostId) return { commands: [] };
+      return host.call("listCommands", { directory }, { hostId });
+    },
     async undo({ threadId }) {
       return revertThread(bb, host, threadId, "revert");
     },
@@ -342,6 +347,11 @@ export default async function plugin(bb: BbPluginApi) {
         summary: "Print recent plugin / OpenCode event tally lines",
         usage: "bb opencode logs",
       },
+      {
+        name: "commands",
+        summary: "List OpenCode slash commands for a directory",
+        usage: "bb opencode commands [directory]",
+      },
     ],
     async run(argv) {
       const hostId = await firstHostId(bb);
@@ -380,6 +390,25 @@ export default async function plugin(bb: BbPluginApi) {
       if (command === "logs") {
         const logs = await host.call("logs", { limit: 80 }, { hostId });
         return { exitCode: 0, stdout: `${logs.lines.join("\n")}\n` };
+      }
+      if (command === "commands") {
+        const directory = argv[1];
+        const listed = await host.call(
+          "listCommands",
+          directory ? { directory } : {},
+          { hostId },
+        );
+        return {
+          exitCode: 0,
+          stdout:
+            listed.commands
+              .map((item) =>
+                item.description
+                  ? `/${item.name}  ${item.description}`
+                  : `/${item.name}`,
+              )
+              .join("\n") + "\n",
+        };
       }
       return { exitCode: 1, stderr: `Unknown command ${command}\n` };
     },

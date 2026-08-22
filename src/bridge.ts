@@ -9,6 +9,7 @@ import {
   experimental_defineProviderBridge,
   initializeParamsSchema,
   modelListParamsSchema,
+  skillsConfigureParamsSchema,
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
@@ -36,6 +37,13 @@ import {
 } from "./permissions/map.js";
 import { attachOrSpawn } from "./process.js";
 import { buildPrompt } from "./prompt-builder.js";
+import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
+import {
+  firstTextPart,
+  hasNonTextParts,
+  matchListedCommand,
+  parseLeadingSlash,
+} from "./slash-command.js";
 import { formatModelDisplayName } from "./model-label.js";
 import {
   resolvePermissionAttach,
@@ -77,6 +85,7 @@ interface BoundSession {
 const sessions = new Map<string, BoundSession>();
 const sessionToThread = new Map<string, string>();
 const liveTurns = new Map<string, LiveTurn>();
+let configuredSkillRoots: SkillConfigureRoot[] = [];
 const pendingPermission = new Map<
   string,
   { requestId: string; sessionId: string; threadId: string }
@@ -106,6 +115,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   sessionToThread.clear();
   liveTurns.clear();
   pendingPermission.clear();
+  configuredSkillRoots = [];
   lastTitles.clear();
   if (titleTimer) {
     clearInterval(titleTimer);
@@ -806,6 +816,21 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     respondError(id, -32601, "Method not found: turn/steer");
   },
 
+  [BRIDGE_REQUEST_METHODS.skillsConfigure]: (id, params) => {
+    const parsed = skillsConfigureParamsSchema.safeParse(params);
+    if (!parsed.success) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+        "Invalid params for skills/configure",
+        parsed.error.issues,
+      );
+      return;
+    }
+    configuredSkillRoots = parsed.data.roots as SkillConfigureRoot[];
+    respondResult(id, { ok: true });
+  },
+
   [BRIDGE_REQUEST_METHODS.threadStop]: (id, params) => {
     const parsed = threadStopParamsSchema.safeParse(params);
     if (!parsed.success) {
@@ -860,6 +885,43 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     })();
   },
 };
+
+async function settleIssuedTurn(
+  threadId: string,
+  sessionId: string,
+  active: OpenCodeClient,
+): Promise<void> {
+  const liveAfter = liveTurns.get(threadId);
+  if (!liveAfter || liveAfter.parentBoundaryEmitted) return;
+  const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+  const lastAssistant = [...messages]
+    .reverse()
+    .find((message) => message.info.role === "assistant");
+  const text =
+    lastAssistant?.parts
+      .filter((part) => part.type === "text" && part.text)
+      .map((part) => part.text ?? "")
+      .join("") ?? "";
+  if (text) {
+    emitDeltas(threadId, [
+      {
+        kind: "item.textDelta",
+        key: { channel: "final" },
+        channel: "agentMessage",
+        text,
+      },
+      {
+        kind: "item.textClose",
+        key: { channel: "final" },
+        channel: "agentMessage",
+        text,
+      },
+    ]);
+  }
+  liveAfter.parentBoundaryEmitted = true;
+  liveTurns.delete(threadId);
+  emitDeltas(threadId, [{ kind: "turn.boundary", status: "completed" }]);
+}
 
 async function runPrompt(args: {
   threadId: string;
@@ -929,40 +991,33 @@ async function runPrompt(args: {
   deltas.push({ kind: "turn.open" });
   emitDeltas(args.threadId, deltas);
   try {
-    await active.prompt(args.sessionId, { ...built.prompt });
-    const liveAfter = liveTurns.get(args.threadId);
-    if (liveAfter && !liveAfter.parentBoundaryEmitted) {
-      const messages = (await active.sessionMessages(
-        args.sessionId,
-      )) as HydrateMessage[];
-      const lastAssistant = [...messages]
-        .reverse()
-        .find((message) => message.info.role === "assistant");
-      const text =
-        lastAssistant?.parts
-          .filter((part) => part.type === "text" && part.text)
-          .map((part) => part.text ?? "")
-          .join("") ?? "";
-      if (text) {
-        emitDeltas(args.threadId, [
-          {
-            kind: "item.textDelta",
-            key: { channel: "final" },
-            channel: "agentMessage",
-            text,
-          },
-          {
-            kind: "item.textClose",
-            key: { channel: "final" },
-            channel: "agentMessage",
-            text,
-          },
-        ]);
+    const slash = parseLeadingSlash(firstTextPart(args.input));
+    if (slash && !hasNonTextParts(args.input)) {
+      const cwd = sessions.get(args.threadId)?.cwd;
+      const listed = await active.listCommands(cwd);
+      const matched = matchListedCommand(slash.name, listed);
+      if (matched) {
+        await active.sessionCommand(args.sessionId, {
+          command: matched.name,
+          arguments: slash.arguments,
+          agent: built.prompt.agent,
+        });
+        await settleIssuedTurn(args.threadId, args.sessionId, active);
+        return;
       }
-      liveAfter.parentBoundaryEmitted = true;
-      liveTurns.delete(args.threadId);
-      emitDeltas(args.threadId, [{ kind: "turn.boundary", status: "completed" }]);
     }
+    const appendix = formatSkillAppendix(configuredSkillRoots);
+    const prompt = appendix
+      ? {
+          ...built.prompt,
+          parts: [
+            ...built.prompt.parts,
+            { type: "text" as const, text: appendix },
+          ],
+        }
+      : built.prompt;
+    await active.prompt(args.sessionId, { ...prompt });
+    await settleIssuedTurn(args.threadId, args.sessionId, active);
   } catch (error) {
     live.parentBoundaryEmitted = true;
     liveTurns.delete(args.threadId);

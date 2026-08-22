@@ -9,9 +9,11 @@ export interface FakeOpenCode {
     revert: number;
     unrevert: number;
     reply: Array<{ requestID: string; reply: string }>;
+    command: Array<{ id: string; body: Record<string, unknown> }>;
     get: number;
     messages: number;
   };
+  commands: Array<{ name: string; description?: string }>;
   sessions: Map<string, OpenCodeSession>;
   messages: Map<
     string,
@@ -38,9 +40,11 @@ export function createFakeOpenCode(): FakeOpenCode {
       revert: 0,
       unrevert: 0,
       reply: [],
+      command: [],
       get: 0,
       messages: 0,
     },
+    commands: [{ name: "init", description: "guided AGENTS.md setup" }],
     sessions: new Map(),
     messages: new Map(),
     agents: [
@@ -121,6 +125,13 @@ export function createFakeOpenCode(): FakeOpenCode {
             },
           ],
         };
+      },
+      async listCommands() {
+        return fake.commands;
+      },
+      async sessionCommand(id, body) {
+        fake.calls.command.push({ id, body });
+        return {};
       },
       async replyPermission({ requestID, reply }) {
         fake.calls.reply.push({ requestID, reply });
