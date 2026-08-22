@@ -12,7 +12,11 @@
     "name": "OpenCode",
     "description": "Run BB threads on a detached OpenCode server.",
     "branding": {
-      "icon": "./assets/icon.svg"
+      "icon": "ArrowTurnBackward",
+      "logo": {
+        "light": "./assets/icon.svg",
+        "dark": "./assets/icon.svg"
+      }
     },
     "server": "./server.ts",
     "app": "./app.tsx",
