@@ -5,6 +5,7 @@ export const BRIDGE_REQUEST_METHODS = {
   modelList: "model/list",
   threadStart: "thread/start",
   threadResume: "thread/resume",
+  threadFork: "thread/fork",
   threadStop: "thread/stop",
   turnStart: "turn/start",
   turnSteer: "turn/steer",
@@ -45,6 +46,15 @@ export const threadResumeParamsSchema = z
     threadId: z.string(),
     cwd: z.string(),
     providerThreadId: z.string(),
+    options: z.any().optional(),
+  })
+  .passthrough();
+export const threadForkParamsSchema = z
+  .object({
+    threadId: z.string(),
+    cwd: z.string(),
+    sourceProviderThreadId: z.string(),
+    sourceProviderCheckpointId: z.string().optional(),
     options: z.any().optional(),
   })
   .passthrough();

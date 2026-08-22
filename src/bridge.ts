@@ -10,6 +10,7 @@ import {
   initializeParamsSchema,
   modelListParamsSchema,
   skillsConfigureParamsSchema,
+  threadForkParamsSchema,
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
@@ -22,6 +23,7 @@ import {
   assistantsAfterLastUser,
   hydrateDeltas,
   lastUserAgent,
+  lastUserMessageId,
   type HydrateMessage,
 } from "./hydrate.js";
 import {
@@ -689,7 +691,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
       capabilities: {
         sessionRestore: true,
-        fork: "none",
+        fork: "checkpoint",
         approvalEnforcedBy: "provider",
         steerMode: "queue",
         grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
@@ -852,6 +854,44 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     })();
   },
 
+  [BRIDGE_REQUEST_METHODS.threadFork]: (id, params) => {
+    const parsed = threadForkParamsSchema.safeParse(params);
+    if (!parsed.success) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+        "Invalid params for thread/fork",
+        parsed.error.issues,
+      );
+      return;
+    }
+    void (async () => {
+      try {
+        const active = await ensureClient();
+        const forked = await active.forkSession(
+          parsed.data.sourceProviderThreadId,
+          parsed.data.sourceProviderCheckpointId
+            ? { messageID: parsed.data.sourceProviderCheckpointId }
+            : {},
+        );
+        bindSession(parsed.data.threadId, {
+          threadId: parsed.data.threadId,
+          sessionId: forked.id,
+          cwd: parsed.data.cwd,
+          permissionMode: permissionModeOf(parsed.data.options),
+        });
+        respondResult(id, { providerThreadId: forked.id });
+        await replayHydrate(parsed.data.threadId, forked.id, active);
+      } catch (error) {
+        respondError(
+          id,
+          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  },
+
   [BRIDGE_REQUEST_METHODS.turnStart]: (id, params) => {
     const parsed = turnStartParamsSchema.safeParse(params);
     if (!parsed.success) {
@@ -1004,7 +1044,14 @@ async function settleIssuedTurn(
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);
-  emitDeltas(threadId, [{ kind: "turn.boundary", status: "completed" }]);
+  const checkpoint = lastUserMessageId(messages);
+  emitDeltas(threadId, [
+    {
+      kind: "turn.boundary",
+      status: "completed",
+      ...(checkpoint ? { providerCheckpointId: checkpoint } : {}),
+    },
+  ]);
 }
 
 async function runPrompt(args: {

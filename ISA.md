@@ -32,7 +32,7 @@ V1 is OpenCode-in-BB, not OpenChamber-in-BB and not a BB core rewrite.
 - No migration of existing `acp-opencode` threads onto `opencode`.
 - No putting this provider into BB core. V1 is a community plugin that can later be vendored unchanged.
 - No OpenChamber product chrome: goals, multi-run, fusion, walkthrough, preview, relay, nav panel, second transcript, parent/child nav, read-only subtask side panel.
-- No BB `fork` capability. OpenCode revert is undo, not fork.
+- OpenCode `session.revert` is in-place undo ("Revert from here"). OpenCode `session.fork({ messageID })` is a new session and maps to BB `fork: "checkpoint"` — not the same verb.
 - No auto-import of OpenCode sessions into the BB sidebar.
 - No custom permission card, no `pendingInteraction` / `bb.ui.requestInput` from the bridge, no `messageDirective` for bash.
 - No `bb opencode restart`. Status, version, and logs are enough.
@@ -124,7 +124,7 @@ _Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
 - Three entries: `server.ts` declares; `host.ts` owns the SDK, the detached process, and `thread/delta`; `app.tsx` is slots and RPC only.
 - `@opencode-ai/sdk` only in the host client module. Conformance `@bb/provider-bridge-protocol/conformance` is test-only / devDependency.
 - One detached OpenCode per host. Attach-first via lock/port in plugin `dataDir`. Spawn detached on miss. No in-process child. No module-singleton client.
-- Capabilities: `fork: "none"`, `sessionRestore: true`, `supportsThreadRename: true` only if title writes work. Permission modes and reasoning only if honestly mapped. Runtime may narrow, never widen.
+- Capabilities: `fork: "checkpoint"`, `sessionRestore: true`, `supportsThreadRename: true` only if title writes work. Permission modes and reasoning only if honestly mapped. Runtime may narrow, never widen.
 - Permissions use the provider-bridge grammar and BB's generic card. Honor `opencode.json`. BB mode is the ceiling. A fail-closed `unknown` result never approves, including under BB mode `full`.
 - Manual import only. Refuse running sessions. Dedup on `providerId === "opencode"` + `providerThreadId`. Directory comes from the server-confirmed OpenCode session path. No managed worktree invented. Personal project if the path is outside every project.
 - `turn/steer` refuses with JSON-RPC `-32601` so BB queues. A queued follow-up captures its OpenCode agent at enqueue, not at flush.
@@ -169,7 +169,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-3: Anti: shipped `server` / `host` / `app` entrypoints contain no import from `@bb/*`.
 - [x] ISC-4: Anti: `@opencode-ai/sdk` is imported only from the single host client module (not from `server.ts` or `app.tsx`).
 - [x] ISC-5: `@bb/provider-bridge-protocol/conformance` is a devDependency and is not imported by shipped `server` / `host` / `app`.
-- [x] ISC-6: Declared capabilities include `fork: "none"` and `sessionRestore: true`.
+- [x] ISC-6: Declared capabilities include `fork: "checkpoint"` and `sessionRestore: true`. Handshake matches. `thread/fork` calls OpenCode `session.fork` and does not `session.create`.
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
@@ -314,7 +314,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-3 | bash | grep shipped ts/tsx for `from ['"]@bb/`, `require('@bb/`, and `export * from ['"]@bb/` | 0 matches | grep | derived: public plugin contract |
 | ISC-4 | bash | `grep -R "@opencode-ai/sdk" server.ts app.tsx` empty; exactly one host module imports it | 0 in server/app; 1 client | grep | derived: SDK stays on host |
 | ISC-5 | bash | package.json has conformance only under devDependencies; grep shipped entries for the package name is empty | 0 shipped imports | grep | derived: test-only conformance |
-| ISC-6 | bash | registered capabilities JSON includes `fork: "none"` and `sessionRestore: true` | both present | bb / unit | derived: honest capabilities |
+| ISC-6 | bun-test | registered + handshake `fork: "checkpoint"`; `thread/fork` calls `session.fork` | both present | bun-test | derived: honest capabilities |
 | ISC-7 | bash | a fixture `acp-opencode` thread id is unchanged after plugin install | providerId unchanged | bb | derived: no ACP migration |
 | ISC-8 | bun-test | both ISC-8.1 and ISC-8.2 pass | both green | bun-test | derived: no chrome leak |
 | ISC-8.1 | bun-test | composer agent picker returns null when RPC says `claude-code` / `acp-opencode`; renders when `opencode` | assertions pass | bun-test | derived: no chrome leak |
@@ -417,6 +417,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-21: Steal OpenChamber boundaries, not its UI: one SDK door, tagged permission results, actions-only mutation, live truth from events, fail closed.
 - 2026-08-21: Three-entry plugin. One detached OpenCode per host. Attach-first. No in-process child. No module-singleton client.
 - 2026-08-21: `fork: "none"`. Revert is undo chrome. Capabilities only narrow.
+- 2026-08-22: Restated. OpenCode has a real `POST /session/:id/fork { messageID }`. V1 now advertises `fork: "checkpoint"`, stamps `providerCheckpointId` = last user OpenCode message id on `turn.boundary`, and handles `thread/fork`. Revert stays in-place and is not a fork.
 - 2026-08-21: Core OpenCode is in V1: start/resume, models, agents, live tools/bash, stop, revert/unrevert, permissions on the generic card, attachments mapped or rejected, `turn/steer` refuse.
 - 2026-08-21: Permissions are core, not a second knob. BB modes are the ceiling. `full` ≈ auto-approve. Fail-closed `{ok|resolved|unknown}`.
 - 2026-08-21: Manual import only. Never auto-import. Never "smallest prompt then stop."

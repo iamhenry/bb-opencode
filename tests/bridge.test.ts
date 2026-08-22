@@ -122,6 +122,43 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
+  it("forks at a message checkpoint without session.create", async () => {
+    const fake = installFake();
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "hi" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams(),
+    });
+    await flush();
+    const created = fake.calls.create;
+    send({
+      id: "fork",
+      method: "thread/fork",
+      params: sessionParams({
+        threadId: "thr_fork",
+        sourceProviderThreadId: "ses_1",
+        sourceProviderCheckpointId: "u1",
+      }),
+    });
+    await flush();
+    expect(fake.calls.create).toBe(created);
+    expect(fake.calls.fork).toEqual([
+      { id: "ses_1", body: { messageID: "u1" } },
+    ]);
+    expect(messages.some((message) => message.id === "fork")).toBe(true);
+    expect(
+      messages.find((message) => message.id === "fork"),
+    ).toMatchObject({
+      result: { providerThreadId: "ses_fork_1" },
+    });
+  });
+
   it("issues session.prompt once per turn/start (ISC-14, ISC-29.1)", async () => {
     const fake = installFake();
     send({

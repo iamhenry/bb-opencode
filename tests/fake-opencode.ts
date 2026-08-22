@@ -12,6 +12,7 @@ export interface FakeOpenCode {
     command: Array<{ id: string; body: Record<string, unknown> }>;
     get: number;
     messages: number;
+    fork: Array<{ id: string; body: Record<string, unknown> }>;
   };
   commands: Array<{ name: string; description?: string }>;
   sessions: Map<string, OpenCodeSession>;
@@ -43,6 +44,7 @@ export function createFakeOpenCode(): FakeOpenCode {
       command: [],
       get: 0,
       messages: 0,
+      fork: [],
     },
     commands: [{ name: "init", description: "guided AGENTS.md setup" }],
     sessions: new Map(),
@@ -112,6 +114,19 @@ export function createFakeOpenCode(): FakeOpenCode {
       async unrevert() {
         fake.calls.unrevert += 1;
         return {};
+      },
+      async forkSession(id, body) {
+        fake.calls.fork.push({ id, body: body ?? {} });
+        const forked = {
+          id: `ses_fork_${fake.calls.fork.length}`,
+          directory: fake.sessions.get(id)?.directory,
+          title: fake.sessions.get(id)?.title,
+        };
+        fake.sessions.set(forked.id, forked);
+        fake.messages.set(forked.id, [
+          ...(fake.messages.get(id) ?? []),
+        ]);
+        return forked;
       },
       async agents() {
         return fake.agents;

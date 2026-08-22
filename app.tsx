@@ -1,7 +1,7 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import { ComposerAgentPicker } from "./src/app/composer-agent.js";
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
-import { runMessageRedo, runMessageUndo } from "./src/app/message-revert.js";
+import { runMessageUndo } from "./src/app/message-revert.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 
 export default definePluginApp((app) => {
@@ -14,21 +14,15 @@ export default definePluginApp((app) => {
     ],
   });
   app.slots.messageAction({
-    id: "undo",
-    title: "Undo",
-    icon: "Undo2",
+    id: "revert",
+    title: "Revert from here",
+    icon: "ArrowTurnBackward",
     run: ({ threadId, message }) =>
       runMessageUndo({
         threadId,
         role: message.role,
         text: message.text,
       }),
-  });
-  app.slots.messageAction({
-    id: "redo",
-    title: "Redo",
-    icon: "Redo2",
-    run: ({ threadId }) => runMessageRedo({ threadId }),
   });
   app.slots.settingsSection({
     id: "opencode",

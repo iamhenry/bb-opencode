@@ -3,6 +3,7 @@ import {
   assistantsAfterLastUser,
   hydrateDeltas,
   lastUserAgent,
+  lastUserMessageId,
 } from "../src/hydrate.js";
 
 describe("hydrate", () => {
@@ -41,6 +42,13 @@ describe("hydrate", () => {
         },
       ]).map((message) => message.parts[0]?.tool ?? message.parts[0]?.type),
     ).toEqual(["read", "task", "text"]);
+    expect(
+      lastUserMessageId([
+        { info: { id: "u1", role: "user" }, parts: [] },
+        { info: { id: "a1", role: "assistant" }, parts: [] },
+        { info: { id: "u2", role: "user" }, parts: [] },
+      ]),
+    ).toBe("u2");
     expect(lastUserAgent([
       { info: { role: "user", agent: "plan" }, parts: [] },
       { info: { role: "assistant" }, parts: [] },

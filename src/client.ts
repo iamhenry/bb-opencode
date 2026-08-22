@@ -42,6 +42,10 @@ export interface OpenCodeClient {
   abort(id: string): Promise<void>;
   revert(id: string, body: Record<string, unknown>): Promise<unknown>;
   unrevert(id: string): Promise<unknown>;
+  forkSession(
+    id: string,
+    body?: { messageID?: string },
+  ): Promise<OpenCodeSession>;
   agents(): Promise<OpenCodeAgentInfo[]>;
   providers(): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
   listCommands(directory?: string): Promise<Array<{ name: string; description?: string }>>;
@@ -157,6 +161,13 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
     async unrevert(id) {
       const result = await sdk.session.unrevert({ path: { id } });
       return unwrap(result);
+    },
+    async forkSession(id, body) {
+      const result = await sdk.session.fork({
+        path: { id },
+        body: body ?? {},
+      });
+      return unwrap<OpenCodeSession>(result);
     },
     async agents() {
       const result = await sdk.app.agents();

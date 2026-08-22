@@ -52,7 +52,7 @@ export default async function plugin(bb: BbPluginApi) {
       experimental_providerInstallation: false,
       supportsServiceTier: false,
       supportsNativeUserQuestion: false,
-      fork: "none",
+      fork: "checkpoint",
       supportsManualCompaction: false,
       supportsThreadArchive: false,
       supportsThreadRename: false,

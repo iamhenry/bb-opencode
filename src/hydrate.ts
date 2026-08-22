@@ -27,6 +27,18 @@ export interface HydrateMessage {
   }>;
 }
 
+export function lastUserMessageId(
+  messages: readonly HydrateMessage[],
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const id = messages[i]?.info.id;
+    if (messages[i]?.info.role === "user" && typeof id === "string" && id) {
+      return id;
+    }
+  }
+  return undefined;
+}
+
 export function lastUserAgent(messages: readonly HydrateMessage[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
