@@ -1,0 +1,420 @@
+---
+task: "First-class OpenCode community plugin for BB"
+slug: 20260822-163200_bb-plugin-opencode-v1
+project: bb-plugin-opencode
+phase: scoping
+progress: 0/88
+started: 2026-08-22T16:32:00Z
+updated: 2026-08-22T20:40:00Z
+principal_stated_goal: "Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
+principal_stated_goal_source: conversation
+principal_stated_goal_signal: 2
+principal_stated_goal_locked: 2026-08-22T16:32:00Z
+context_sufficient: true
+interview_invoked: false
+---
+
+# ISA — bb-plugin-opencode V1
+
+## Problem
+
+BB already treats Claude, Codex, and Pi as first-class agents. OpenCode today arrives as `acp-opencode` through the generic ACP guest path. ACP is a lowest-common-denominator translator: undo/redo, custom OpenCode agents, live bash, and OpenCode's own permission memory never become real BB surfaces. Users who already live in OpenCode therefore meet a thinner, misnamed guest instead of the agent they already know.
+
+## Vision
+
+OpenCode is a normal BB agent. The picker says **OpenCode**, not "ACP · opencode". The user chooses a model and an OpenCode agent, can change that agent on the next send, and watches thinking, tools, and live bash land in the BB timeline. `@general` / Task starts a child OpenCode session; the parent shows a Task tool item; the user opens that child only if they choose to, and only after it is idle. Stop, undo, redo, and attachments behave. Permissions use BB's existing card; once/always still write back to OpenCode; `opencode.json` still counts; BB's permission mode is only a ceiling. Resume is the same OpenCode session. Settings and `bb opencode status|version|logs` say when the binary, version, or auth is wrong. Import is a button the user presses — never a sidebar that fills itself. One OpenCode server runs on the machine. Euphoric surprise: it feels like Claude-in-BB, except the agent underneath is OpenCode.
+
+## Out of Scope
+
+V1 is OpenCode-in-BB, not OpenChamber-in-BB and not a BB core rewrite.
+
+- No ACP as the long-term OpenCode path. ACP stays as the fallback for other agents and for existing `acp-opencode` threads.
+- No migration of existing `acp-opencode` threads onto `opencode`.
+- No putting this provider into BB core. V1 is a community plugin that can later be vendored unchanged.
+- No OpenChamber product chrome: goals, multi-run, fusion, walkthrough, preview, relay, nav panel, second transcript, parent/child nav, read-only subtask side panel.
+- No BB `fork` capability. OpenCode revert is undo, not fork.
+- No auto-import of OpenCode sessions into the BB sidebar.
+- No custom permission card, no `pendingInteraction` / `bb.ui.requestInput` from the bridge, no `messageDirective` for bash.
+- No `bb opencode restart`. Status, version, and logs are enough.
+- No extra "auto-accept policy" setting beyond BB's existing permission modes plus OpenCode's own always/`opencode.json`.
+- No browser SSE to OpenCode. No `@opencode-ai/sdk` in `app.tsx` or the BB server process.
+- No private `@bb/*` in shipped `server` / `host` / `app`.
+- No OpenCode V2 / beta APIs (`session.switchAgent`, `POST /api/session/:id/agent`, `session.subagent`). V1 pins the current stable `@opencode-ai/sdk` and `opencode serve` HTTP API.
+- No experimental background Task (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`). Foreground Task only.
+- No wiring BB Voyager / Atlas / other BB children as OpenCode agents. An OpenCode subagent exists only if `app.agents()` lists it.
+- No mid-stream agent hot-swap. A picker change does not interrupt or rewrite the in-flight drain.
+- No `prompt({ noReply: true })` used to persist a picker click.
+- No durable BB `pendingAgent` cookie. A click that is never sent is lost on resume, which is honest.
+- No picker `onChange` host RPC whose only job is to remember the click.
+- No subagents (`@mention`, Task tool, `mode: "subagent"`) in the composer agent picker.
+- No auto-created BB thread when Task spawns a child. No custom Task card.
+
+## Language
+
+**OpenCode provider.** The first-class BB provider this plugin registers. Id `opencode`, display name `OpenCode`.
+_Avoid:_ `acp-opencode`, "ACP · opencode", "the ACP guest".
+Related: ACP remains a different provider; the two never merge.
+
+**ACP OpenCode.** Today's generic path: provider id `acp-opencode`, running `opencode acp`. Existing threads stay here forever.
+_Avoid:_ calling this "OpenCode" once the plugin exists.
+
+**Adopt.** Bind a BB thread to an OpenCode session that already exists. History is not copied into a new OpenCode session.
+_Avoid:_ import-as-copy, "smallest prompt then stop", silent `session.create`.
+
+**Import.** The user-facing action that lists unimported OpenCode sessions and, on confirm, adopts the selected ones.
+_Avoid:_ auto-scan, auto-import, sidebar sync.
+
+**Pending adopt.** Plugin storage keyed by `{projectId, hostId, opencodeSessionId}`, written when the user confirms Import. Consumed only by the user-confirmed `thread/start` that opens that listed session. After consume, the durable bind is `bbThreadId → opencodeSessionId` (used for dedup).
+_Avoid:_ a null/wildcard key consumed by the next unrelated start; treating pending adopt as a prompt; inventing a `bbThreadId` the public spawn API cannot create.
+
+**Revert.** OpenCode `session.revert` / `session.unrevert`. This is undo/redo chrome.
+_Avoid:_ BB `fork`, "branch the thread".
+
+**OpenCode agent.** A session mode from `app.agents()` (build, plan, custom primaries). Applied on every `session.prompt`. A picker change is intent until the next send.
+_Avoid:_ start/resume-only; stuffing agents into the model picker; V2 `switchAgent`; putting subagents in the picker.
+
+**Selectable primary.** An `app.agents()` entry the composer picker may show or hydrate: `mode` is `primary` or `all`, not hidden, not a system agent (`title` / `compaction` / `summary`), not `mode: "subagent"`.
+_Avoid:_ calling this "primary / all" in one claim and "selectable primary" in another; treating `all` as subagent-only.
+
+**Queued send agent.** The agent stamped when BB enqueues a follow-up because `turn/steer` is refused. Captured at enqueue, not at flush.
+_Avoid:_ "whatever the picker says when the queue drains."
+
+**OpenCode subagent.** An `app.agents()` entry with `mode: "subagent"` (built-in general / explore / scout, or a user markdown/json agent). Invoked by `@name` in the prompt or by OpenCode's Task tool. Not a BB Voyager/Atlas child.
+_Avoid:_ putting these in the composer picker; treating BB sub-agents as OpenCode agents.
+
+**Task child.** An OpenCode session the Task tool creates with `parentID` set. The parent timeline shows the Task tool item. A BB thread for that child exists only after user-confirmed adopt.
+_Avoid:_ plugin `session.create` for Task; auto-sidebar; OpenChamber "open subtask" chrome; calling child `idle` the parent turn end.
+
+**Detached OpenCode.** One long-lived OpenCode server process per host, found via lock/port under the plugin `dataDir`. Bridge workers and the idle-evicted host-RPC worker all attach to it.
+_Avoid:_ in-process child of the bridge, module-singleton client, "the host *is* OpenCode".
+
+**Permission ceiling.** BB modes `accept-edits | auto | full` may only narrow what OpenCode would allow. `full` means auto-approve. OpenCode's once/always and `opencode.json` still apply underneath.
+_Avoid:_ a second auto-accept setting, "BB owns permissions".
+
+**Fail-closed permission result.** Tagged `{ok | resolved | unknown}`. Unknown does not approve.
+_Avoid:_ treating a timeout or missing reply as allow.
+
+## Principles
+
+- Fail closed. Ambiguous transport, unknown events, unknown permissions, and version skew never guess yes.
+- One official OpenCode door. `@opencode-ai/sdk` is imported in one host module. Live chat is global `event.subscribe()` filtered by session id.
+- Actions mutate; events tell the truth. The bridge does not invent BB turn/item ids. After revert, hydrate from OpenCode; do not diff message ids.
+- Capabilities only narrow. Declare the smallest honest set. Never advertise fork, reasoning, or rename that the bridge cannot keep.
+- The BB timeline is the product. No second transcript, no OpenChamber shell, no custom cards unless the generic one is actually insufficient — and V1 has already decided it is sufficient.
+- Direct probes. A claim names the command, RPC, file, or UI seam that would falsify it. No verification theater.
+
+## Constraints
+
+- Community plugin at `/Users/macvm/Desktop/Projects/other/bb-plugin-opencode`. Public provider id `opencode`.
+- Three entries: `server.ts` declares; `host.ts` owns the SDK, the detached process, and `thread/delta`; `app.tsx` is slots and RPC only.
+- `@opencode-ai/sdk` only in the host client module. Conformance `@bb/provider-bridge-protocol/conformance` is test-only / devDependency.
+- One detached OpenCode per host. Attach-first via lock/port in plugin `dataDir`. Spawn detached on miss. No in-process child. No module-singleton client.
+- Capabilities: `fork: "none"`, `sessionRestore: true`, `supportsThreadRename: true` only if title writes work. Permission modes and reasoning only if honestly mapped. Runtime may narrow, never widen.
+- Permissions use the provider-bridge grammar and BB's generic card. Honor `opencode.json`. BB mode is the ceiling. A fail-closed `unknown` result never approves, including under BB mode `full`.
+- Manual import only. Refuse running sessions. Dedup on `providerId === "opencode"` + `providerThreadId`. Directory comes from the server-confirmed OpenCode session path. No managed worktree invented. Personal project if the path is outside every project.
+- `turn/steer` refuses with JSON-RPC `-32601` so BB queues. A queued follow-up captures its OpenCode agent at enqueue, not at flush.
+- Every `session.prompt` includes `agent`. Never omit it (OpenCode #21728). Resume and import do not write an agent. A send is refused (no `session.prompt`) while the picker is in the unknown-agent error state, and at flush if the enqueue-stamped agent is no longer a selectable primary.
+- Pin the current stable `@opencode-ai/sdk` / `opencode serve` surface. Do not call V2-only routes.
+- Existing `acp-opencode` threads never migrate. Distinct name and icon.
+- Import must not silently `session.create`. If public spawn cannot create an idle provider thread (`input` XOR `prompt`; cannot set `providerThreadId`), Import confirm writes a pending adopt and the user-confirmed open consumes it inside `thread/start`. Permanent list-only with no pending-adopt/open path is a V1 blocker, not a ship configuration. Never "smallest prompt then stop."
+- An unsupported attachment fails the whole send (visible error). It is not stripped with a warning.
+- Deleting a BB `opencode` thread does not delete the OpenCode session.
+- Task children are created by the OpenCode server, not the plugin. The bridge never `session.create`s because Task started. `@mention` text is sent unchanged in `session.prompt` parts.
+- Child-session events never become items on the parent BB thread. Child `session.status`/`session.idle` does not emit the parent's `turn.boundary`.
+- `permission.asked` on a Task child of the in-flight parent uses the same F5 card and reply path, addressed to that child request. Fail-closed still applies.
+- A Task spawn does not create a BB thread or a pending adopt. User-confirmed open of a Task child uses the Import adopt path (ISC-42 family) and is refused while that child is running (same rule as ISC-44). No custom Task card: the confirm control is Import, plus a generic tool-item action only if BB already has that seam.
+- Stop interrupts the parent session. If `session.children` (or equivalent) lists Task children, those live children are interrupted too. After the parent `turn.boundary`, leftover child `permission.asked` is treated as uncorrelated (no approve, not attached to a card).
+
+## Goal
+
+"Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
+
+A community plugin registers provider `opencode`. A user can start and resume OpenCode sessions from BB, stream thinking/tools/live bash in the BB timeline, stop, undo, redo, attach what OpenCode accepts, answer permissions on BB's card, pick a model and an OpenCode agent and change that agent on the next send, invoke configured OpenCode subagents via `@mention` / Task without leaving the parent thread as a card, open a Task child only by user-confirmed adopt, and manually import existing sessions — with one detached OpenCode per host and honest Settings/CLI when the binary, version, or auth is wrong.
+
+## Not yet specified
+
+- fog: Does `bb.sdk.threads.spawn` accept empty `input: []` (or any public call) that creates an idle `opencode` thread? — needs a one-file spike against the installed BB SDK. Either outcome still uses pending adopt + user-confirmed open; never a fake prompt. Until the spike is written, ISC-42.2 and ISC-42.3 both stay open; closing one tombstones the other.
+- fog: Can one detached OpenCode server create a session whose directory D differs from the server spawn cwd E? — pin ISC-68 to this spike. If the answer is no, one-server-per-host cannot serve two project directories and F7 must be revisited before coding sessions.
+- fog: Exact OpenCode `permission.asked` payload → BB permission-grammar field map for every permission type we will see in week one. — needs a mapping table spike; the fail-closed claim (ISC-37) still holds.
+- fog: Which OpenCode tool names are bash/shell vs generic tool cards. — mapping table; live-bash claim (ISC-18) is the product bar, the name list is not.
+- fog: Numeric SDK/server version window. — pin after the first attach-health spike; the refuse-outside-window claim (ISC-52) still holds.
+- fog: Does the stable SDK record the applied `agent` on a user message's `info`? — pin before implementing ISC-29.3. If the field is absent, the existing absent → default-primary rung applies; do not invent a BB cookie to compensate. If it is never present, resume/import/undo hydrate always shows the default primary (honest degrade, not a silent `build` cookie).
+- fog: How does a `permission.asked` name its session so the bridge can tell "child of the in-flight parent" from "some other session on this host"? — spike `session.get` / `parentID` vs Task `metadata.sessionId` before implementing ISC-74. Fail closed if uncorrelated: do not approve, do not attach the ask to the wrong thread. If the spike cannot correlate, every child ask is uncorrelated: not surfaced, not approved; a permission-asking Task child wedges until it finishes or times out. That degrade is accepted; do not invent a second card to compensate.
+- fog: Does BB's generic tool item already expose a user action the plugin can bind to "open this session id"? — if no, ISC-76's confirm control is Import only; do not invent a custom Task card to create the seam.
+
+## Features
+
+### F0 · Cross-cutting
+Why: the plugin can ship as a community package and later be vendored as `provider-opencode` without rewriting the contract.
+
+- [ ] ISC-1: Plugin registers `bb.agents.experimental_registerProvider({ id: "opencode", displayName: "OpenCode", kind: "agent" })`.
+- [ ] ISC-2: Antecedent: a thread started with `--provider opencode` has `providerId === "opencode"`.
+- [ ] ISC-2.1: The registered `displayName` is `OpenCode` and does not contain `ACP`.
+- [ ] ISC-3: Anti: shipped `server` / `host` / `app` entrypoints contain no import from `@bb/*`.
+- [ ] ISC-4: Anti: `@opencode-ai/sdk` is imported only from the single host client module (not from `server.ts` or `app.tsx`).
+- [ ] ISC-5: `@bb/provider-bridge-protocol/conformance` is a devDependency and is not imported by shipped `server` / `host` / `app`.
+- [ ] ISC-6: Declared capabilities include `fork: "none"` and `sessionRestore: true`.
+- [ ] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
+- [ ] ISC-8: Composer agent picker and header undo/redo render only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
+- [ ] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
+- [ ] ISC-8.2: Header undo/redo is hidden unless that RPC returns `opencode`.
+
+### F1 · Sessions
+Why: one BB thread is one OpenCode session, so resume is the same conversation.
+
+- [ ] ISC-9: `thread/start` without an adopt reservation calls `session.create` once and emits `thread/identity` with that OpenCode session id as `providerThreadId`.
+- [ ] ISC-10: `thread/resume` does not call `session.create`.
+- [ ] ISC-10.1: `thread/resume` emits `thread/identity` and `session.reset` after get/messages.
+- [ ] ISC-11: Anti: resume never diffs OpenCode message ids across a revert; it refetches the whole transcript.
+- [ ] ISC-12: An OpenCode title change updates the BB thread title from the live event stream (no BB resume required).
+- [~] ISC-13: [DROPPED — see Decisions 2026-08-22] A BB thread rename writes the title back to OpenCode XOR `supportsThreadRename` is omitted.
+- [ ] ISC-68: `thread/start` for workspace directory D creates an OpenCode session whose server-confirmed directory is D, even when the detached server was first started in another directory. (Blocked on the multi-cwd fog spike.)
+- [ ] ISC-70: Anti: deleting a BB thread with `providerId === "opencode"` does not delete the OpenCode session.
+
+### F2 · Live turn
+Why: the BB timeline *is* the OpenCode turn — text, thinking, tools, live bash, stop.
+
+- [ ] ISC-14: `turn/start` calls `session.prompt` once.
+- [ ] ISC-15: `message.part.delta` text appears as BB text item deltas.
+- [ ] ISC-16: Reasoning/thinking parts appear as BB reasoning items.
+- [ ] ISC-17: Tool parts appear as BB tool or command items.
+- [ ] ISC-18: Bash/shell progress updates the same command item live.
+- [ ] ISC-19: Stop calls `session.interrupt` on the parent and on each listed live Task child of that parent; the parent turn reaches `turn.boundary`.
+- [ ] ISC-20: `turn/steer` returns JSON-RPC `-32601`.
+- [ ] ISC-21: An attachment type OpenCode cannot take fails the whole send with a visible error. The part is not stripped and sent anyway.
+- [ ] ISC-65: A supported attachment type is included in the `session.prompt` parts.
+- [ ] ISC-22: Events for OpenCode session B never appear as items on BB thread A while both turns run.
+- [ ] ISC-23: Anti: `session.events()` is not the live chat stream.
+- [ ] ISC-24: If the transport dies mid-prompt, the bridge refetches and does not call `session.prompt` again.
+- [ ] ISC-25: Unknown OpenCode event types are tallied in the plugin log and do not fail the turn.
+- [ ] ISC-26: OpenCode process death mid-turn emits `turn.boundary` with an error and does not crash the host worker.
+
+### F3 · Catalog
+Why: model and OpenCode agent are real start/resume **and later-turn** choices, not fake models.
+
+- [ ] ISC-27: The BB model picker for this provider lists models from OpenCode `config.providers()`.
+- [ ] ISC-27.1: Anti: `app.agents()` ids do not appear as models in that picker.
+- [ ] ISC-28: The composer agent picker lists only selectable primaries from `app.agents()`.
+- [~] ISC-29: [DROPPED — see Decisions 2026-08-22] The selected OpenCode agent is applied at `thread/start` or `thread/resume` only.
+- [ ] ISC-29.1: Every issued `turn/start` `session.prompt` — first send, later send, and ISC-32 resend — includes the selected selectable primary. The field is never omitted. (ISC-24 already forbids a disconnect retry that re-issues prompt.)
+- [ ] ISC-29.2: Anti: a composer agent-picker change with no following send issues zero host RPCs and zero OpenCode calls (no `session.prompt`, no `noReply`, no V2 `switchAgent`).
+- [ ] ISC-29.3: After resume, import, undo, or redo hydrate, the picker shows the last user-message `info.agent` that is a currently listed selectable primary; if that field is absent or names a non-selectable-primary id that is known (hidden / system / subagent), the default primary; if it names an unknown id, a visible error and the next send is refused until the user picks a listed selectable primary — never a persisted BB cookie, never a silent `build`, never sending the unknown id.
+- [ ] ISC-29.4: Anti: ids that are not selectable primaries never appear as picker values and are never hydrated into the picker.
+- [ ] ISC-29.5: A follow-up BB queues because `turn/steer` is `-32601` is stamped with the agent selected at enqueue, not the picker value at flush. If that stamped id is no longer a selectable primary at flush, the send is refused (same as ISC-29.3 unknown), not rewritten to the default.
+
+### F4 · Revert
+Why: undo/redo is OpenCode revert, shown as BB header chrome.
+
+- [ ] ISC-30: Header undo calls `session.revert` then the same hydrate path as resume.
+- [ ] ISC-31: Header redo calls `session.unrevert` then the same hydrate path as resume.
+- [ ] ISC-32: After a successful revert, a following send that is rejected restores the previous tail (no permanent optimistic loss).
+
+### F5 · Permissions
+Why: OpenCode asks; BB's existing card answers; OpenCode still remembers always/`opencode.json`; BB mode is only a ceiling.
+
+- [ ] ISC-33: A `permission.asked` event renders on BB's generic permission card.
+- [ ] ISC-34: once / always / reject from that card are written back to OpenCode.
+- [ ] ISC-35: Under BB mode `full`, a permission ask is auto-approved and that allow is written back to OpenCode.
+- [ ] ISC-36: Under BB mode `accept-edits` or `auto`, a permission OpenCode still wants asked is not auto-approved by the bridge.
+- [ ] ISC-37: A fail-closed permission result of `unknown` does not approve.
+- [ ] ISC-63: A deny rule in `opencode.json` is still honored under BB mode `full`.
+- [ ] ISC-64: When the tagged result is `unknown`, the ask is not approved even under BB mode `full`.
+- [ ] ISC-38: Anti: the bridge does not emit `pendingInteraction` or call `bb.ui.requestInput` for permissions.
+- [ ] ISC-39: Anti: the bridge does not use `messageDirective` for bash.
+
+### F6 · Manual import
+Why: sessions born outside BB enter the sidebar only when the user clicks Import, and they keep their OpenCode identity.
+
+- [ ] ISC-40: Settings exposes an Import control that lists unimported OpenCode sessions only after the user opens it.
+- [ ] ISC-41: Anti: installing or starting the plugin does not create BB threads for existing OpenCode sessions.
+- [ ] ISC-42: Import adopts an existing OpenCode session. The adopt seam is either idle-spawn+bind or lazy-open+reservation; both are specified below. The claim is not "adopt works only if idle spawn exists."
+- [ ] ISC-42.1: Anti: import never calls `session.create` for a selected existing session id and never sends a prompt solely to manufacture a session.
+- [ ] ISC-42.2: After an adopt seam exists, first open of an imported session uses resume semantics and BB `providerThreadId` equals the selected OpenCode id.
+- [ ] ISC-42.3: If public spawn cannot create an idle provider thread, Import confirm writes a pending adopt keyed by `{projectId, hostId, opencodeSessionId}` and invents no BB thread. The user-confirmed open consumes it without `session.create`. Permanent list-only with no pending-adopt/open path does not ship.
+- [ ] ISC-59: A pending adopt for session S in project P on host H is consumed exactly once by the user-confirmed `thread/start` that opens that listed session.
+- [ ] ISC-60: Anti: an unrelated `thread/start` in P does not consume a pending adopt for S.
+- [ ] ISC-43: A session whose `id` is already some BB thread's `providerThreadId` with `providerId === "opencode"` is not imported again.
+- [ ] ISC-44: A running OpenCode session is listed as blocked and cannot be imported.
+- [ ] ISC-45: A session whose server-confirmed directory is missing is listed as blocked and cannot be imported.
+- [ ] ISC-46: After a BB thread exists for the import, a directory equal to the current project root uses `environment: { type: "project-default" }`.
+- [ ] ISC-47: After a BB thread exists for the import, another existing path on the same host uses an unmanaged host environment for that path and does not create a BB-managed worktree.
+- [ ] ISC-48: After a BB thread exists for the import, a path that sits in no project lands in the personal project.
+- [ ] ISC-49: Child sessions default unchecked. Importing a parent does not import its children.
+
+### F7 · Host process and operator surface
+Why: one OpenCode on the machine, and the operator can see when it is missing, skewed, or unauthenticated.
+
+- [ ] ISC-50: A lock + port file under the plugin `dataDir` identifies at most one detached OpenCode server per host.
+- [ ] ISC-50.1: A lock/port file whose pid is dead or whose port is not listening is reclaimed by the next worker; exactly one live OpenCode pid results.
+- [ ] ISC-62: Two cold workers starting with no lock produce one OpenCode pid; the loser attaches.
+- [ ] ISC-51: The provider-bridge worker and the host-RPC worker attach to that server by URL. Neither spawns an in-process OpenCode child.
+- [ ] ISC-67: Anti: the host client is acquired by attach URL, not a process-wide module singleton.
+- [ ] ISC-69: After host-RPC idle eviction, the next probe attaches to the same OpenCode pid and port.
+- [ ] ISC-52: Attach to a server outside the pinned version window fails with an error that names both versions.
+- [ ] ISC-53: `bb.status.needsConfiguration()` is true when the binary is missing or the version is outside the window.
+- [ ] ISC-54: Settings probe shows binary path, server version, attached-or-spawned, port, and supported range.
+- [ ] ISC-55: `bb opencode status` prints those same facts.
+- [ ] ISC-56: `bb opencode version` prints the SDK pin and the attached server version.
+- [ ] ISC-57: `bb opencode logs` prints recent plugin and/or OpenCode log lines.
+- [ ] ISC-58: Auth probe failure is visible in Settings (not a silent empty model list only).
+
+### F8 · Task children
+Why: OpenCode Task / `@mention` already creates a child session. BB shows the parent card and can adopt the child; it does not become Voyager or OpenChamber.
+
+- [ ] ISC-71: A parent-session Task tool part renders as a BB tool item on the parent thread (generic card, not a custom Task card).
+- [ ] ISC-71.1: Anti: the plugin does not call `session.create` because Task started.
+- [ ] ISC-73: `session.status` idle / `session.idle` for a Task child does not emit `turn.boundary` on the parent BB thread.
+- [ ] ISC-74: `permission.asked` whose session is a Task child of the in-flight parent renders on **that parent BB thread's** generic permission card only (never as a timeline item; ISC-22 still holds for items). Once / always / reject are written back to that same child request. Uncorrelated asks, including child asks after the parent `turn.boundary` and asks with no resolvable session, are not approved and are not attached to any thread.
+- [ ] ISC-75: Anti: a Task spawn creates zero new BB threads and writes zero pending adopts.
+- [ ] ISC-76: User-confirmed open of a Task child's OpenCode id uses the Import adopt path (ISC-42 family) and does not call `session.create`. Confirm control is Import; a generic tool-item action is allowed only if that BB seam already exists.
+- [ ] ISC-76.1: Anti: user-confirmed open of a still-running Task child is refused. Open after the child is idle uses the same adopt path as ISC-76. Mid-stream steal / hydrate of a live child is out of V1.
+- [ ] ISC-77: Anti: a user prompt containing `@<subagent>` is forwarded in `session.prompt` parts unchanged. The plugin does not rewrite it into `session.create` or a V2 `session.subagent` call.
+
+## Test Strategy
+
+Probes attach at the seam the user or BB core actually consumes. No claim is closed by a paragraph. Runnable probes stay red until the code exists.
+
+| isc | type | check | threshold | tool | anchors_to |
+|-----|------|-------|-----------|------|------------|
+| ISC-1 | bash | `bb plugin list --json` (or provider list) contains id `opencode` after install | exit 0 and id match | bb | literal |
+| ISC-2 | bash | `bb thread spawn --provider opencode --prompt ping` then `bb thread show --json` has `providerId=opencode` | providerId exact | bb | literal |
+| ISC-2.1 | bash | `bb provider list --json` (or register payload) displayName is `OpenCode` and does not match /ACP/i | name exact; no ACP | bb | literal |
+| ISC-3 | bash | grep shipped ts/tsx for `from ['"]@bb/`, `require('@bb/`, and `export * from ['"]@bb/` | 0 matches | grep | derived: public plugin contract |
+| ISC-4 | bash | `grep -R "@opencode-ai/sdk" server.ts app.tsx` empty; exactly one host module imports it | 0 in server/app; 1 client | grep | derived: SDK stays on host |
+| ISC-5 | bash | package.json has conformance only under devDependencies; grep shipped entries for the package name is empty | 0 shipped imports | grep | derived: test-only conformance |
+| ISC-6 | bash | registered capabilities JSON includes `fork: "none"` and `sessionRestore: true` | both present | bb / unit | derived: honest capabilities |
+| ISC-7 | bash | a fixture `acp-opencode` thread id is unchanged after plugin install | providerId unchanged | bb | derived: no ACP migration |
+| ISC-8 | bun-test | both ISC-8.1 and ISC-8.2 pass | both green | bun-test | derived: no chrome leak |
+| ISC-8.1 | bun-test | composer agent picker returns null when RPC says `claude-code` / `acp-opencode`; renders when `opencode` | assertions pass | bun-test | derived: no chrome leak |
+| ISC-8.2 | bun-test | header undo/redo returns null when RPC says `claude-code` / `acp-opencode`; renders when `opencode` | assertions pass | bun-test | derived: no chrome leak |
+| ISC-9 | bash | after start, OpenCode session list contains `providerThreadId`; identity event logged once | 1 session, 1 identity | bb + OpenCode | literal |
+| ISC-10 | bash | resume of that thread does not increase OpenCode session count | session count unchanged | bb + OpenCode | literal |
+| ISC-10.1 | bun-test | resume handler emits identity + `session.reset` after get/messages | both emitted; create not called | bun-test | derived: resume hydrate |
+| ISC-11 | bun-test | hydrate fixture after revert does a full refetch, no id-diff branch | assertion on call graph / snapshot | bun-test | derived: events are truth |
+| ISC-12 | bash | rename the OpenCode session while the BB thread is open and idle; BB title matches; `thread/resume` call count stays 0 | titles equal; resume calls 0 | bb + OpenCode | derived: titles |
+| ISC-68 | bash | start thread in directory D while detached OpenCode was first spawned in directory E; session directory is D | path D | bb + OpenCode | derived: one server many dirs |
+| ISC-70 | bash | delete the BB thread; OpenCode session id still exists | session present | bb + OpenCode | derived: adopt is a view |
+| ISC-14 | bun-test | `turn/start` handler invokes `session.prompt` once per turn | 1 call | bun-test | literal |
+| ISC-15 | bun-test | `map-delta` snapshot: text part delta → text item delta | snapshot match | bun-test | literal |
+| ISC-16 | bun-test | `map-delta` snapshot: reasoning part → reasoning item | snapshot match | bun-test | literal |
+| ISC-17 | bun-test | `map-delta` snapshot: tool part → tool/command item | snapshot match | bun-test | literal |
+| ISC-18 | bun-test | `map-delta` snapshot: successive bash parts update one item id | same item id | bun-test | literal |
+| ISC-19 | bash | stop a running parent that has a live Task child; parent and that child are idle; parent turn has boundary | parent+child idle; parent bounded | bb + OpenCode | literal |
+| ISC-20 | bun-test | `turn/steer` returns error code `-32601` | code exact | bun-test | derived: BB queues |
+| ISC-21 | bash | send an unmapped attachment type; visible error; `session.prompt` is not called | error shown; prompt calls 0 | bb | derived: attachments honest |
+| ISC-65 | bash | send a mapped attachment; OpenCode prompt parts include that file/image | part present | bb + OpenCode | literal |
+| ISC-22 | bash | two concurrent `opencode` turns, including parent + Task child; no item whose OpenCode session id is B appears on thread A | 0 cross items | bb | derived: one event door |
+| ISC-23 | bash | grep host chat-subscribe path; `session.events` is not used to feed the live timeline | 0 chat-subscribe uses | grep | derived: one event door |
+| ISC-24 | bun-test | mid-prompt disconnect fixture: refetch called, `session.prompt` not retried | prompt calls stay 1 | bun-test | derived: fail closed |
+| ISC-25 | bun-test | unknown event type increments tally, turn still completes | tally +1; no throw | bun-test | derived: fail closed |
+| ISC-26 | bash | kill detached OpenCode mid-turn; BB turn errors; host RPC still answers `probe` | turn error; probe ok | bb | derived: process isolation |
+| ISC-27 | bash | model list from provider matches `config.providers()` ids | set equality | bb + OpenCode | literal |
+| ISC-27.1 | bash | intersection of model-picker ids and `app.agents()` ids is empty | empty intersection | bb + OpenCode | derived: agents are modes |
+| ISC-28 | bun-test | fixture `app.agents()` payload contains `build`, `plan`, one custom primary, one `hidden`, one `mode: "subagent"`, and one system `title`/`compaction`; picker options equal exactly `{build, plan, custom}` | exact set | bun-test | literal |
+| ISC-29 | bun-test | [DROPPED] old start/resume-only probe | n/a | n/a | n/a |
+| ISC-29.1 | bun-test | one prompt-builder construction site: first send, later send, and ISC-32 resend each pass `agent` | agent present on those three calls | bun-test | derived: never omit agent |
+| ISC-29.2 | bun-test | slot `onChange` with no `turn/start`: host RPC count 0; grep slot for `noReply` / `switchAgent` empty | RPC 0; grep 0 | bun-test | derived: intent until send |
+| ISC-29.3 | bun-test | hydrate fixtures: last selectable primary shown; absent/hidden/system/subagent → default; unknown id → visible error and next send refused; post-revert tail wins; no BB cookie | ladder assertions | bun-test | derived: events are truth |
+| ISC-29.4 | bun-test | same fixture as ISC-28: picker options and hydrate results equal `{build, plan, custom}` and contain none of the hidden/system/subagent ids | exact set; empty intersection with the three excluded | bun-test | derived: primaries only |
+| ISC-29.5 | bun-test | enqueue under agent A, flip picker to B, flush; prompt `agent` is A. Second fixture: A unlisted at flush → no `session.prompt` | agent A; then prompt calls 0 | bun-test | derived: enqueue stamp |
+| ISC-30 | bash | undo after a finished turn; OpenCode revert applied; BB timeline matches refetch | revert observed; timelines match | bb + OpenCode | literal |
+| ISC-31 | bash | redo after undo; OpenCode unrevert applied; timelines match | unrevert observed | bb + OpenCode | literal |
+| ISC-32 | bun-test | after revert, a `session.prompt` that OpenCode rejects (invalid/busy) restores the previous tail | tail restored | bun-test | derived: no optimistic loss |
+| ISC-33 | bash | trigger a permission ask; generic BB permission card is visible | card present | bb UI | literal |
+| ISC-34 | bash | answer once; OpenCode permission reply recorded for that request | reply observed | OpenCode / log | literal |
+| ISC-35 | bash | mode `full`; OpenCode records an allow reply for the ask and the turn is not blocked on a card | allow observed; no pending card | bb + OpenCode | derived: ceiling |
+| ISC-36 | bash | mode `accept-edits`; an OpenCode-asked permission still shows the card | card present | bb | derived: ceiling |
+| ISC-37 | bun-test | tagged result `unknown` maps to deny / no reply-allow | no approve call | bun-test | derived: fail closed |
+| ISC-38 | bash | grep bridge for `pendingInteraction` and `requestInput` | 0 matches | grep | derived: generic card |
+| ISC-39 | bash | grep bridge for `messageDirective` | 0 matches | grep | derived: generic cards |
+| ISC-40 | bash | Settings includes Import; plugin log line `import.list` is absent until the Import control is opened, then present | log absent then present | bb + log | literal |
+| ISC-41 | bash | after install+host start, BB thread count for `opencode` is unchanged without Import | delta 0 | bb | literal |
+| ISC-42 | bash | ISC-42.1 holds. After the idle-spawn spike a Decision names the active child (42.2 or 42.3) and the other is tombstoned | 42.1 plus named child | bb | derived: honest adopt |
+| ISC-42.1 | bash | import a selected existing session; OpenCode session count unchanged; no `session.prompt` issued by import | count unchanged; prompt calls 0 | bb + OpenCode | derived: never fake prompt |
+| ISC-42.2 | bash | after an adopt seam exists, imported thread `providerThreadId` equals selected id; first open does not call `session.create` | id match; create not called | bb + OpenCode | literal |
+| ISC-42.3 | bash | if idle spawn is impossible: confirm writes pending adopt `{projectId, hostId, sessionId}` and zero new BB threads; user-confirmed open binds that id without `session.create` | pending present; create not called | bb + OpenCode | derived: honest fallback |
+| ISC-59 | bun-test | plant pending adopt P/H/S; user-confirmed start for that row binds S once; a second start does not see it | consumed once | bun-test | derived: reservation |
+| ISC-60 | bun-test | plant pending adopt P/H/S; an unrelated `thread/start` in P leaves P/H/S in storage | pending still present | bun-test | derived: reservation |
+| ISC-43 | bash | import the same id again; rejected / omitted from list | not duplicated | bb | derived: dedup |
+| ISC-44 | bash | a running session is not importable | blocked | bb + OpenCode | derived: no steal |
+| ISC-45 | bash | session with deleted directory is not importable | blocked | bb | derived: server-confirmed path |
+| ISC-46 | bash | import at project root; thread environment is `project-default` | env type match | bb | derived: directory mapping |
+| ISC-47 | bash | import other existing path; environment is unmanaged host path; no new managed worktree | env type + path; worktree count unchanged | bb | derived: directory mapping |
+| ISC-48 | bash | import path outside all projects; thread `projectId` is personal | personal project | bb | derived: directory mapping |
+| ISC-49 | bash | parent selected only; child session has no BB thread | child absent | bb | derived: no auto children |
+| ISC-50 | bash | two workers; one lock/port file; one listening OpenCode pid | 1 lock, 1 pid | bash | derived: one server |
+| ISC-50.1 | bash | write a lock for a dead pid / closed port; next probe respawns or attaches; exactly one live OpenCode pid | 1 live pid; probe ok | bash | derived: one server |
+| ISC-62 | bash | two cold workers started together with lock file removed; one OpenCode pid; both probes succeed | 1 pid; 2 probes ok | bash | derived: one server |
+| ISC-51 | bash | neither worker pid is the OpenCode pid; both `probe` against the same port | pids differ; port shared | bash | derived: attach not child |
+| ISC-67 | bun-test | acquire(client, urlA) and acquire(client, urlB) return distinct instances; acquire after simulated eviction calls the factory again | 2 instances; factory +1 | bun-test | derived: attach not child |
+| ISC-69 | bash | idle-evict the host-RPC worker; next `probe` uses the same port and pid | pid+port unchanged | bb | derived: attach not child |
+| ISC-52 | bash | attach override to a version outside the window; error names both versions | error text | bb | derived: version pin |
+| ISC-53 | bash | hide binary from PATH; `needsConfiguration` true | true | bb | derived: operator surface |
+| ISC-54 | bash | Settings probe RPC returns binary, version, attach state, port, range | all fields present | bb | literal |
+| ISC-55 | bash | `bb opencode status` prints the same fields | field parity | bb | literal |
+| ISC-56 | bash | `bb opencode version` prints SDK pin and server version | both present | bb | literal |
+| ISC-57 | bash | after a named turn, `bb opencode logs` contains that session id or an event-type tally line from it | matching line | bb | derived: operator surface |
+| ISC-58 | bash | logged-out / missing-auth fixture; Settings shows auth failure | visible error | bb | derived: operator surface |
+| ISC-63 | bash | `opencode.json` deny for a tool; BB mode `full`; that tool is still asked or denied, not silently allowed by BB | deny/ask observed | bb + OpenCode | derived: ceiling |
+| ISC-64 | bun-test | tagged `unknown` under mode `full` does not call OpenCode allow | no approve call | bun-test | derived: fail closed |
+| ISC-71 | bun-test | `map-delta` snapshot: parent Task tool part → one generic BB tool item (same item type as ISC-17) | snapshot match | bun-test | literal |
+| ISC-71.1 | bun-test | Task-started fixture: plugin `session.create` call count stays 0 | create calls 0 | bun-test | derived: server owns Task |
+| ISC-73 | bun-test | inject child `session.status` idle while parent turn open and child still listed live beforehand; parent `turn.boundary` not emitted | boundary count 0 | bun-test | derived: child idle ≠ parent done |
+| ISC-74 | bun-test | three fixtures: (1) child ask with resolvable in-flight parent → parent card, reply to child ids, no timeline item; (2) ask with no resolvable session → no approve, no attach; (3) child ask after parent boundary → no approve, no attach | card only on (1); (2)(3) no approve | bun-test | derived: fail closed |
+| ISC-75 | bash | plant a pending adopt; spawn a Task; BB `opencode` thread count unchanged and pending-adopt store byte-identical | delta 0; store unchanged | bb | derived: no auto-import |
+| ISC-76 | bash | user-confirmed open of listed Task child: `providerThreadId` equals child id; `session.create` not called | id match; create 0 | bb + OpenCode | derived: honest adopt |
+| ISC-76.1 | bash | open a still-running Task child is refused; after that child is idle, open binds `providerThreadId` to the child id | refused then id match | bb + OpenCode | derived: no mid-stream steal |
+| ISC-77 | bun-test | prompt-builder fixture with text `@general look around`: parts contain that text; `session.create` 0; no `session.subagent` symbol | text present; create 0 | bun-test | derived: @mention is text |
+
+## Decisions
+
+- 2026-08-21: ACP is not the long-term OpenCode path. Use `@opencode-ai/sdk` the way Claude/Codex use vendor-native bridges.
+- 2026-08-21: Ship first as a community plugin, provider id `opencode`. Keep ACP as fallback. Do not put OpenCode in BB core. No private `@bb/*` so the same plugin can later become `provider-opencode`.
+- 2026-08-21: Steal OpenChamber boundaries, not its UI: one SDK door, tagged permission results, actions-only mutation, live truth from events, fail closed.
+- 2026-08-21: Three-entry plugin. One detached OpenCode per host. Attach-first. No in-process child. No module-singleton client.
+- 2026-08-21: `fork: "none"`. Revert is undo chrome. Capabilities only narrow.
+- 2026-08-21: Core OpenCode is in V1: start/resume, models, agents, live tools/bash, stop, revert/unrevert, permissions on the generic card, attachments mapped or rejected, `turn/steer` refuse.
+- 2026-08-21: Permissions are core, not a second knob. BB modes are the ceiling. `full` ≈ auto-approve. Fail-closed `{ok|resolved|unknown}`.
+- 2026-08-21: Manual import only. Never auto-import. Never "smallest prompt then stop."
+- 2026-08-21: Cut as fat: custom cards, nav panel, OpenChamber chrome, ACP migration, second transcript, extra auto-accept setting, `bb opencode restart`. `listModels` / `revertState` exist only if BB has no cheaper native seam; they are not a second live truth.
+- 2026-08-22: ISA scaffolded from the locked V1 after two architecture review rounds (Kimi K3, GLM 5.2, Opus 5 via Pi). Ambiguity check skipped: goal and bounds already locked. `context_sufficient: true`.
+- 2026-08-22: Verifications must be direct. A closed claim points at a command, test name, or probe — not a screenshot essay.
+- 2026-08-22: ISA R1 (Kimi K3 `thr_5axqqt6ha8`, GLM 5.2 `thr_w77g5e84df`, Opus 5 `thr_6ergnhrffm`) all **sound-with-fixes**. Applied without expanding product scope: split ISC-8 and ISC-42; reservation consume-once + no cross-bind (ISC-59/60); never fake-prompt (ISC-42.1); live title sync (ISC-12); drop XOR rename claim ISC-13 to a Decision; behavioral event isolation (ISC-22); `opencode.json` under `full` (ISC-63); `unknown` beats `full` (ISC-64); supported attachments (ISC-65); session directory ≠ server cwd (ISC-68); cold-start race (ISC-62); attach-URL client (ISC-67); post-eviction reattach (ISC-69); agents are not models (ISC-27.1).
+- 2026-08-22: BB thread rename → OpenCode title (`supportsThreadRename`) is a Decision, not a claim, until we implement the write. Capability stays omitted until the write exists.
+- 2026-08-22: Fail-closed `unknown` outranks BB mode `full`. `opencode.json` deny outranks BB mode `full`.
+- 2026-08-22: ISA R2 (Kimi `thr_uet3kx4nwe`, GLM `thr_4692n73sa4`, Opus `thr_decmc5x7hf`) all **sound-with-fixes**. Applied without expanding product scope: pending adopt keyed by `{projectId, hostId, opencodeSessionId}` (not a wildcard next-start); list-only-with-no-open is a V1 blocker; stale-lock reclaim (ISC-50.1); delete-BB-thread does not delete OpenCode session (ISC-70); unsupported attachment fails the whole send (ISC-21); ISC-67 behavioral; ISC-68 pinned to a multi-cwd fog spike; ISC-46–49 gated on a thread existing; idle-spawn spike will tombstone either 42.2 or 42.3.
+- 2026-08-22: Until the idle-spawn spike is written, ISC-42.2 and ISC-42.3 both remain open. Closing one tombstones the other via a Decision that names the active path.
+- 2026-08-22: Mid-session primary-agent switch is in V1. Stable SDK only: stamp `agent` on every `session.prompt`. Picker change is composer-local intent until the next send. Cut: V2 `switchAgent`, `noReply` persist, `pendingAgent` bind store, picker `onChange` RPC, mid-stream hot-swap, subagents in the picker.
+- 2026-08-22: ISC-29 (start/resume only) dropped. Replaced by ISC-29.1–29.5. Architecture reviews: Kimi `thr_r4eu3i5qyr`, Opus `thr_yg742fsi74` (both sound-with-fixes). First spawn (`thr_ztw2umkid4`, `thr_rw9q6mi8jj`) failed because `--file` did not reach Pi; GLM `thr_6up3pqnh7i` was interrupted.
+- 2026-08-22: Model vs agent: if the user picked a BB model, every prompt sends that model; otherwise omit `model` and let the agent default apply. Decision only — not a claim. No per-agent model memory.
+- 2026-08-22: Hydrate ladder: last selectable primary on a user message → else default primary if absent/hidden/subagent → visible error if the id is unknown. Never silent `build`. After revert/unrevert, re-hydrate from the new tail (same path as ISC-30/31).
+- 2026-08-22: Queued follow-ups capture agent at enqueue (ISC-29.5). Plan is not a BB safety boundary; F5 ceiling claims still apply after Plan→Build. Do not add a Plan→Build ISC; if coverage is wanted later, extend an ISC-36 fixture.
+- 2026-08-22: ISA R3 (Kimi `thr_empwuv3fjq` sound; GLM `thr_zrdu8h2f9k` and Opus `thr_59bhcagns8` sound-with-fixes). Applied without expanding product scope: Language **selectable primary**; unknown-id send refused; enqueue stamp that is unlisted at flush refused; drop undefined retry from ISC-29.1; ISC-28/29.4 pin a literal fixture; ISC-29.2 observes host RPC not SDK; `info.agent` is a fog, not a cookie.
+- 2026-08-22: A queued follow-up that flushes after undo/redo keeps the enqueue-stamped agent on the new tail. That interleaving is accepted. Do not rewrite the stamp from the post-revert picker.
+- 2026-08-22: OpenCode Task / `@mention` children are in V1 as F8. Stable Task tool only. Plugin never `session.create`s for Task. Parent shows a generic Task tool item. Child events stay off the parent timeline (ISC-22) except the in-flight child's permission card on the parent thread. Child idle does not end the parent turn. Child permissions use F5. No auto BB thread. Open is user-confirmed adopt of an **idle** child. Cut: V2 `session.subagent`, background Task flag, OpenChamber subtask chrome, BB Voyager-as-OpenCode, custom Task card, subagents in the picker, mid-stream steal of a live child.
+- 2026-08-22: ISA R4 (Kimi `thr_ycxwi7m9ir`, GLM `thr_kpc99pwr25`, Opus `thr_3qtf84k6ca`) all **sound-with-fixes**. Applied without expanding product scope: stop interrupts listed Task children; leftover child asks after parent boundary are uncorrelated; ISC-74 names the parent thread and reconciles ISC-22; ISC-76.1 refuses running children; Vision says tool item not Task card; probes named and non-vacuous.
+- 2026-08-22: Implement F8 after F2 and F5 (need live tools + permission card). Import (F6) stays last.
+
+## Learning
+
+- conjecture: OpenCode agents are start/resume-only session modes (ISC-29).
+- refuted-by: native OpenCode Tab / `switch_agent`; stable write is `session.prompt({ agent })` on every turn.
+- learned: a picker click is intent until the next send; OpenCode has no stable switch-without-send; a BB cookie would disagree with hydrate.
+- criterion-now: ISC-29 dropped; ISC-29.1–29.5.
+
+- conjecture: OpenCode subagents are out of V1 because they are not composer primaries and must not become BB Voyager children.
+- refuted-by: stable Task tool creates a child session with `parentID`; OpenChamber only wraps that; `@mention` is prompt text.
+- learned: honor Task on the parent card; isolate child events; route child permissions; adopt only on user confirm. Do not implement Task in the plugin.
+- criterion-now: F8 ISC-71, 71.1, 73–77.
+
+## Remaining Work
+
+- [ ] Spike idle `bb.sdk.threads.spawn({ input: [] })` — decides whether import is adopt-now or list-only / lazy-open. Not an ISC until the public API answer exists (see fog).
+- [ ] Permission mapping table spike — field-level OpenCode → BB grammar. ISC-33–37 stay; the table is the how.
+- [ ] Numeric version window — pin after first attach-health spike (ISC-52).
+- [ ] Later graduation to a vendored builtin (`provider-opencode`) if product chrome requires default picker rank or hiding auto-detected `acp-opencode`. Out of this V1 vision.
+- [x] ISA review round 1 (Kimi/GLM/Opus) — revised 2026-08-22 without expanding product scope.
+- [x] ISA review round 2 (Kimi/GLM/Opus) — revised 2026-08-22 without expanding product scope.
+- [x] ISA review round 3 (agent-switch delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
+- [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
+- [ ] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
