@@ -1,9 +1,13 @@
 import { definePluginApp } from "@get-bb/plugin-sdk/app";
-import { ComposerAgentPicker } from "./src/app/composer-agent.js";
+import {
+  CompactComposerAgentPicker,
+  ComposerAgentPicker,
+} from "./src/app/composer-agent.js";
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
 import { runMessageFork } from "./src/app/message-fork.js";
 import { runMessageRedo, runMessageUndo } from "./src/app/message-revert.js";
 import { SettingsSection } from "./src/app/settings-section.js";
+import "./src/app/composer-agent.css";
 
 export default definePluginApp((app) => {
   app.composer.customize({
@@ -11,6 +15,11 @@ export default definePluginApp((app) => {
     scopes: ["thread", "queued-message", "new-thread"],
     actions: [{ id: "agent", component: ComposerAgentPicker }],
     banners: [
+      {
+        id: "agent-compact",
+        chrome: "bare",
+        component: CompactComposerAgentPicker,
+      },
       { id: "slash", chrome: "bare", component: ComposerSlashSuggest },
     ],
   });

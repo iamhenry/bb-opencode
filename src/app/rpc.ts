@@ -16,4 +16,24 @@ export async function callPluginRpc<T>(
 
 export function reportActionError(action: string, error: string): void {
   console.error(`[opencode] ${action}: ${error}`);
+  showActionToast(`${action}: ${error}`);
+}
+
+function showActionToast(message: string): void {
+  if (typeof document === "undefined") return;
+  let host = document.getElementById("oc-toast");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "oc-toast";
+    host.className = "oc-toast";
+    host.setAttribute("role", "status");
+    document.body.appendChild(host);
+  }
+  host.textContent = message;
+  host.dataset.show = "true";
+  window.clearTimeout(Number(host.dataset.timer ?? "0"));
+  const timer = window.setTimeout(() => {
+    host.dataset.show = "false";
+  }, 4200);
+  host.dataset.timer = String(timer);
 }

@@ -6,7 +6,10 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
-import { newThreadShowsOpencodeAgent } from "./live-provider.js";
+import {
+  composerLayoutIsCompact,
+  newThreadShowsOpencodeAgent,
+} from "./live-provider.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
 import "./composer-agent.css";
 
@@ -25,11 +28,21 @@ const FALLBACK_OPTIONS = [
 ];
 
 export function ComposerAgentPicker() {
+  return <AgentPicker layout="expanded" />;
+}
+
+/** Compact / PWA prompt boxes do not mount plugin composer actions. */
+export function CompactComposerAgentPicker() {
+  return <AgentPicker layout="compact" />;
+}
+
+function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId, projectId } = useBbContext();
   const view = useComposerView();
   const isNewThread = view.scope.kind === "new-thread" || !threadId;
   const rootRef = useRef<HTMLSpanElement>(null);
+  const [compact, setCompact] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [liveOpenCode, setLiveOpenCode] = useState(false);
@@ -50,6 +63,7 @@ export function ComposerAgentPicker() {
   useEffect(() => {
     const sync = () => {
       setLiveOpenCode(newThreadShowsOpencodeAgent(rootRef.current));
+      setCompact(composerLayoutIsCompact(rootRef.current));
     };
     sync();
     const root =
@@ -59,7 +73,7 @@ export function ComposerAgentPicker() {
       subtree: true,
       childList: true,
       attributes: true,
-      attributeFilter: ["title", "aria-label"],
+      attributeFilter: ["title", "aria-label", "data-promptbox-compact"],
     });
     const timer = window.setInterval(sync, 250);
     return () => {
@@ -88,7 +102,8 @@ export function ComposerAgentPicker() {
   const boundOpenCode =
     Boolean(threadId) && shouldRenderOpencodeChrome(chrome?.providerId);
   const newThreadOpenCode = isNewThread && liveOpenCode;
-  const visible = boundOpenCode || newThreadOpenCode;
+  const layoutMatch = layout === "compact" ? compact : !compact;
+  const visible = layoutMatch && (boundOpenCode || newThreadOpenCode);
 
   useEffect(() => {
     if (!visible) return;
@@ -117,10 +132,18 @@ export function ComposerAgentPicker() {
       const menu = menuRef.current;
       const menuWidth = menu?.offsetWidth ?? 240;
       const menuHeight = menu?.offsetHeight ?? 200;
-      const margin = 8;
+      const viewport = window.visualViewport;
+      const viewTop = viewport?.offsetTop ?? 0;
+      const viewLeft = viewport?.offsetLeft ?? 0;
+      const viewWidth = viewport?.width ?? window.innerWidth;
+      const viewHeight = viewport?.height ?? window.innerHeight;
+      const safeBottom = readSafeInset("bottom");
+      const safeTop = readSafeInset("top");
+      const margin = 8 + Math.max(safeTop, 0);
       const gap = 6;
-      const spaceBelow = window.innerHeight - rect.bottom - margin;
-      const spaceAbove = rect.top - margin;
+      const spaceBelow =
+        viewTop + viewHeight - rect.bottom - margin - safeBottom;
+      const spaceAbove = rect.top - viewTop - margin;
       const openUp =
         spaceBelow < Math.min(menuHeight, 220) && spaceAbove > spaceBelow;
       const maxHeight = Math.max(
@@ -130,22 +153,26 @@ export function ComposerAgentPicker() {
       const height = Math.min(menuHeight, maxHeight);
       let top = openUp ? rect.top - height - gap : rect.bottom + gap;
       top = Math.min(
-        Math.max(margin, top),
-        window.innerHeight - Math.min(height, maxHeight) - margin,
+        Math.max(viewTop + margin, top),
+        viewTop + viewHeight - Math.min(height, maxHeight) - margin - safeBottom,
       );
       let left = rect.right - menuWidth;
-      left = Math.min(left, window.innerWidth - menuWidth - margin);
-      left = Math.max(margin, left);
+      left = Math.min(left, viewLeft + viewWidth - menuWidth - margin);
+      left = Math.max(viewLeft + margin, left);
       setMenuPos({ top, left, maxHeight });
     };
     place();
     const frame = window.requestAnimationFrame(place);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
+    window.visualViewport?.addEventListener("resize", place);
+    window.visualViewport?.addEventListener("scroll", place);
     return () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
+      window.visualViewport?.removeEventListener("resize", place);
+      window.visualViewport?.removeEventListener("scroll", place);
     };
   }, [open]);
 
@@ -181,6 +208,7 @@ export function ComposerAgentPicker() {
             type="button"
             className="oc-agent"
             data-opencode-agent-picker="true"
+            data-layout={layout}
             data-open={open ? "true" : "false"}
             aria-haspopup="listbox"
             aria-expanded={open}
@@ -245,6 +273,20 @@ export function ComposerAgentPicker() {
       ) : null}
     </>
   );
+}
+
+function readSafeInset(side: "top" | "bottom"): number {
+  if (typeof document === "undefined") return 0;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(
+    `--oc-safe-${side}`,
+  );
+  const parsed = Number.parseFloat(raw);
+  if (Number.isFinite(parsed)) return parsed;
+  const env = getComputedStyle(document.documentElement).getPropertyValue(
+    `env(safe-area-inset-${side})`,
+  );
+  const fromEnv = Number.parseFloat(env);
+  return Number.isFinite(fromEnv) ? fromEnv : 0;
 }
 
 function BotIcon() {

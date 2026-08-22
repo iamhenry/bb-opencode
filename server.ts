@@ -21,6 +21,7 @@ import {
   consumeNextAgent,
   createNextAgentStore,
   resolveComposerProvider,
+  resolvePromptAgent,
 } from "./src/next-agent.js";
 import {
   pendingAdoptStorageKey,
@@ -41,6 +42,25 @@ const seenThreadIds = new Set<string>();
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
+  const settings = bb.settings.define({
+    defaultAgent: {
+      type: "string",
+      label: "Default OpenCode agent",
+      default: "build",
+    },
+  });
+  let configuredAgent = "build";
+  const readConfiguredAgent = async () => {
+    const current = await settings.get();
+    configuredAgent =
+      typeof current.defaultAgent === "string" && current.defaultAgent.trim()
+        ? current.defaultAgent.trim()
+        : "build";
+  };
+  await readConfiguredAgent();
+  settings.onChange(() => {
+    void readConfiguredAgent();
+  });
 
   bb.agents.experimental_registerProvider({
     id: PROVIDER_ID,
@@ -63,9 +83,14 @@ export default async function plugin(bb: BbPluginApi) {
     experimental_visibility: "always",
     experimental_env: { passthrough: ["OPENCODE_BIN"] },
     experimental_deriveProviderOptions(ctx) {
-      const agent =
-        peekAgent(stamps, ctx.threadId) ??
-        consumeNextAgent(nextAgents, ctx.projectId);
+      const stamped = peekAgent(stamps, ctx.threadId);
+      const agent = resolvePromptAgent({
+        stamped,
+        next: stamped
+          ? undefined
+          : consumeNextAgent(nextAgents, ctx.projectId),
+        configured: configuredAgent,
+      });
       const isNewThread = !seenThreadIds.has(ctx.threadId);
       seenThreadIds.add(ctx.threadId);
       const adopt = consumeNextAdopt(nextAdopts, {
@@ -73,7 +98,7 @@ export default async function plugin(bb: BbPluginApi) {
         isNewThread,
       });
       return {
-        ...(agent ? { agent } : {}),
+        agent,
         ...(adopt ? { adoptSessionId: adopt.opencodeSessionId } : {}),
         permissionMode: ctx.permissionMode,
       };

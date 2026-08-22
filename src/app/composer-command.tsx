@@ -74,7 +74,7 @@ export function ComposerSlashSuggest() {
           type="button"
           className="oc-slash__row"
           role="option"
-          onMouseDown={(event) => {
+          onPointerDown={(event) => {
             event.preventDefault();
             composer.updateText((current) =>
               insertCommandToken(current, command.name),

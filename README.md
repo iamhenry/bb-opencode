@@ -26,6 +26,10 @@ bb opencode logs
 
 Override the binary with `OPENCODE_BIN`.
 
+## Phone (PWA + iOS app)
+
+OpenCode threads run on any BB client. The native iOS app does not execute plugin frontends, so the Agent chip, slash banner, and bubble Revert/Redo are web-only. On the phone: pick **OpenCode** in the provider list, send as usual, long-press **Fork** or **Edit** (native rewind), and answer Allow/Deny on the native card. Set **Default OpenCode agent** under Tools → OpenCode if you are not on `build`. The mobile PWA is the web app: compact composers hide the footer chip, so the same picker appears as a banner above the prompt.
+
 ## Layout
 
 `server.ts` declares the provider. `host.ts` owns the SDK, detached process, and `thread/delta` bridge. `app.tsx` is slots + RPC only.

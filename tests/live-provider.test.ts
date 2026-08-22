@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chipSuggestsOpencode,
+  composerLayoutIsCompact,
   providerIdFromModelTriggerTitle,
 } from "../src/app/live-provider.js";
 
@@ -33,6 +34,7 @@ describe("live composer provider from model chip", () => {
         text: "DeepSeek V4 Flash Medium",
       }),
     ).toBe(true);
+    expect(composerLayoutIsCompact(null)).toBe(false);
     expect(
       chipSuggestsOpencode({
         hasOpencodeLogo: false,

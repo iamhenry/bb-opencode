@@ -175,6 +175,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
 - [ ] ISC-8.2: Per-message Revert/Fork/Redo `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; icons still appear on other providers.
 - [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; questions fail-closed (1.18 has no question API).
+- [x] Mobile: compact PWA banner hosts the Agent picker (BB hides plugin composer actions); touch targets + visualViewport; declarative `defaultAgent` for the iOS app (no plugin frontend). Native fork/rewind already follow `fork: "checkpoint"`.
 
 ### F1 · Sessions
 Why: one BB thread is one OpenCode session, so resume is the same conversation.

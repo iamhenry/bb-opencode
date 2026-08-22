@@ -62,6 +62,16 @@ export function readLiveComposerProvider(from: Element | null): string | null {
   return null;
 }
 
+/** BB's compact PWA prompt box sets `data-promptbox-compact` and hides plugin actions. */
+export function composerLayoutIsCompact(from: Element | null): boolean {
+  if (typeof document === "undefined") return false;
+  const closest = from?.closest("[data-app-composer]");
+  const shells: ParentNode[] = [];
+  if (closest) shells.push(closest);
+  shells.push(document);
+  return shells.some((shell) => shell.querySelector("[data-promptbox-compact]") !== null);
+}
+
 export function newThreadShowsOpencodeAgent(from: Element | null): boolean {
   const shells: ParentNode[] = [];
   const closest = from?.closest("[data-app-composer]");

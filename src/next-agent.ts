@@ -27,6 +27,20 @@ export function peekNextAgent(
   return store.get(projectId);
 }
 
+export function resolvePromptAgent(args: {
+  stamped?: string;
+  next?: string;
+  configured?: string;
+}): string {
+  const stamped = args.stamped?.trim();
+  if (stamped) return stamped;
+  const next = args.next?.trim();
+  if (next) return next;
+  const configured = args.configured?.trim();
+  if (configured) return configured;
+  return "build";
+}
+
 export function resolveComposerProvider(args: {
   threadProviderId?: string | null;
   projectDefaultProviderId?: string | null;
