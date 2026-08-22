@@ -1,5 +1,6 @@
 node_modules/
 dist/
+opencode.json
 *.log
 .DS_Store
 coverage/
