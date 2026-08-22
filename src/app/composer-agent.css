@@ -122,6 +122,46 @@
   font-size: 0.7rem;
 }
 
+.oc-revert {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.oc-revert__btn {
+  height: 1.75rem;
+  padding: 0 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted-foreground, #a1a1aa);
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.oc-revert__btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, currentColor 16%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  color: var(--foreground, inherit);
+}
+
+.oc-revert__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.oc-revert__error {
+  max-width: 8rem;
+  overflow: hidden;
+  color: var(--destructive, #dc2626);
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .oc-slash {
   display: flex;
   flex-direction: column;

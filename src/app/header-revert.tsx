@@ -2,10 +2,15 @@ import { useEffect, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
+import "./composer-agent.css";
 
-export function HeaderRevert(props: { threadId: string }) {
+export function HeaderRevert(props: {
+  threadId: string;
+  isCompactViewport?: boolean;
+}) {
   const rpc = useRpc<typeof rpcContract>();
   const [providerId, setProviderId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"undo" | "redo" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -20,31 +25,44 @@ export function HeaderRevert(props: { threadId: string }) {
 
   if (!shouldRenderOpencodeChrome(providerId)) return null;
 
+  const run = (kind: "undo" | "redo") => {
+    setBusy(kind);
+    setMessage(null);
+    void rpc
+      .call(kind, { threadId: props.threadId })
+      .then((result) => {
+        setMessage(result.ok ? null : result.error);
+      })
+      .finally(() => setBusy(null));
+  };
+
   return (
-    <span data-opencode-header-revert="true">
+    <span className="oc-revert" data-opencode-header-revert="true">
       <button
         type="button"
+        className="oc-revert__btn"
         aria-label="Undo OpenCode turn"
-        onClick={() => {
-          void rpc.call("undo", { threadId: props.threadId }).then((result) => {
-            setMessage(result.error);
-          });
-        }}
+        title="Undo last OpenCode turn"
+        disabled={busy !== null}
+        onClick={() => run("undo")}
       >
-        Undo
+        {props.isCompactViewport ? "Undo" : "Undo"}
       </button>
       <button
         type="button"
+        className="oc-revert__btn"
         aria-label="Redo OpenCode turn"
-        onClick={() => {
-          void rpc.call("redo", { threadId: props.threadId }).then((result) => {
-            setMessage(result.error);
-          });
-        }}
+        title="Redo last OpenCode turn"
+        disabled={busy !== null}
+        onClick={() => run("redo")}
       >
         Redo
       </button>
-      {message ? <span>{message}</span> : null}
+      {message ? (
+        <span className="oc-revert__error" title={message}>
+          {message}
+        </span>
+      ) : null}
     </span>
   );
 }
