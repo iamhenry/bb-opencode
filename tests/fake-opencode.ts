@@ -131,6 +131,9 @@ export function createFakeOpenCode(): FakeOpenCode {
       async agents() {
         return fake.agents;
       },
+      async getConfig() {
+        return { model: "opencode/gpt-4.1" };
+      },
       async providers() {
         return {
           providers: [
@@ -147,6 +150,9 @@ export function createFakeOpenCode(): FakeOpenCode {
       async sessionCommand(id, body) {
         fake.calls.command.push({ id, body });
         return {};
+      },
+      async replyQuestion() {
+        return;
       },
       async replyPermission({ requestID, reply }) {
         fake.calls.reply.push({ requestID, reply });

@@ -26,14 +26,14 @@ export function resolveRevertMessageId(args: {
     if (role && message.info.role !== role) return false;
     return true;
   });
-  if (needle) {
-    const exact = pool.filter((message) => messageText(message) === needle);
-    if (exact.length > 0) return exact[exact.length - 1]?.info.id;
-    const prefix = needle.slice(0, 80);
-    const fuzzy = pool.filter((message) =>
-      messageText(message).includes(prefix),
-    );
-    if (fuzzy.length > 0) return fuzzy[fuzzy.length - 1]?.info.id;
-  }
-  return pool[pool.length - 1]?.info.id;
+  if (!needle) return undefined;
+  const exact = pool.filter((message) => messageText(message) === needle);
+  if (exact.length === 1) return exact[0]?.info.id;
+  if (exact.length > 1) return undefined;
+  const prefix = needle.slice(0, 80);
+  const fuzzy = pool.filter((message) =>
+    messageText(message).includes(prefix),
+  );
+  if (fuzzy.length === 1) return fuzzy[0]?.info.id;
+  return undefined;
 }

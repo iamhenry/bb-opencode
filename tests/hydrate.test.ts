@@ -22,6 +22,15 @@ describe("hydrate", () => {
       ],
     });
     expect(deltas[0]).toEqual({ kind: "session.reset" });
+    expect(deltas).toEqual(
+      expect.arrayContaining([
+        { kind: "turn.open" },
+        { kind: "input.provider", text: "hi" },
+      ]),
+    );
+    expect(
+      deltas.filter((delta) => delta.kind === "input.provider"),
+    ).toHaveLength(1);
     expect(
       assistantsAfterLastUser([
         {

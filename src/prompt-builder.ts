@@ -67,11 +67,19 @@ export function buildPrompt(args: {
   agent: string;
   input: readonly PromptInputLike[];
   model?: string;
+  instructions?: string;
 }): { ok: true; prompt: BuiltPrompt } | { ok: false; reason: string } {
   if (!args.agent) {
     return { ok: false, reason: "agent is required" };
   }
   const parts: PromptPart[] = [];
+  const instructions = args.instructions?.trim();
+  if (instructions) {
+    parts.push({
+      type: "text",
+      text: `[BB project instructions]\n${instructions}`,
+    });
+  }
   for (const item of args.input) {
     const mapped = mapAttachment(item);
     if (!mapped.ok) return mapped;

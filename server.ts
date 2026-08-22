@@ -687,6 +687,9 @@ async function revertThread(
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
     const thread = threadFields(await bb.sdk.threads.get({ threadId }));
+    if (thread.providerId !== PROVIDER_ID) {
+      return { ok: false, error: null };
+    }
     const hostId = await resolveHostId(bb, thread.environmentId);
     const sessionId = await resolveSessionId(
       bb,

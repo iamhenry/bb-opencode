@@ -19,11 +19,12 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
+import { configDefaultModelId } from "./catalog.js";
 import {
   assistantsAfterLastUser,
+  completedTurnBoundary,
   hydrateDeltas,
   lastUserAgent,
-  lastUserMessageId,
   type HydrateMessage,
 } from "./hydrate.js";
 import {
@@ -62,7 +63,11 @@ import {
   listSelectablePrimaries,
   type OpenCodeAgent,
 } from "./selectable-primaries.js";
-import { isVersionInWindow, versionSkewMessage } from "./identity.js";
+import {
+  isVersionInWindow,
+  SERVER_VERSION_MIN,
+  versionSkewMessage,
+} from "./identity.js";
 
 type JsonRpcId = string | number;
 
@@ -88,6 +93,8 @@ interface BoundSession {
   sessionId: string;
   cwd: string;
   permissionMode?: string;
+  instructions?: string;
+  disallowedTools: string[];
   lastSnapshot?: unknown;
 }
 
@@ -202,7 +209,7 @@ function failLiveTurns(message: string): void {
     emitDeltas(threadId, [
       {
         kind: "turn.boundary",
-        status: "error",
+        status: "failed",
         error: { message },
       },
     ]);
@@ -288,6 +295,35 @@ function permissionModeOf(options: unknown): string | undefined {
   return typeof mode === "string" ? mode : undefined;
 }
 
+function instructionsOf(options: unknown): string | undefined {
+  if (!options || typeof options !== "object") return undefined;
+  const value = (options as { instructions?: unknown }).instructions;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function disallowedToolsOf(params: unknown): string[] {
+  if (!params || typeof params !== "object") return [];
+  const value = (params as { disallowedTools?: unknown }).disallowedTools;
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+}
+
+function sessionPolicy(params: unknown): Pick<
+  BoundSession,
+  "instructions" | "disallowedTools"
+> {
+  return {
+    instructions: instructionsOf(
+      params && typeof params === "object"
+        ? (params as { options?: unknown }).options
+        : undefined,
+    ),
+    disallowedTools: disallowedToolsOf(params),
+  };
+}
+
 async function replayHydrate(
   threadId: string,
   sessionId: string,
@@ -331,6 +367,16 @@ async function onOpenCodeEvent(event: {
   const threadId = sessionToThread.get(sessionId);
   const live = threadId ? liveTurns.get(threadId) : undefined;
 
+  if (event.type.startsWith("question.")) {
+    if (threadId) {
+      await denyQuestionAsk({
+        properties: event.properties,
+        sessionId,
+        threadId,
+      });
+    }
+    return;
+  }
   if (isPermissionAskEvent(event.type)) {
     await handlePermissionAsked(event.properties, sessionId);
     return;
@@ -415,7 +461,7 @@ async function onOpenCodeEvent(event: {
       for (const [id, text] of live.textBuffers) {
         emitDeltas(threadId, closeText(id, text));
       }
-      emitDeltas(threadId, [{ kind: "turn.boundary", status: "completed" }]);
+      emitDeltas(threadId, [completedTurnBoundary()]);
       liveTurns.delete(threadId);
       if (live.mapState.unknownTally.size > 0) {
         unknownLogLines.push(
@@ -432,7 +478,7 @@ async function onOpenCodeEvent(event: {
       emitDeltas(threadId, [
         {
           kind: "turn.boundary",
-          status: "error",
+          status: "failed",
           error: { message: "OpenCode session error" },
         },
       ]);
@@ -539,6 +585,56 @@ async function denyPermissionAsk(args: {
   ]);
 }
 
+async function denyQuestionAsk(args: {
+  properties: unknown;
+  sessionId: string;
+  threadId: string;
+}): Promise<void> {
+  const active = client;
+  const requestId =
+    args.properties &&
+    typeof args.properties === "object" &&
+    typeof (args.properties as { id?: unknown }).id === "string"
+      ? (args.properties as { id: string }).id
+      : undefined;
+  if (active && requestId) {
+    try {
+      await active.replyQuestion({
+        requestID: requestId,
+        sessionID: args.sessionId,
+        reply: "reject",
+      });
+    } catch {
+      /* 1.18 has no question API; best-effort */
+    }
+  }
+  await denyPermissionAsk({
+    active: active ?? (await ensureClient()),
+    requestId,
+    sessionId: args.sessionId,
+    threadId: args.threadId,
+    reason: "OpenCode question has no BB answer UI; rejected so the turn cannot hang",
+  });
+}
+
+async function rejectPendingPermissions(threadId: string): Promise<void> {
+  const active = client;
+  for (const [key, pending] of [...pendingPermission]) {
+    if (pending.threadId !== threadId) continue;
+    pendingPermission.delete(key);
+    if (!active) continue;
+    try {
+      await active.replyPermission({
+        requestID: pending.requestId,
+        sessionID: pending.sessionId,
+        reply: "reject",
+      });
+    } catch {
+      /* already settled */
+    }
+  }
+}
+
 async function handlePermissionAsked(
   properties: unknown,
   sessionId: string,
@@ -597,6 +693,27 @@ async function handlePermissionAsked(
       sessionId,
       threadId: targetThreadId,
       reason: mapped.reason ?? "unmappable permission ask",
+    });
+    return;
+  }
+  const blocked = sessions.get(targetThreadId)?.disallowedTools ?? [];
+  const permissionName = (mapped.permission ?? "").toLowerCase();
+  const toolName =
+    mapped.subject?.kind === "tool_use"
+      ? mapped.subject.tool.toLowerCase()
+      : "";
+  if (
+    blocked.some((name) => {
+      const needle = name.toLowerCase();
+      return needle === permissionName || needle === toolName;
+    })
+  ) {
+    await denyPermissionAsk({
+      active,
+      requestId: mapped.requestId,
+      sessionId,
+      threadId: targetThreadId,
+      reason: `BB disallowed tool: ${mapped.permission ?? toolName}`,
     });
     return;
   }
@@ -699,6 +816,46 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     });
   },
 
+  [BRIDGE_REQUEST_METHODS.experimentalProviderHealth]: (id) => {
+    void (async () => {
+      try {
+        const active = await ensureClient();
+        const health = await active.health();
+        const ready = isVersionInWindow(health.version);
+        respondResult(id, {
+          supported: true,
+          health: {
+            status: ready ? "ready" : "unsupported_version",
+            statusMessage: ready ? null : versionSkewMessage(health.version),
+            accountEmail: null,
+            planLabel: null,
+            installedVersion: health.version,
+            minimumSupportedVersion: SERVER_VERSION_MIN,
+            canInstall: false,
+            canUpdate: false,
+            loginCommand: null,
+          },
+        });
+      } catch (error) {
+        respondResult(id, {
+          supported: true,
+          health: {
+            status: "unknown",
+            statusMessage:
+              error instanceof Error ? error.message : String(error),
+            accountEmail: null,
+            planLabel: null,
+            installedVersion: null,
+            minimumSupportedVersion: SERVER_VERSION_MIN,
+            canInstall: false,
+            canUpdate: false,
+            loginCommand: null,
+          },
+        });
+      }
+    })();
+  },
+
   [BRIDGE_REQUEST_METHODS.modelList]: (id, params) => {
     const parsed = modelListParamsSchema.safeParse(params);
     if (!parsed.success) {
@@ -743,7 +900,14 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
             },
           );
         });
+        let configured: string | undefined;
+        try {
+          configured = configDefaultModelId(await active.getConfig());
+        } catch {
+          configured = undefined;
+        }
         const preferred =
+          models.find((model) => model.id === configured) ??
           models.find((model) => /openai|anthropic|opencode/i.test(model.id)) ??
           models[0];
         if (preferred) preferred.isDefault = true;
@@ -790,6 +954,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           sessionId,
           cwd: parsed.data.cwd,
           permissionMode: permissionModeOf(parsed.data.options),
+          ...sessionPolicy(parsed.data),
         };
         bindSession(parsed.data.threadId, bound);
         emitDeltas(parsed.data.threadId, [{ kind: "session.reset" }]);
@@ -837,6 +1002,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           sessionId: parsed.data.providerThreadId,
           cwd: parsed.data.cwd,
           permissionMode: permissionModeOf(parsed.data.options),
+          ...sessionPolicy(parsed.data),
         });
         respondResult(id, { providerThreadId: parsed.data.providerThreadId });
         await replayHydrate(
@@ -879,6 +1045,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           sessionId: forked.id,
           cwd: parsed.data.cwd,
           permissionMode: permissionModeOf(parsed.data.options),
+          ...sessionPolicy(parsed.data),
         });
         respondResult(id, { providerThreadId: forked.id });
         await replayHydrate(parsed.data.threadId, forked.id, active);
@@ -911,6 +1078,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           return;
         }
         bound.permissionMode = permissionModeOf(parsed.data.options);
+        Object.assign(bound, sessionPolicy(parsed.data));
         respondResult(id, {});
         await runPrompt({
           threadId: parsed.data.threadId,
@@ -923,7 +1091,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         emitDeltas(parsed.data.threadId, [
           {
             kind: "turn.boundary",
-            status: "error",
+            status: "failed",
             error: {
               message: error instanceof Error ? error.message : String(error),
             },
@@ -977,6 +1145,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       try {
         if (parsed.data.intent === "interrupt") {
           const active = await ensureClient();
+          await rejectPendingPermissions(parsed.data.threadId);
           const live = liveTurns.get(parsed.data.threadId);
           const ids = new Set<string>([parsed.data.providerThreadId]);
           if (live) {
@@ -1044,14 +1213,7 @@ async function settleIssuedTurn(
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);
-  const checkpoint = lastUserMessageId(messages);
-  emitDeltas(threadId, [
-    {
-      kind: "turn.boundary",
-      status: "completed",
-      ...(checkpoint ? { providerCheckpointId: checkpoint } : {}),
-    },
-  ]);
+  emitDeltas(threadId, [completedTurnBoundary(messages)]);
 }
 
 async function runPrompt(args: {
@@ -1074,24 +1236,27 @@ async function runPrompt(args: {
     emitDeltas(args.threadId, [
       {
         kind: "turn.boundary",
-        status: "error",
+        status: "failed",
         error: { message: resolved.reason },
       },
     ]);
     return;
   }
+  const bound = sessions.get(args.threadId);
   const built = buildPrompt({
     agent: resolved.agent,
     input: args.input,
     model: typeof (args.options as { model?: unknown })?.model === "string"
       ? ((args.options as { model: string }).model as string)
       : undefined,
+    instructions:
+      bound?.instructions ?? instructionsOf(args.options),
   });
   if (!built.ok) {
     emitDeltas(args.threadId, [
       {
         kind: "turn.boundary",
-        status: "error",
+        status: "failed",
         error: { message: built.reason },
       },
     ]);
@@ -1166,7 +1331,7 @@ async function runPrompt(args: {
     emitDeltas(args.threadId, [
       {
         kind: "turn.boundary",
-        status: "error",
+        status: "failed",
         error: {
           message: error instanceof Error ? error.message : String(error),
         },

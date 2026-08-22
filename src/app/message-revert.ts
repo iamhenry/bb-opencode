@@ -1,20 +1,5 @@
 import { PROVIDER_ID } from "../identity.js";
-
-export async function callPluginRpc<T>(
-  method: string,
-  body: Record<string, unknown>,
-): Promise<T> {
-  const response = await fetch(`/api/v1/plugins/opencode/rpc/${method}`, {
-    method: "POST",
-    credentials: "same-origin",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`${method} failed: ${response.status}`);
-  }
-  return (await response.json()) as T;
-}
+import { callPluginRpc, reportActionError } from "./rpc.js";
 
 export async function runMessageUndo(args: {
   threadId: string;
@@ -26,11 +11,17 @@ export async function runMessageUndo(args: {
     { threadId: args.threadId },
   );
   if (provider.providerId !== PROVIDER_ID) return;
-  await callPluginRpc("undo", {
-    threadId: args.threadId,
-    role: args.role,
-    text: args.text,
-  });
+  const result = await callPluginRpc<{ ok: boolean; error: string | null }>(
+    "undo",
+    {
+      threadId: args.threadId,
+      role: args.role,
+      text: args.text,
+    },
+  );
+  if (!result.ok) {
+    reportActionError("Revert from here", result.error ?? "could not match that message");
+  }
 }
 
 export async function runMessageRedo(args: { threadId: string }): Promise<void> {
@@ -39,5 +30,11 @@ export async function runMessageRedo(args: { threadId: string }): Promise<void> 
     { threadId: args.threadId },
   );
   if (provider.providerId !== PROVIDER_ID) return;
-  await callPluginRpc("redo", { threadId: args.threadId });
+  const result = await callPluginRpc<{ ok: boolean; error: string | null }>(
+    "redo",
+    { threadId: args.threadId },
+  );
+  if (!result.ok) {
+    reportActionError("Redo revert", result.error ?? "nothing to redo");
+  }
 }

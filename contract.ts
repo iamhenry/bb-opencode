@@ -63,11 +63,11 @@ export const hostContract = defineRpcContract({
         text: z.string().optional(),
       })
       .strict(),
-    output: z.object({ ok: z.boolean() }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
   unrevert: {
     input: z.object({ sessionId: z.string().min(1) }).strict(),
-    output: z.object({ ok: z.boolean() }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
   listCommands: {
     input: z

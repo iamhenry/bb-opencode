@@ -59,10 +59,16 @@ export interface OpenCodeClient {
       variant?: string;
     },
   ): Promise<unknown>;
+  getConfig(): Promise<unknown>;
   replyPermission(args: {
     requestID: string;
     sessionID: string;
     reply: "once" | "always" | "reject";
+  }): Promise<void>;
+  replyQuestion(args: {
+    requestID: string;
+    sessionID: string;
+    reply: "reject";
   }): Promise<void>;
   subscribe(
     handler: (event: { type: string; properties?: unknown }) => void,
@@ -173,6 +179,10 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const result = await sdk.app.agents();
       return unwrap<OpenCodeAgentInfo[]>(result) ?? [];
     },
+    async getConfig() {
+      const result = await sdk.config.get();
+      return unwrap<unknown>(result);
+    },
     async providers() {
       const result = unwrap<unknown>(await sdk.provider.list());
       return { providers: listAuthenticatedProviders(result) };
@@ -220,6 +230,27 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       if (!next.ok) {
         throw new Error(`permission.reply failed: ${next.status}`);
       }
+    },
+    async replyQuestion({ requestID, sessionID, reply }) {
+      const paths = [
+        `/session/${sessionID}/question/${requestID}`,
+        `/session/${sessionID}/questions/${requestID}`,
+        `/question/${requestID}/reply`,
+      ];
+      for (const path of paths) {
+        const response = await fetch(`${url}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ reply, response: reply }),
+        });
+        if (response.ok || response.status !== 404) {
+          if (!response.ok) {
+            throw new Error(`question.reply failed: ${response.status}`);
+          }
+          return;
+        }
+      }
+      throw new Error("question.reply not available");
     },
     async subscribe(handler) {
       const controller = new AbortController();

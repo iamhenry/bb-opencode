@@ -128,9 +128,12 @@ export async function handleRevert(
     role: target?.role,
     text: target?.text,
   });
-  await client.revert(sessionId, messageID ? { messageID } : {});
+  if (!messageID) {
+    return { ok: false, error: "Could not match that message" };
+  }
+  await client.revert(sessionId, { messageID });
   await hydrateBoundSession(sessionId);
-  return { ok: true };
+  return { ok: true, error: null };
 }
 
 export async function handleUnrevert(dataDir: string, sessionId: string) {
@@ -138,7 +141,7 @@ export async function handleUnrevert(dataDir: string, sessionId: string) {
   const client = acquire(attached.url);
   await client.unrevert(sessionId);
   await hydrateBoundSession(sessionId);
-  return { ok: true };
+  return { ok: true, error: null };
 }
 
 export function currentLock(dataDir: string) {

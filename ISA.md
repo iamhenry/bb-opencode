@@ -173,7 +173,8 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
-- [ ] ISC-8.2: Per-message Revert/Fork `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; icons still appear on other providers. Native fork stays assistant-only; the plugin Fork action is what user bubbles get.
+- [ ] ISC-8.2: Per-message Revert/Fork/Redo `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; icons still appear on other providers.
+- [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; questions fail-closed (1.18 has no question API).
 
 ### F1 · Sessions
 Why: one BB thread is one OpenCode session, so resume is the same conversation.

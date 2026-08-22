@@ -28,6 +28,19 @@ describe("prompt builder", () => {
     }
   });
 
+  it("prepends BB project instructions", () => {
+    const built = buildPrompt({
+      agent: "build",
+      instructions: "use bun",
+      input: [{ type: "text", text: "hello" }],
+    });
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      expect(built.prompt.parts[0]?.text).toContain("[BB project instructions]");
+      expect(built.prompt.parts[0]?.text).toContain("use bun");
+    }
+  });
+
   it("fails the whole send on an unsupported attachment (ISC-21)", () => {
     const built = buildPrompt({
       agent: "build",

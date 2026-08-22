@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { listAuthenticatedProviders } from "../src/catalog.js";
+import {
+  configDefaultModelId,
+  listAuthenticatedProviders,
+} from "../src/catalog.js";
 
 describe("authenticated OpenCode catalog", () => {
   it("uses config.providers when present", () => {
@@ -32,5 +35,16 @@ describe("authenticated OpenCode catalog", () => {
         all: [{ id: "abacus" }, { id: "minimax" }],
       }),
     ).toEqual([]);
+  });
+
+  it("reads OpenCode config default as provider/model", () => {
+    expect(configDefaultModelId({ model: "opencode/gpt-4.1" })).toBe(
+      "opencode/gpt-4.1",
+    );
+    expect(
+      configDefaultModelId({
+        model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
+      }),
+    ).toBe("anthropic/claude-sonnet-4");
   });
 });

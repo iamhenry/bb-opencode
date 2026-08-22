@@ -64,13 +64,50 @@ export function assistantsAfterLastUser(
     .filter((message) => message.info.role === "assistant");
 }
 
+export function completedTurnBoundary(
+  messages?: readonly HydrateMessage[],
+): ThreadDelta {
+  const checkpoint = messages ? lastUserMessageId(messages) : undefined;
+  return {
+    kind: "turn.boundary",
+    status: "completed",
+    ...(checkpoint ? { providerCheckpointId: checkpoint } : {}),
+  };
+}
+
+function userText(message: HydrateMessage): string {
+  return message.parts
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+}
+
 export function hydrateDeltas(args: {
   sessionId: string;
   messages: readonly HydrateMessage[];
 }): ThreadDelta[] {
   const state = createMapDeltaState();
   const deltas: ThreadDelta[] = [{ kind: "session.reset" }];
+  let turnOpen = false;
+  const closeTurn = () => {
+    if (!turnOpen) return;
+    deltas.push(completedTurnBoundary(args.messages));
+    turnOpen = false;
+  };
   for (const message of args.messages) {
+    if (message.info.role === "user") {
+      closeTurn();
+      deltas.push({ kind: "turn.open" });
+      turnOpen = true;
+      const text = userText(message);
+      if (text) deltas.push({ kind: "input.provider", text });
+      continue;
+    }
+    if (!turnOpen) {
+      deltas.push({ kind: "turn.open" });
+      turnOpen = true;
+    }
     for (const part of message.parts) {
       const mapped = mapPartDelta({
         state,
@@ -86,5 +123,6 @@ export function hydrateDeltas(args: {
       }
     }
   }
+  closeTurn();
   return deltas;
 }

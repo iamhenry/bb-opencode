@@ -47,7 +47,29 @@ describe("resolveRevertMessageId", () => {
     ).toBe("a1");
   });
 
-  it("falls back to the last message of that role", () => {
-    expect(resolveRevertMessageId({ messages, role: "user" })).toBe("u2");
+  it("refuses when the clicked text matches nothing uniquely", () => {
+    expect(
+      resolveRevertMessageId({
+        messages,
+        role: "user",
+        text: "no such bubble",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("refuses duplicate identical texts instead of guessing", () => {
+    expect(
+      resolveRevertMessageId({
+        messages: [
+          ...messages,
+          {
+            info: { id: "u3", role: "user" },
+            parts: [{ type: "text", text: "first" }],
+          },
+        ],
+        role: "user",
+        text: "first",
+      }),
+    ).toBeUndefined();
   });
 });

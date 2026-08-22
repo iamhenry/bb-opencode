@@ -177,6 +177,40 @@ describe("provider bridge", () => {
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
   });
 
+  it("stamps providerCheckpointId on a completed turn", async () => {
+    const fake = installFake();
+    fake.promptImpl = async (id) => {
+      fake.messages.set(id, [
+        {
+          info: { id: "u_chk", role: "user" },
+          parts: [{ type: "text", text: "hi" }],
+        },
+        {
+          info: { id: "a_chk", role: "assistant" },
+          parts: [{ type: "text", text: "yo" }],
+        },
+      ]);
+      return {};
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "turn.boundary" &&
+          delta.status === "completed" &&
+          delta.providerCheckpointId === "u_chk",
+      ),
+    ).toBe(true);
+  });
+
   it("settles Read/Task rows even if session.idle fires first (ISC-71)", async () => {
     const fake = installFake();
     fake.promptImpl = async (id) => {
@@ -515,7 +549,7 @@ describe("provider bridge", () => {
         const deltas = (message.params as { deltas?: Array<{ kind: string; status?: string }> })
           ?.deltas;
         return deltas?.some(
-          (delta) => delta.kind === "turn.boundary" && delta.status === "error",
+          (delta) => delta.kind === "turn.boundary" && delta.status === "failed",
         );
       }),
     ).toBe(true);

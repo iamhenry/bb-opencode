@@ -34,3 +34,18 @@ export function listAuthenticatedProviders(raw: unknown): CatalogProvider[] {
   }
   return [];
 }
+
+/** OpenCode `GET /config` model → BB `provider/model` id. */
+export function configDefaultModelId(raw: unknown): string | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const model = (raw as { model?: unknown }).model;
+  if (typeof model === "string" && model.includes("/")) return model;
+  if (model && typeof model === "object") {
+    const providerID = (model as { providerID?: unknown }).providerID;
+    const modelID = (model as { modelID?: unknown }).modelID;
+    if (typeof providerID === "string" && typeof modelID === "string") {
+      return `${providerID}/${modelID}`;
+    }
+  }
+  return undefined;
+}
