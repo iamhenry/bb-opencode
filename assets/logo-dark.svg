@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-72 -42 384 384" fill="none">
-  <!-- Explicit paper: Settings dark logo is an <img>, not a currentColor mask. -->
+  <!-- Explicit paper: Settings dark logo is an img, not a theme-tinted mask. -->
   <path fill="#fafafa" fill-opacity="0.45" d="M180 240H60V120H180V240Z" />
   <path fill="#fafafa" fill-rule="evenodd" d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" />
 </svg>

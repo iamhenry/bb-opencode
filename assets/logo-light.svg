@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-72 -42 384 384" fill="none">
-  <!-- Explicit ink: Settings renders logos through <img>, where currentColor is black. -->
+  <!-- Explicit ink: Settings renders logos through img, which cannot inherit theme color. -->
   <path fill="#171717" fill-opacity="0.45" d="M180 240H60V120H180V240Z" />
   <path fill="#171717" fill-rule="evenodd" d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" />
 </svg>
