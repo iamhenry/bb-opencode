@@ -3,9 +3,9 @@ task: "First-class OpenCode community plugin for BB"
 slug: 20260822-163200_bb-plugin-opencode-v1
 project: bb-plugin-opencode
 phase: building
-progress: 88/98
+progress: 90/99
 started: 2026-08-22T16:32:00Z
-updated: 2026-08-22T19:30:00Z
+updated: 2026-08-23T14:10:00Z
 principal_stated_goal: "Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
 principal_stated_goal_source: conversation
 principal_stated_goal_signal: 2
@@ -67,8 +67,8 @@ _Avoid:_ import-as-copy, "smallest prompt then stop", silent `session.create`.
 **Import.** The user-facing action that lists unimported OpenCode sessions and, on confirm, adopts the selected ones.
 _Avoid:_ auto-scan, auto-import, sidebar sync.
 
-**Pending adopt.** Plugin storage keyed by `{projectId, hostId, opencodeSessionId}`, written when the user confirms Import. Consumed only by the user-confirmed `thread/start` that opens that listed session. After consume, the durable bind is `bbThreadId → opencodeSessionId` (used for dedup).
-_Avoid:_ a null/wildcard key consumed by the next unrelated start; treating pending adopt as a prompt; inventing a `bbThreadId` the public spawn API cannot create.
+**Pending adopt.** Durable KV keyed by `{projectId, hostId, opencodeSessionId}`. The in-memory open handoff is one-shot, 15s TTL, consumed only by the first `deriveProviderOptions` for a **new** thread id in that project. Turns on already-seen threads never consume it.
+_Avoid:_ a project-wide wildcard eaten by the next turn or an unrelated start; treating pending adopt as a prompt; inventing a `bbThreadId` the public spawn API cannot create.
 
 **Revert.** OpenCode `session.revert` / `session.unrevert`. This is undo/redo chrome.
 _Avoid:_ BB `fork`, "branch the thread".
@@ -114,7 +114,7 @@ _Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
 - Fail closed. Ambiguous transport, unknown events, unknown permissions, and version skew never guess yes.
 - One official OpenCode door. `@opencode-ai/sdk` is imported in one host module. Live chat is global `event.subscribe()` filtered by session id.
 - Actions mutate; events tell the truth. The bridge does not invent BB turn/item ids. After revert, hydrate from OpenCode; do not diff message ids.
-- Capabilities only narrow. Declare the smallest honest set. Never advertise fork, reasoning, or rename that the bridge cannot keep.
+- Capabilities only narrow. Declare the smallest honest set. Never advertise fork, reasoning, or rename that the bridge cannot keep. Reasoning effort is advertised only because BB's `model/list` schema requires it **and** the bridge forwards `reasoningLevel` as OpenCode `variant`.
 - The BB timeline is the product. No second transcript, no OpenChamber shell, no custom cards unless the generic one is actually insufficient — and V1 has already decided it is sufficient.
 - Direct probes. A claim names the command, RPC, file, or UI seam that would falsify it. No verification theater.
 
@@ -248,7 +248,7 @@ Why: sessions born outside BB enter the sidebar only when the user clicks Import
 - [~] ISC-42.2: [TOMBSTONED — see Decisions 2026-08-22 spikes] Idle-spawn adopt path. Public spawn cannot create an idle provider thread.
 - [x] ISC-42.3: If public spawn cannot create an idle provider thread, Import confirm writes a pending adopt keyed by `{projectId, hostId, opencodeSessionId}` and invents no BB thread. The user-confirmed open consumes it without `session.create`. Permanent list-only with no pending-adopt/open path does not ship.
 - [x] ISC-59: A pending adopt for session S in project P on host H is consumed exactly once by the user-confirmed `thread/start` that opens that listed session.
-- [x] ISC-60: Anti: an unrelated `thread/start` in P does not consume a pending adopt for S.
+- [x] ISC-60: Anti: a later turn on an already-seen thread in P, or an unrelated project, does not consume a pending adopt for S. Abandoned handoffs expire.
 - [x] ISC-43: A session whose `id` is already some BB thread's `providerThreadId` with `providerId === "opencode"` is not imported again.
 - [x] ISC-44: A running OpenCode session is listed as blocked and cannot be imported.
 - [x] ISC-45: A session whose server-confirmed directory is missing is listed as blocked and cannot be imported.
@@ -277,7 +277,7 @@ Why: one OpenCode on the machine, and the operator can see when it is missing, s
 ### F8 · Task children
 Why: OpenCode Task / `@mention` already creates a child session. BB shows the parent card and can adopt the child; it does not become Voyager or OpenChamber.
 
-- [x] ISC-71: A parent-session Task tool part renders as a BB tool item on the parent thread (generic card, not a custom Task card).
+- [ ] ISC-71: A parent-session Task tool part renders as a BB tool item on the parent thread (generic card, not a custom Task card). Mapper unit is green; live timeline still needs a human probe.
 - [x] ISC-71.1: Anti: the plugin does not call `session.create` because Task started.
 - [x] ISC-73: `session.status` idle / `session.idle` for a Task child does not emit `turn.boundary` on the parent BB thread.
 - [x] ISC-74: `permission.asked` whose session is a Task child of the in-flight parent renders on **that parent BB thread's** generic permission card only (never as a timeline item; ISC-22 still holds for items). Once / always / reject are written back to that same child request. Uncorrelated asks, including child asks after the parent `turn.boundary` and asks with no resolvable session, are not approved and are not attached to any thread.
@@ -297,8 +297,10 @@ Why: OpenCode already has `/commands` and a skill tool. BB has no plugin slash-c
 - [x] ISC-85: After a non-empty `skills/configure`, the next `session.prompt` includes a text part cataloguing those skill names.
 - [x] ISC-86: An empty `skills/configure` clears that catalog so a later prompt has no appendix.
 - [x] ISC-87: Anti: the plugin never writes `opencode.json` / `skills.paths` / `command` config to inject BB skills.
-- [x] ISC-88: The composer Command chip renders only with the same OpenCode visibility rule as the Agent chip (ISC-8).
-- [x] ISC-89: Anti: choosing a Command chip row inserts `/name ` into the draft and issues zero `session.command` / `session.prompt` calls.
+- [x] ISC-88: `/` autocomplete (not a Command chip) renders only with the same OpenCode visibility rule as the Agent chip (ISC-8).
+- [x] ISC-89: Anti: choosing an autocomplete row inserts `/name ` into the draft and issues zero `session.command` / `session.prompt` calls.
+- [x] ISC-90: BB `reasoningLevel` on `turn/start` is sent as OpenCode `variant` (low/medium/high; higher BB levels → `max`). Thinking parts still map as reasoning items (ISC-16).
+- [x] ISC-64.1: An unmappable or un-cardable permission ask with an id is replied `reject` (not left running). Asks with no id still do not approve (ISC-64).
 
 ## Test Strategy
 
@@ -364,7 +366,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-42.2 | bash | after an adopt seam exists, imported thread `providerThreadId` equals selected id; first open does not call `session.create` | id match; create not called | bb + OpenCode | literal |
 | ISC-42.3 | bash | if idle spawn is impossible: confirm writes pending adopt `{projectId, hostId, sessionId}` and zero new BB threads; user-confirmed open binds that id without `session.create` | pending present; create not called | bb + OpenCode | derived: honest fallback |
 | ISC-59 | bun-test | plant pending adopt P/H/S; user-confirmed start for that row binds S once; a second start does not see it | consumed once | bun-test | derived: reservation |
-| ISC-60 | bun-test | plant pending adopt P/H/S; an unrelated `thread/start` in P leaves P/H/S in storage | pending still present | bun-test | derived: reservation |
+| ISC-60 | vitest | plant pending adopt P/H/S; consume with `isNewThread: false` leaves it; other project leaves it; TTL expires it | pending still present / expired | vitest | derived: reservation |
 | ISC-43 | bash | import the same id again; rejected / omitted from list | not duplicated | bb | derived: dedup |
 | ISC-44 | bash | a running session is not importable | blocked | bb + OpenCode | derived: no steal |
 | ISC-45 | bash | session with deleted directory is not importable | blocked | bb | derived: server-confirmed path |
@@ -386,8 +388,9 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-57 | bash | after a named turn, `bb opencode logs` contains that session id or an event-type tally line from it | matching line | bb | derived: operator surface |
 | ISC-58 | bash | logged-out / missing-auth fixture; Settings shows auth failure | visible error | bb | derived: operator surface |
 | ISC-63 | bash | `opencode.json` deny for a tool; BB mode `full`; that tool is still asked or denied, not silently allowed by BB | deny/ask observed | bb + OpenCode | derived: ceiling |
-| ISC-64 | bun-test | tagged `unknown` under mode `full` does not call OpenCode allow | no approve call | bun-test | derived: fail closed |
-| ISC-71 | bun-test | `map-delta` snapshot: parent Task tool part → one generic BB tool item (same item type as ISC-17) | snapshot match | bun-test | literal |
+| ISC-64 | vitest | tagged `unknown` under mode `full` does not call OpenCode allow | no approve call | vitest | derived: fail closed |
+| ISC-64.1 | vitest | unknown ask that still has an id is replied `reject` | reply reject | vitest | derived: fail closed is deny |
+| ISC-71 | live | parent Task tool part appears as a BB tool item on the timeline | item/* present | bb | literal |
 | ISC-71.1 | bun-test | Task-started fixture: plugin `session.create` call count stays 0 | create calls 0 | bun-test | derived: server owns Task |
 | ISC-73 | bun-test | inject child `session.status` idle while parent turn open and child still listed live beforehand; parent `turn.boundary` not emitted | boundary count 0 | bun-test | derived: child idle ≠ parent done |
 | ISC-74 | bun-test | three fixtures: (1) child ask with resolvable in-flight parent → parent card, reply to child ids, no timeline item; (2) ask with no resolvable session → no approve, no attach; (3) child ask after parent boundary → no approve, no attach | card only on (1); (2)(3) no approve | bun-test | derived: fail closed |
@@ -403,8 +406,9 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-85 | bun-test | after configure, next prompt parts include the skill name | name in parts | bun-test | literal |
 | ISC-86 | bun-test | empty roots → `formatSkillAppendix` is null | null | bun-test | derived: clear catalog |
 | ISC-87 | bash | grep shipped src for writes to `opencode.json` skill/command config | 0 matches | grep | derived: no config mutate |
-| ISC-88 | bun-test | Command chip uses the same OpenCode visibility helper as the Agent chip | helper present | bun-test | derived: no chrome leak |
-| ISC-89 | bun-test | command chip onChange only calls `insertCommandToken`; no `session.command` symbol | grep | bun-test | derived: intent until send |
+| ISC-88 | vitest | slash suggest uses the same OpenCode visibility helper; `app.tsx` has no Command action | helper present; no command action | vitest | derived: no chrome leak |
+| ISC-89 | vitest | slash suggest only calls `insertCommandToken`; no `session.command` symbol | grep | vitest | derived: intent until send |
+| ISC-90 | vitest | `turn/start` with `reasoningLevel: high` sends `variant: high` | lastPrompt.variant | vitest | literal |
 
 ## Decisions
 
@@ -507,8 +511,8 @@ tests/*.test.ts
 - [x] ISA review round 3 (agent-switch delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
-- [ ] Hard blockers / remaining live: ISC-33/34 (generic card; 1.18 dialect fix landed, re-smoke required), ISC-63 (`opencode.json` deny under `full`).
-- [ ] Polish live-verify (code landed, needs a human session): incremental `message.part.updated` suffixes + tool flush on settle/stop; title poll 800ms; ISC-33/34 card after 1.18 dialect; ISC-63 deny under `full` (serve recycle).
+- [ ] Hard blockers / remaining live: ISC-33/34 (generic card; 1.18 dialect fix landed, re-smoke required), ISC-63 (`opencode.json` deny under `full`), ISC-71 live Task row.
+- [ ] Polish live-verify: streaming suffixes, tool flush, title poll, Stop, `/` autocomplete, reasoning chip actually changes the turn.
 
 ## Live smoke (operator thread, 2026-08-22 evening)
 

@@ -5,7 +5,7 @@ export interface ParsedSlashCommand {
 
 export interface ListedCommand {
   name: string;
-  description?: string;
+  description?: string | null;
 }
 
 const LEADING_SLASH = /^\/(\S+)(?:\s+([\s\S]*))?$/;
@@ -48,4 +48,24 @@ export function insertCommandToken(draft: string, name: string): string {
   if (match) return `${match[1]}/${name} `;
   if (!draft.trim()) return `/${name} `;
   return `${draft.replace(/\s*$/, "")} /${name} `;
+}
+
+/** Leading `/token` with no trailing args. Null when this is not a slash query. */
+export function slashAutocompleteQuery(text: string): string | null {
+  const trimmedStart = text.replace(/^\s+/, "");
+  if (!trimmedStart.startsWith("/") || trimmedStart.startsWith("//")) {
+    return null;
+  }
+  if (/\s/.test(trimmedStart.slice(1))) return null;
+  return trimmedStart.slice(1);
+}
+
+export function filterListedCommands(
+  query: string,
+  commands: readonly ListedCommand[],
+): ListedCommand[] {
+  const needle = query.toLowerCase();
+  return commands.filter((command) =>
+    command.name.toLowerCase().startsWith(needle),
+  );
 }

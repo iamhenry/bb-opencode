@@ -46,6 +46,7 @@ import {
   parseLeadingSlash,
 } from "./slash-command.js";
 import { formatModelDisplayName } from "./model-label.js";
+import { openCodeVariantFor, reasoningLevelOf } from "./reasoning.js";
 import {
   resolvePermissionAttach,
 } from "./permissions/target.js";
@@ -479,6 +480,47 @@ function sessionTitle(properties: unknown): string | undefined {
   return undefined;
 }
 
+async function denyPermissionAsk(args: {
+  active: OpenCodeClient;
+  requestId?: string;
+  sessionId: string;
+  threadId: string;
+  reason: string;
+}): Promise<void> {
+  if (args.requestId) {
+    try {
+      await args.active.replyPermission({
+        requestID: args.requestId,
+        sessionID: args.sessionId,
+        reply: "reject",
+      });
+    } catch {
+      /* already settled */
+    }
+  }
+  emitDeltas(args.threadId, [
+    {
+      kind: "item.open",
+      key: { id: `perm-deny-${args.requestId ?? "unknown"}` },
+      item: {
+        type: "tool",
+        tool: "permission",
+        title: "Permission denied",
+        detail: args.reason,
+      },
+    },
+    {
+      kind: "item.close",
+      key: { id: `perm-deny-${args.requestId ?? "unknown"}` },
+      item: {
+        type: "tool",
+        tool: "permission",
+        error: args.reason,
+      },
+    },
+  ]);
+}
+
 async function handlePermissionAsked(
   properties: unknown,
   sessionId: string,
@@ -508,7 +550,20 @@ async function handlePermissionAsked(
     parentThreadId,
     parentInFlight: Boolean(parentLive && !parentLive.parentBoundaryEmitted),
   });
-  if (attach.action === "drop") return;
+  if (attach.action === "drop") {
+    if (typeof mapped.requestId === "string") {
+      try {
+        await active.replyPermission({
+          requestID: mapped.requestId,
+          sessionID: sessionId,
+          reply: "reject",
+        });
+      } catch {
+        /* already settled */
+      }
+    }
+    return;
+  }
   const targetThreadId = attach.threadId;
   if (parentLive && parentSessionId) {
     parentLive.liveChildIds.add(sessionId);
@@ -518,6 +573,13 @@ async function handlePermissionAsked(
   const permissionMode = sessions.get(targetThreadId)?.permissionMode;
 
   if (mapped.tag === "unknown" || !mapped.requestId || !mapped.subject) {
+    await denyPermissionAsk({
+      active,
+      requestId: mapped.requestId,
+      sessionId,
+      threadId: targetThreadId,
+      reason: mapped.reason ?? "unmappable permission ask",
+    });
     return;
   }
   if (shouldAutoApprove({ tag: mapped.tag, permissionMode })) {
@@ -528,10 +590,18 @@ async function handlePermissionAsked(
     });
     return;
   }
-  if (!shouldShowCard({ tag: mapped.tag, permissionMode })) {
+  if (!shouldShowCard({ tag: mapped.tag, permissionMode }) || !live) {
+    await denyPermissionAsk({
+      active,
+      requestId: mapped.requestId,
+      sessionId,
+      threadId: targetThreadId,
+      reason: !live
+        ? "permission ask arrived with no live turn"
+        : "permission ask not shown",
+    });
     return;
   }
-  if (!live) return;
 
   const requestId = `oc-perm-${mapped.requestId}`;
   pendingPermission.set(requestId, {
@@ -996,10 +1066,12 @@ async function runPrompt(args: {
       const listed = await active.listCommands(cwd);
       const matched = matchListedCommand(slash.name, listed);
       if (matched) {
+        const variant = openCodeVariantFor(reasoningLevelOf(args.options));
         await active.sessionCommand(args.sessionId, {
           command: matched.name,
           arguments: slash.arguments,
           agent: built.prompt.agent,
+          ...(variant ? { variant } : {}),
         });
         await settleIssuedTurn(args.threadId, args.sessionId, active);
         return;
@@ -1015,7 +1087,11 @@ async function runPrompt(args: {
           ],
         }
       : built.prompt;
-    await active.prompt(args.sessionId, { ...prompt });
+    const variant = openCodeVariantFor(reasoningLevelOf(args.options));
+    await active.prompt(args.sessionId, {
+      ...prompt,
+      ...(variant ? { variant } : {}),
+    });
     await settleIssuedTurn(args.threadId, args.sessionId, active);
   } catch (error) {
     live.parentBoundaryEmitted = true;

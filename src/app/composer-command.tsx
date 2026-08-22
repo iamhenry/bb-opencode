@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   useBbContext,
   useComposer,
@@ -6,12 +6,16 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
-import { insertCommandToken } from "../slash-command.js";
+import {
+  filterListedCommands,
+  insertCommandToken,
+  slashAutocompleteQuery,
+} from "../slash-command.js";
 import { newThreadShowsOpencodeAgent } from "./live-provider.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
 import "./composer-agent.css";
 
-export function ComposerCommandPicker() {
+export function ComposerSlashSuggest() {
   const rpc = useRpc<typeof rpcContract>();
   const composer = useComposer();
   const view = useComposerView();
@@ -31,8 +35,11 @@ export function ComposerCommandPicker() {
       })
       .then((chrome) => {
         if (cancelled) return;
-        const bound = Boolean(threadId) && shouldRenderOpencodeChrome(chrome.providerId);
-        setVisible(bound || (isNewThread && newThreadShowsOpencodeAgent(document.body)));
+        const bound =
+          Boolean(threadId) && shouldRenderOpencodeChrome(chrome.providerId);
+        setVisible(
+          bound || (isNewThread && newThreadShowsOpencodeAgent(document.body)),
+        );
       });
     return () => {
       cancelled = true;
@@ -51,30 +58,36 @@ export function ComposerCommandPicker() {
     };
   }, [rpc, visible]);
 
-  if (!visible || commands.length === 0) return null;
+  const query = slashAutocompleteQuery(view.draft.text);
+  const matches = useMemo(
+    () => (query === null ? [] : filterListedCommands(query, commands)),
+    [commands, query],
+  );
+
+  if (!visible || query === null || matches.length === 0) return null;
 
   return (
-    <label className="oc-agent" data-opencode-command-picker="true">
-      <span className="oc-agent__prefix">Command</span>
-      <select
-        aria-label="OpenCode command"
-        className="oc-agent__select"
-        defaultValue=""
-        onChange={(event) => {
-          const name = event.target.value;
-          event.target.value = "";
-          if (!name) return;
-          composer.updateText((current) => insertCommandToken(current, name));
-          composer.focus();
-        }}
-      >
-        <option value="">Insert /</option>
-        {commands.map((command) => (
-          <option key={command.name} value={command.name}>
-            /{command.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="oc-slash" role="listbox" aria-label="OpenCode commands">
+      {matches.slice(0, 12).map((command) => (
+        <button
+          key={command.name}
+          type="button"
+          className="oc-slash__row"
+          role="option"
+          onMouseDown={(event) => {
+            event.preventDefault();
+            composer.updateText((current) =>
+              insertCommandToken(current, command.name),
+            );
+            composer.focus();
+          }}
+        >
+          <span className="oc-slash__name">/{command.name}</span>
+          {command.description ? (
+            <span className="oc-slash__hint">{command.description}</span>
+          ) : null}
+        </button>
+      ))}
+    </div>
   );
 }

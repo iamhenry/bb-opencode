@@ -690,4 +690,48 @@ describe("provider bridge", () => {
     });
     expect(fake.calls.reply).toEqual([]);
   });
+
+  it("rejects an unmappable ask that still has an id", async () => {
+    const fake = installFake();
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams(),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams(),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: { id: "p-bad", sessionID: "ses_1", permission: "bash" },
+    });
+    expect(fake.calls.reply).toEqual([{ requestID: "p-bad", reply: "reject" }]);
+  });
+
+  it("forwards BB reasoningLevel as OpenCode variant", async () => {
+    const fake = installFake();
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams(),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: {
+          ...fullOptions,
+          reasoningLevel: "high",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({ variant: "high" });
+  });
 });

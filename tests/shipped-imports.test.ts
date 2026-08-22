@@ -62,15 +62,17 @@ describe("shipped import rules", () => {
     }
   });
 
-  it("command chip uses OpenCode visibility (ISC-88)", () => {
+  it("slash autocomplete uses OpenCode visibility (ISC-88)", () => {
     const picker = read("src/app/composer-command.tsx");
     expect(picker).toContain("shouldRenderOpencodeChrome");
     expect(picker).toContain("newThreadShowsOpencodeAgent");
+    expect(read("app.tsx")).not.toContain('id: "command"');
   });
 
-  it("does not issue session.command from the command chip (ISC-89)", () => {
+  it("does not issue session.command from slash autocomplete (ISC-89)", () => {
     const picker = read("src/app/composer-command.tsx");
     expect(picker).toContain("insertCommandToken");
+    expect(picker).toContain("slashAutocompleteQuery");
     expect(picker).not.toContain("session.command");
     expect(picker).not.toContain("sessionCommand");
   });

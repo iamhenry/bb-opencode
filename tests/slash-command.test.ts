@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  filterListedCommands,
   hasNonTextParts,
   insertCommandToken,
   matchListedCommand,
   parseLeadingSlash,
+  slashAutocompleteQuery,
 } from "../src/slash-command.js";
 import { formatSkillAppendix } from "../src/skill-appendix.js";
 
@@ -26,6 +28,18 @@ describe("slash commands", () => {
     const listed = [{ name: "init" }, { name: "review" }];
     expect(matchListedCommand("init", listed)?.name).toBe("init");
     expect(matchListedCommand("nope", listed)).toBeUndefined();
+  });
+
+  it("exposes a leading slash token as an autocomplete query", () => {
+    expect(slashAutocompleteQuery("/in")).toBe("in");
+    expect(slashAutocompleteQuery("/")).toBe("");
+    expect(slashAutocompleteQuery("/init extra")).toBeNull();
+    expect(slashAutocompleteQuery("please /init")).toBeNull();
+    expect(
+      filterListedCommands("in", [{ name: "init" }, { name: "review" }]).map(
+        (item) => item.name,
+      ),
+    ).toEqual(["init"]);
   });
 
   it("inserts or replaces a leading slash token", () => {

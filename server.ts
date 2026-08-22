@@ -37,6 +37,7 @@ import {
 const stamps = createAgentStampStore();
 const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
+const seenThreadIds = new Set<string>();
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
@@ -65,7 +66,12 @@ export default async function plugin(bb: BbPluginApi) {
       const agent =
         peekAgent(stamps, ctx.threadId) ??
         consumeNextAgent(nextAgents, ctx.projectId);
-      const adopt = consumeNextAdopt(nextAdopts, ctx.projectId);
+      const isNewThread = !seenThreadIds.has(ctx.threadId);
+      seenThreadIds.add(ctx.threadId);
+      const adopt = consumeNextAdopt(nextAdopts, {
+        projectId: ctx.projectId,
+        isNewThread,
+      });
       return {
         ...(agent ? { agent } : {}),
         ...(adopt ? { adoptSessionId: adopt.opencodeSessionId } : {}),
@@ -292,7 +298,10 @@ export default async function plugin(bb: BbPluginApi) {
         );
         return { threadId: thread.id };
       } catch (error) {
-        consumeNextAdopt(nextAdopts, decision.projectId);
+        consumeNextAdopt(nextAdopts, {
+          projectId: decision.projectId,
+          isNewThread: true,
+        });
         throw error;
       }
     },

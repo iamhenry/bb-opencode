@@ -52,6 +52,7 @@ export interface OpenCodeClient {
       arguments?: string;
       agent?: string;
       model?: string;
+      variant?: string;
     },
   ): Promise<unknown>;
   replyPermission(args: {
@@ -127,11 +128,17 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       );
     },
     async prompt(id, body) {
-      const response = await fetch(`${url}/session/${id}/message`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const send = (payload: Record<string, unknown>) =>
+        fetch(`${url}/session/${id}/message`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      let response = await send(body);
+      if (!response.ok && response.status === 400 && "variant" in body) {
+        const { variant: _variant, thinking: _thinking, ...rest } = body;
+        response = await send(rest);
+      }
       if (!response.ok) {
         throw new Error(`session.prompt failed: ${response.status} ${await response.text()}`);
       }
