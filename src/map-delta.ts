@@ -8,10 +8,38 @@ export interface ThreadDelta {
 export interface MapDeltaState {
   unknownTally: Map<string, number>;
   itemKeys: Map<string, { channel: string } | { id: string }>;
+  emittedText: Map<string, string>;
+  openedItems: Map<string, "command" | "tool">;
 }
 
 export function createMapDeltaState(): MapDeltaState {
-  return { unknownTally: new Map(), itemKeys: new Map() };
+  return {
+    unknownTally: new Map(),
+    itemKeys: new Map(),
+    emittedText: new Map(),
+    openedItems: new Map(),
+  };
+}
+
+function nextTextChunk(
+  state: MapDeltaState,
+  partId: string,
+  full: string | undefined,
+  incremental?: string,
+): string {
+  const previous = state.emittedText.get(partId) ?? "";
+  const next =
+    typeof full === "string" && full.length > 0
+      ? full
+      : incremental
+        ? `${previous}${incremental}`
+        : previous;
+  const chunk =
+    incremental && (!full || full === `${previous}${incremental}`)
+      ? incremental
+      : next.slice(previous.length);
+  if (next.length > 0) state.emittedText.set(partId, next);
+  return chunk;
 }
 
 export function tallyUnknown(state: MapDeltaState, type: string): void {
@@ -36,6 +64,7 @@ interface PartLike {
     input?: Record<string, unknown>;
     metadata?: Record<string, unknown>;
     output?: string;
+    error?: string;
     title?: string;
   };
 }
@@ -44,28 +73,38 @@ export function mapPartDelta(args: {
   state: MapDeltaState;
   part: PartLike;
   sessionId: string;
+  delta?: string;
 }): ThreadDelta[] {
   const part = args.part;
   const type = part.type ?? "unknown";
   if (type === "text" || type === "text-delta") {
-    const key = { channel: `text:${part.id ?? "anon"}` };
+    const partId = part.id ?? "anon";
+    const chunk = nextTextChunk(args.state, partId, part.text, args.delta);
+    if (!chunk) return [];
     return [
       {
         kind: "item.textDelta",
-        key,
+        key: { channel: `text:${partId}` },
         channel: "agentMessage",
-        text: part.text ?? "",
+        text: chunk,
       },
     ];
   }
   if (type === "reasoning" || type === "reasoning-delta") {
-    const key = { channel: `reasoning:${part.id ?? "anon"}` };
+    const partId = part.id ?? "anon";
+    const chunk = nextTextChunk(
+      args.state,
+      `reasoning:${partId}`,
+      part.text,
+      args.delta,
+    );
+    if (!chunk) return [];
     return [
       {
         kind: "item.textDelta",
-        key,
+        key: { channel: `reasoning:${partId}` },
         channel: "reasoningText",
-        text: part.text ?? "",
+        text: chunk,
       },
     ];
   }
@@ -74,6 +113,10 @@ export function mapPartDelta(args: {
     const itemId = part.id ?? part.callID ?? toolName;
     const key = { id: itemId };
     args.state.itemKeys.set(itemId, key);
+    args.state.openedItems.set(
+      itemId,
+      isBashToolName(toolName) ? "command" : "tool",
+    );
     if (isBashToolName(toolName)) {
       const command =
         (typeof part.state?.input?.command === "string" &&
@@ -148,7 +191,7 @@ export function mapPartDelta(args: {
           result: part.state?.output,
           error:
             part.state.status === "error"
-              ? String(part.state.output ?? "error")
+              ? String(part.state.error ?? part.state.output ?? "error")
               : undefined,
         },
         presentation,
@@ -180,4 +223,20 @@ export function closeReasoning(partId: string, text: string): ThreadDelta[] {
       text,
     },
   ];
+}
+
+export function closeOpenedItems(state: MapDeltaState): ThreadDelta[] {
+  const deltas: ThreadDelta[] = [];
+  for (const [itemId, kind] of state.openedItems) {
+    deltas.push({
+      kind: "item.close",
+      key: { id: itemId },
+      item:
+        kind === "command"
+          ? { type: "command", command: "", cwd: "", aggregatedOutput: "" }
+          : { type: "tool", tool: "tool" },
+    });
+  }
+  state.openedItems.clear();
+  return deltas;
 }

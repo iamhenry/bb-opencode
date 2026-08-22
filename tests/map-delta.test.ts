@@ -58,6 +58,30 @@ describe("map-delta", () => {
     });
   });
 
+  it("emits only new text suffix so turns stream instead of dumping", () => {
+    const state = createMapDeltaState();
+    const first = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: { id: "t1", type: "text", text: "Hel" },
+    });
+    const second = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: { id: "t1", type: "text", text: "Hello" },
+      delta: "lo",
+    });
+    expect(first[0]).toMatchObject({ text: "Hel" });
+    expect(second[0]).toMatchObject({ text: "lo" });
+    expect(
+      mapPartDelta({
+        state,
+        sessionId: "s",
+        part: { id: "t1", type: "text", text: "Hello" },
+      }),
+    ).toEqual([]);
+  });
+
   it("keeps successive bash updates on one item id (ISC-18)", () => {
     const state = createMapDeltaState();
     const first = mapPartDelta({

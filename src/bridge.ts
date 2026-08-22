@@ -20,6 +20,7 @@ import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
 import { hydrateDeltas, lastUserAgent, type HydrateMessage } from "./hydrate.js";
 import {
+  closeOpenedItems,
   closeText,
   createMapDeltaState,
   formatUnknownTally,
@@ -235,7 +236,7 @@ function startTitlePoller(): void {
     void Promise.all(
       [...sessionToThread.keys()].map((sessionId) => syncSessionTitle(sessionId)),
     );
-  }, 2000);
+  }, 800);
   titleTimer.unref?.();
 }
 
@@ -357,12 +358,13 @@ async function onOpenCodeEvent(event: {
   }
 
   if (event.type === "message.part.delta" || event.type === "message.part.updated") {
-    const part =
+    const record =
       event.properties && typeof event.properties === "object"
-        ? ((event.properties as { part?: Record<string, unknown> }).part ??
-          event.properties)
+        ? (event.properties as { part?: Record<string, unknown>; delta?: unknown })
         : undefined;
-    if (part && typeof part === "object") {
+    const part = record?.part ?? record;
+    const delta = typeof record?.delta === "string" ? record.delta : undefined;
+    if (part && typeof part === "object" && "type" in part) {
       const childId = taskChildSessionId(part as Record<string, unknown>);
       if (childId) live.liveChildIds.add(childId);
       emitDeltas(
@@ -371,11 +373,14 @@ async function onOpenCodeEvent(event: {
           state: live.mapState,
           part,
           sessionId,
+          delta,
         }),
       );
       const typed = part as { id?: string; type?: string; text?: string };
-      if (typed.type === "text" && typed.text && typed.id) {
-        live.textBuffers.set(typed.id, typed.text);
+      if (typed.type === "text" && typed.id) {
+        const latest =
+          live.mapState.emittedText.get(typed.id) ?? typed.text ?? "";
+        if (latest) live.textBuffers.set(typed.id, latest);
       }
     }
     return;
@@ -869,6 +874,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           if (live && !live.parentBoundaryEmitted) {
             live.parentBoundaryEmitted = true;
             emitDeltas(parsed.data.threadId, [
+              ...closeOpenedItems(live.mapState),
               { kind: "turn.boundary", status: "interrupted" },
             ]);
             liveTurns.delete(parsed.data.threadId);
@@ -897,27 +903,20 @@ async function settleIssuedTurn(
   const lastAssistant = [...messages]
     .reverse()
     .find((message) => message.info.role === "assistant");
-  const text =
-    lastAssistant?.parts
-      .filter((part) => part.type === "text" && part.text)
-      .map((part) => part.text ?? "")
-      .join("") ?? "";
-  if (text) {
-    emitDeltas(threadId, [
-      {
-        kind: "item.textDelta",
-        key: { channel: "final" },
-        channel: "agentMessage",
-        text,
-      },
-      {
-        kind: "item.textClose",
-        key: { channel: "final" },
-        channel: "agentMessage",
-        text,
-      },
-    ]);
+  const leftovers: ThreadDelta[] = [];
+  for (const part of lastAssistant?.parts ?? []) {
+    leftovers.push(
+      ...mapPartDelta({
+        state: liveAfter.mapState,
+        part,
+        sessionId,
+      }),
+    );
+    if (part.type === "text" && part.text && part.id) {
+      leftovers.push(...closeText(part.id, part.text));
+    }
   }
+  if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);
   emitDeltas(threadId, [{ kind: "turn.boundary", status: "completed" }]);

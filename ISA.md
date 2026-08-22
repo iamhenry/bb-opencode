@@ -508,7 +508,7 @@ tests/*.test.ts
 - [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
 - [ ] Hard blockers / remaining live: ISC-33/34 (generic card; 1.18 dialect fix landed, re-smoke required), ISC-63 (`opencode.json` deny under `full`).
-- [ ] Polish still open (not acceptable to ship as rough): live mid-turn streaming, every tool row including Task, title immediacy, permission cards, Stop never leaving a stuck running tool.
+- [ ] Polish live-verify (code landed, needs a human session): incremental `message.part.updated` suffixes + tool flush on settle/stop; title poll 800ms; ISC-33/34 card after 1.18 dialect; ISC-63 deny under `full` (serve recycle).
 
 ## Live smoke (operator thread, 2026-08-22 evening)
 
