@@ -6,10 +6,16 @@ import {
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
 import { runMessageFork } from "./src/app/message-fork.js";
 import { runMessageRedo, runMessageUndo } from "./src/app/message-revert.js";
+import { OpenCodeProviderIcon } from "./src/app/provider-icon.js";
 import { SettingsSection } from "./src/app/settings-section.js";
+import { PROVIDER_ID } from "./src/identity.js";
 import "./src/app/composer-agent.css";
 
 export default definePluginApp((app) => {
+  app.slots.experimental_providerIcon({
+    providerId: PROVIDER_ID,
+    icon: OpenCodeProviderIcon,
+  });
   app.composer.customize({
     id: "opencode-agent",
     scopes: ["thread", "queued-message", "new-thread"],

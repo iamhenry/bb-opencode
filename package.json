@@ -13,8 +13,8 @@
     "description": "Run BB threads on a detached OpenCode server.",
     "branding": {
       "logo": {
-        "light": "./assets/icon.svg",
-        "dark": "./assets/icon.svg"
+        "light": "./assets/logo-light.svg",
+        "dark": "./assets/logo-dark.svg"
       }
     },
     "server": "./server.ts",
