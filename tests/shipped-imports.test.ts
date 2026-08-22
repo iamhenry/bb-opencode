@@ -79,7 +79,7 @@ describe("shipped import rules", () => {
 
   it("does not issue RPC from picker onChange (ISC-29.2)", () => {
     const picker = read("src/app/composer-agent.tsx");
-    expect(picker).toMatch(/onChange=\{\(event\) => \{\s*setAgent/);
+    expect(picker).toContain("setAgent(option.name)");
     expect(picker).not.toContain("switchAgent");
     expect(picker).not.toContain("noReply");
   });
