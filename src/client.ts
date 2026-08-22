@@ -44,7 +44,11 @@ export interface OpenCodeClient {
   unrevert(id: string): Promise<unknown>;
   agents(): Promise<OpenCodeAgentInfo[]>;
   providers(): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
-  replyPermission(requestID: string, reply: "once" | "always" | "reject"): Promise<void>;
+  replyPermission(args: {
+    requestID: string;
+    sessionID: string;
+    reply: "once" | "always" | "reject";
+  }): Promise<void>;
   subscribe(
     handler: (event: { type: string; properties?: unknown }) => void,
   ): Promise<{ unsubscribe(): void }>;
@@ -145,14 +149,26 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const result = unwrap<unknown>(await sdk.provider.list());
       return { providers: listAuthenticatedProviders(result) };
     },
-    async replyPermission(requestID, reply) {
-      const response = await fetch(`${url}/permission/${requestID}/reply`, {
+    async replyPermission({ requestID, sessionID, reply }) {
+      const legacy = await fetch(
+        `${url}/session/${sessionID}/permissions/${requestID}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ response: reply }),
+        },
+      );
+      if (legacy.ok) return;
+      if (legacy.status !== 404) {
+        throw new Error(`permission.reply failed: ${legacy.status}`);
+      }
+      const next = await fetch(`${url}/permission/${requestID}/reply`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ reply }),
       });
-      if (!response.ok) {
-        throw new Error(`permission.reply failed: ${response.status}`);
+      if (!next.ok) {
+        throw new Error(`permission.reply failed: ${next.status}`);
       }
     },
     async subscribe(handler) {

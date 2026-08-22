@@ -122,7 +122,7 @@ export function createFakeOpenCode(): FakeOpenCode {
           ],
         };
       },
-      async replyPermission(requestID, reply) {
+      async replyPermission({ requestID, reply }) {
         fake.calls.reply.push({ requestID, reply });
       },
       async subscribe(next) {

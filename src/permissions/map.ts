@@ -56,18 +56,67 @@ const FILE_CHANGE_PERMISSIONS = new Set([
   "apply_patch",
 ]);
 
+export function isPermissionAskEvent(type: string): boolean {
+  return type === "permission.asked" || type === "permission.updated";
+}
+
+function permissionNameOf(ask: OpenCodePermissionAsk): string | undefined {
+  if (typeof ask.permission === "string" && ask.permission.length > 0) {
+    return ask.permission;
+  }
+  const type =
+    ask && typeof ask === "object"
+      ? (ask as { type?: unknown }).type
+      : undefined;
+  if (typeof type === "string" && type.length > 0 && !type.includes(".")) {
+    return type;
+  }
+  return undefined;
+}
+
+function patternsOf(ask: OpenCodePermissionAsk): string[] {
+  if (Array.isArray(ask.patterns)) {
+    return ask.patterns.filter((item): item is string => typeof item === "string");
+  }
+  const pattern =
+    ask && typeof ask === "object"
+      ? (ask as { pattern?: unknown }).pattern
+      : undefined;
+  if (typeof pattern === "string") return [pattern];
+  if (Array.isArray(pattern)) {
+    return pattern.filter((item): item is string => typeof item === "string");
+  }
+  return [];
+}
+
+function callIdOf(ask: OpenCodePermissionAsk): string | undefined {
+  if (
+    ask.tool &&
+    typeof ask.tool === "object" &&
+    typeof (ask.tool as { callID?: unknown }).callID === "string"
+  ) {
+    return (ask.tool as { callID: string }).callID;
+  }
+  const callID =
+    ask && typeof ask === "object"
+      ? (ask as { callID?: unknown }).callID
+      : undefined;
+  return typeof callID === "string" && callID.length > 0 ? callID : undefined;
+}
+
 export function mapPermissionAsk(raw: unknown): MappedPermission {
   if (!raw || typeof raw !== "object") {
     return { tag: "unknown", reason: "ask is not an object" };
   }
   const ask = raw as OpenCodePermissionAsk;
+  const permission = permissionNameOf(ask);
   if (typeof ask.id !== "string" || ask.id.length === 0) {
     return { tag: "unknown", reason: "missing permission id" };
   }
   if (typeof ask.sessionID !== "string" || ask.sessionID.length === 0) {
     return { tag: "unknown", reason: "missing sessionID" };
   }
-  if (typeof ask.permission !== "string" || ask.permission.length === 0) {
+  if (!permission) {
     return { tag: "unknown", reason: "missing permission name" };
   }
 
@@ -75,17 +124,8 @@ export function mapPermissionAsk(raw: unknown): MappedPermission {
     ask.metadata && typeof ask.metadata === "object"
       ? (ask.metadata as Record<string, unknown>)
       : {};
-  const patterns = Array.isArray(ask.patterns)
-    ? ask.patterns.filter((item): item is string => typeof item === "string")
-    : [];
-  const itemId =
-    ask.tool &&
-    typeof ask.tool === "object" &&
-    typeof (ask.tool as { callID?: unknown }).callID === "string"
-      ? ((ask.tool as { callID: string }).callID as string)
-      : ask.id;
-
-  const permission = ask.permission;
+  const patterns = patternsOf(ask);
+  const itemId = callIdOf(ask) ?? ask.id;
   if (COMMAND_PERMISSIONS.has(permission)) {
     const command =
       (typeof metadata.command === "string" && metadata.command) ||

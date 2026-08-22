@@ -29,6 +29,7 @@ import {
 } from "./map-delta.js";
 import {
   decisionToReply,
+  isPermissionAskEvent,
   mapPermissionAsk,
   shouldAutoApprove,
   shouldShowCard,
@@ -311,7 +312,7 @@ async function onOpenCodeEvent(event: {
   const threadId = sessionToThread.get(sessionId);
   const live = threadId ? liveTurns.get(threadId) : undefined;
 
-  if (event.type === "permission.asked") {
+  if (isPermissionAskEvent(event.type)) {
     await handlePermissionAsked(event.properties, sessionId);
     return;
   }
@@ -505,7 +506,11 @@ async function handlePermissionAsked(
     return;
   }
   if (shouldAutoApprove({ tag: mapped.tag, permissionMode })) {
-    await active.replyPermission(mapped.requestId, "once");
+    await active.replyPermission({
+      requestID: mapped.requestId,
+      sessionID: sessionId,
+      reply: "once",
+    });
     return;
   }
   if (!shouldShowCard({ tag: mapped.tag, permissionMode })) {
@@ -1004,9 +1009,15 @@ export function handleLine(line: string): void {
         const reply =
           typeof decision === "string" ? decisionToReply(decision) : undefined;
         if (reply && client) {
-          void client.replyPermission(pending.requestId, reply).catch(() => {
-            /* fail closed */
-          });
+          void client
+            .replyPermission({
+              requestID: pending.requestId,
+              sessionID: pending.sessionId,
+              reply,
+            })
+            .catch(() => {
+              /* fail closed */
+            });
         }
       }
     }

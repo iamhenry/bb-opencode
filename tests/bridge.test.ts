@@ -427,6 +427,55 @@ describe("provider bridge", () => {
     expect(fake.calls.reply).toEqual([{ requestID: "p-full", reply: "once" }]);
   });
 
+  it("surfaces a 1.18 permission.updated ask as a card (ISC-33 dialect)", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          permissionMode: "accept-edits",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        ...turnParams({
+          options: {
+            permissionMode: "accept-edits",
+            permissionScope: "full",
+            approvalReviewer: null,
+            permissionEscalation: null,
+            providerOptions: { agent: "build" },
+          },
+        }),
+      },
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.updated",
+      properties: {
+        id: "p-118",
+        sessionID: "ses_1",
+        type: "bash",
+        pattern: "echo *",
+        callID: "call_118",
+        metadata: { command: "echo ISC33_PERM_PROBE" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(true);
+  });
+
   it("does not auto-approve under accept-edits (ISC-36)", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);

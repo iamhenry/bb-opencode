@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decisionToReply,
+  isPermissionAskEvent,
   mapPermissionAsk,
   shouldAutoApprove,
 } from "../src/permissions/map.js";
@@ -32,6 +33,25 @@ describe("permission map", () => {
     expect(
       shouldAutoApprove({ tag: "ok", permissionMode: "accept-edits" }),
     ).toBe(false);
+  });
+
+  it("maps 1.18 permission.updated bash asks (type/pattern/callID)", () => {
+    const mapped = mapPermissionAsk({
+      id: "p1",
+      sessionID: "s1",
+      type: "bash",
+      pattern: "echo *",
+      callID: "call_1",
+      metadata: { command: "echo hi" },
+    });
+    expect(mapped.tag).toBe("ok");
+    expect(mapped.subject).toMatchObject({
+      kind: "command",
+      command: "echo hi",
+      itemId: "call_1",
+    });
+    expect(isPermissionAskEvent("permission.updated")).toBe(true);
+    expect(isPermissionAskEvent("permission.asked")).toBe(true);
   });
 
   it("writes card decisions back as OpenCode replies", () => {
