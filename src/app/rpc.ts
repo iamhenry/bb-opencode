@@ -11,7 +11,26 @@ export async function callPluginRpc<T>(
   if (!response.ok) {
     throw new Error(`${method} failed: ${response.status}`);
   }
-  return (await response.json()) as T;
+  return unwrapPluginRpcResult<T>(await response.json(), method);
+}
+
+/** BB wraps plugin RPC as `{ ok: true, result }` or `{ ok: false, error }`. */
+export function unwrapPluginRpcResult<T>(raw: unknown, method: string): T {
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`${method} returned an empty response`);
+  }
+  const record = raw as { ok?: unknown; result?: unknown; error?: unknown };
+  if (record.ok === false) {
+    const error =
+      typeof record.error === "string" && record.error
+        ? record.error
+        : `${method} failed`;
+    throw new Error(error);
+  }
+  if (record.ok === true && "result" in record) {
+    return record.result as T;
+  }
+  return raw as T;
 }
 
 export function reportActionError(action: string, error: string): void {
