@@ -52,8 +52,11 @@ export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
   const settings = bb.settings.define({
     defaultAgent: {
-      type: "string",
+      type: "select",
       label: "Default OpenCode agent",
+      description:
+        "Used on new OpenCode threads. The iOS app has no in-composer Agent chip; change it here. Desktop/PWA show the chip when OpenCode is selected.",
+      options: ["build", "plan", "orchestrator"],
       default: "build",
     },
   });
