@@ -1,4 +1,5 @@
 import { isBashToolName } from "./permissions/map.js";
+import { taskChildSessionId, taskDelegationLabel } from "./task-child.js";
 
 export interface ThreadDelta {
   kind: string;
@@ -86,10 +87,6 @@ function coreToolItem(
   part: PartLike,
 ): Record<string, unknown> {
   const input = part.state?.input;
-  const metadata =
-    part.state?.metadata && typeof part.state.metadata === "object"
-      ? (part.state.metadata as Record<string, unknown>)
-      : undefined;
   if (toolName === "read" || toolName === "read_file") {
     return {
       type: "fileRead",
@@ -114,17 +111,11 @@ function coreToolItem(
   }
   if (toolName === "task" || toolName === "Task") {
     const child =
-      stringField(part.state as Record<string, unknown> | undefined, "sessionID") ??
-      stringField(part.state as Record<string, unknown> | undefined, "sessionId") ??
-      stringField(metadata, "sessionID") ??
-      stringField(metadata, "sessionId") ??
-      part.id ??
-      part.callID ??
-      "task";
+      taskChildSessionId(part) ?? part.id ?? part.callID ?? "task";
     return {
       type: "delegation",
       childRef: child,
-      label: part.state?.title || "Task",
+      label: taskDelegationLabel(part),
       background: false,
       summary:
         typeof part.state?.output === "string" ? part.state.output : undefined,
@@ -138,14 +129,23 @@ function coreToolItem(
   };
 }
 
+function deltaKey<T extends { channel: string } | { providerItemId: string }>(
+  key: T,
+  parentRef?: string,
+): T {
+  return parentRef ? ({ ...key, parentRef } as T) : key;
+}
+
 export function mapPartDelta(args: {
   state: MapDeltaState;
   part: PartLike;
   sessionId: string;
   delta?: string;
+  parentRef?: string;
 }): ThreadDelta[] {
   const part = args.part;
   const type = part.type ?? "unknown";
+  const parentRef = args.parentRef;
   if (type === "text" || type === "text-delta") {
     const partId = part.id ?? "anon";
     const chunk = nextTextChunk(args.state, partId, part.text, args.delta);
@@ -153,7 +153,7 @@ export function mapPartDelta(args: {
     return [
       {
         kind: "item.textDelta",
-        key: { channel: `text:${partId}` },
+        key: deltaKey({ channel: `text:${partId}` }, parentRef),
         channel: "agentMessage",
         text: chunk,
       },
@@ -171,7 +171,7 @@ export function mapPartDelta(args: {
     return [
       {
         kind: "item.textDelta",
-        key: { channel: `reasoning:${partId}` },
+        key: deltaKey({ channel: `reasoning:${partId}` }, parentRef),
         channel: "reasoningText",
         text: chunk,
       },
@@ -182,7 +182,7 @@ export function mapPartDelta(args: {
     if (toolName === "question") return [];
     const itemId = part.id ?? part.callID ?? toolName;
     if (args.state.closedItems.has(itemId)) return [];
-    const key = { providerItemId: itemId };
+    const key = deltaKey({ providerItemId: itemId }, parentRef);
     args.state.itemKeys.set(itemId, key);
     const alreadyOpen = args.state.openedItems.has(itemId);
     const kind = isBashToolName(toolName) ? "command" : "tool";
@@ -236,12 +236,15 @@ export function mapPartDelta(args: {
       }
       return deltas;
     }
+    const isTask = toolName === "task" || toolName === "Task";
     const presentation = {
-      label: {
-        pending: part.state?.title || `Running ${toolName}`,
-        completed: part.state?.title || `Ran ${toolName}`,
-      },
-      icon: { glyph: toolName === "task" ? "Bot" : "Wrench" },
+      label: isTask
+        ? { pending: "Running subagent", completed: "Subagent finished" }
+        : {
+            pending: part.state?.title || `Running ${toolName}`,
+            completed: part.state?.title || `Ran ${toolName}`,
+          },
+      icon: { glyph: isTask ? "Bot" : "Wrench" },
     };
     const item = coreToolItem(toolName, part);
     const deltas: ThreadDelta[] = [];
@@ -286,6 +289,7 @@ export function mapSessionNextEvent(args: {
   properties?: unknown;
   state: MapDeltaState;
   sessionId: string;
+  parentRef?: string;
 }): ThreadDelta[] {
   const record =
     args.properties && typeof args.properties === "object"
@@ -298,6 +302,7 @@ export function mapSessionNextEvent(args: {
     return mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,
+      parentRef: args.parentRef,
       part: { id, type: "text" },
       delta,
     });
@@ -309,9 +314,10 @@ export function mapSessionNextEvent(args: {
     const leftover = mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,
+      parentRef: args.parentRef,
       part: { id, type: "text", text },
     });
-    return [...leftover, ...closeText(id, text)];
+    return [...leftover, ...closeText(id, text, args.parentRef)];
   }
   if (args.type === "session.next.reasoning.delta") {
     const id =
@@ -321,6 +327,7 @@ export function mapSessionNextEvent(args: {
     return mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,
+      parentRef: args.parentRef,
       part: { id, type: "reasoning" },
       delta,
     });
@@ -336,6 +343,7 @@ export function mapSessionNextEvent(args: {
     return mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,
+      parentRef: args.parentRef,
       part: {
         id,
         type: "tool",
@@ -360,6 +368,7 @@ export function mapSessionNextEvent(args: {
     return mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,
+      parentRef: args.parentRef,
       part: {
         id,
         type: "tool",
@@ -379,11 +388,15 @@ export function mapSessionNextEvent(args: {
   return [];
 }
 
-export function closeText(partId: string, text: string): ThreadDelta[] {
+export function closeText(
+  partId: string,
+  text: string,
+  parentRef?: string,
+): ThreadDelta[] {
   return [
     {
       kind: "item.textClose",
-      key: { channel: `text:${partId}` },
+      key: deltaKey({ channel: `text:${partId}` }, parentRef),
       channel: "agentMessage",
       text,
     },

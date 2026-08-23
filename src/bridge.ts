@@ -20,6 +20,7 @@ import {
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
 import { shouldPublishOpenCodeTitle } from "./session-title.js";
+import { taskChildSessionId } from "./task-child.js";
 import { configDefaultModelId } from "./catalog.js";
 import {
   assistantsAfterLastUser,
@@ -99,6 +100,12 @@ export interface BridgeDeps {
   now?: () => number;
 }
 
+interface ChildWork {
+  parentItemId: string;
+  mapState: MapDeltaState;
+  turnOpened: boolean;
+}
+
 interface LiveTurn {
   threadId: string;
   sessionId: string;
@@ -107,6 +114,7 @@ interface LiveTurn {
   textBuffers: Map<string, string>;
   parentBoundaryEmitted: boolean;
   liveChildIds: Set<string>;
+  childWork: Map<string, ChildWork>;
 }
 
 interface BoundSession {
@@ -310,12 +318,15 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
   const threadId = sessionToThread.get(sessionId);
   if (!threadId) return false;
   const live = liveTurns.get(threadId);
-  if (!live || live.parentBoundaryEmitted) return false;
+  if (!live || live.parentBoundaryEmitted || live.sessionId !== sessionId) {
+    return false;
+  }
   try {
     const messages = (await client.sessionMessages(sessionId)) as HydrateMessage[];
     const leftovers: ThreadDelta[] = [];
     for (const message of assistantsAfterLastUser(messages)) {
       for (const part of message.parts) {
+        rememberTaskChild(live, part);
         leftovers.push(
           ...mapPartDelta({
             state: live.mapState,
@@ -324,6 +335,36 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
           }),
         );
       }
+    }
+    try {
+      const children = await client.sessionChildren(sessionId);
+      for (const child of children) {
+        live.liveChildIds.add(child.id);
+        if (!live.childWork.has(child.id)) {
+          for (const message of messages) {
+            for (const part of message.parts) {
+              if (taskChildSessionId(part) === child.id) {
+                rememberTaskChild(live, part);
+              }
+            }
+          }
+        }
+        if (!live.childWork.has(child.id)) continue;
+        const childMessages = (await client.sessionMessages(
+          child.id,
+        )) as HydrateMessage[];
+        leftovers.push(
+          ...projectChildParts(
+            live,
+            child.id,
+            childMessages.flatMap((message) =>
+              message.parts.map((part) => part as Record<string, unknown>),
+            ),
+          ),
+        );
+      }
+    } catch {
+      /* children are best-effort; parent leftovers still apply */
     }
     if (leftovers.length === 0) return false;
     emitDeltas(threadId, leftovers);
@@ -519,8 +560,10 @@ async function onOpenCodeEvent(event: {
     }
     return;
   }
-  const threadId = sessionToThread.get(sessionId);
-  const live = threadId ? liveTurns.get(threadId) : undefined;
+  const resolved = resolveLiveTurn(sessionId, event.properties);
+  const threadId = resolved?.threadId ?? sessionToThread.get(sessionId);
+  const live = resolved?.live ?? (threadId ? liveTurns.get(threadId) : undefined);
+  const childId = resolved?.childId;
 
   if (isQuestionAskEvent(event.type)) {
     await handleQuestionAsked(event.properties, sessionId);
@@ -532,6 +575,7 @@ async function onOpenCodeEvent(event: {
   }
 
   if (event.type === "session.updated" || event.type === "session.diff") {
+    if (childId) return;
     const title = sessionTitle(event.properties);
     if (title && threadId) {
       lastTitles.set(sessionId, title);
@@ -552,13 +596,39 @@ async function onOpenCodeEvent(event: {
     return;
   }
 
-  if (sessionId !== live.sessionId) {
+  if (childId || sessionId !== live.sessionId) {
+    const id = childId ?? sessionId;
     const parentId = eventParentId(event.properties);
-    if (parentId === live.sessionId) {
-      live.liveChildIds.add(sessionId);
-    }
+    if (parentId === live.sessionId) live.liveChildIds.add(id);
     if (event.type === "session.idle" || event.type === "session.status") {
-      live.liveChildIds.delete(sessionId);
+      live.liveChildIds.delete(id);
+      return;
+    }
+    if (event.type.startsWith("session.next.")) {
+      const work = live.childWork.get(id);
+      if (!work) return;
+      const nextDeltas = mapSessionNextEvent({
+        type: event.type,
+        properties: event.properties,
+        state: work.mapState,
+        sessionId: id,
+        parentRef: work.parentItemId,
+      });
+      if (nextDeltas.length > 0) emitDeltas(threadId, nextDeltas);
+      return;
+    }
+    if (event.type === "message.part.delta" || event.type === "message.part.updated") {
+      const record =
+        event.properties && typeof event.properties === "object"
+          ? (event.properties as { part?: Record<string, unknown> })
+          : undefined;
+      const part = record?.part ?? record;
+      if (part && typeof part === "object" && "type" in part) {
+        const nested = projectChildParts(live, id, [
+          part as Record<string, unknown>,
+        ]);
+        if (nested.length > 0) emitDeltas(threadId, nested);
+      }
     }
     return;
   }
@@ -596,8 +666,7 @@ async function onOpenCodeEvent(event: {
     const part = record?.part ?? record;
     const delta = typeof record?.delta === "string" ? record.delta : undefined;
     if (part && typeof part === "object" && "type" in part) {
-      const childId = taskChildSessionId(part as Record<string, unknown>);
-      if (childId) live.liveChildIds.add(childId);
+      rememberTaskChild(live, part as { id?: string; tool?: string; callID?: string; state?: { sessionID?: unknown; sessionId?: unknown; input?: Record<string, unknown>; metadata?: Record<string, unknown> } });
       emitDeltas(
         threadId,
         mapPartDelta({
@@ -679,24 +748,92 @@ function eventParentId(properties: unknown): string | undefined {
   return undefined;
 }
 
-function taskChildSessionId(part: Record<string, unknown>): string | undefined {
-  const tool = part.tool;
-  if (tool !== "task" && tool !== "Task") return undefined;
-  const state =
-    part.state && typeof part.state === "object"
-      ? (part.state as Record<string, unknown>)
-      : {};
-  const metadata =
-    state.metadata && typeof state.metadata === "object"
-      ? (state.metadata as Record<string, unknown>)
-      : {};
-  for (const value of [
-    state.sessionID,
-    state.sessionId,
-    metadata.sessionID,
-    metadata.sessionId,
-  ]) {
-    if (typeof value === "string" && value.length > 0) return value;
+function rememberTaskChild(
+  live: LiveTurn,
+  part: {
+    id?: string;
+    tool?: string;
+    callID?: string;
+    state?: {
+      sessionID?: unknown;
+      sessionId?: unknown;
+      input?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    };
+  },
+): ChildWork | undefined {
+  const childId = taskChildSessionId(part);
+  const parentItemId = part.id ?? part.callID;
+  if (!childId || !parentItemId) return undefined;
+  live.liveChildIds.add(childId);
+  const existing = live.childWork.get(childId);
+  if (existing) return existing;
+  const work: ChildWork = {
+    parentItemId,
+    mapState: createMapDeltaState(),
+    turnOpened: false,
+  };
+  live.childWork.set(childId, work);
+  return work;
+}
+
+function projectChildParts(
+  live: LiveTurn,
+  childId: string,
+  parts: Array<Record<string, unknown>>,
+): ThreadDelta[] {
+  const work = live.childWork.get(childId);
+  if (!work) return [];
+  const deltas: ThreadDelta[] = [];
+  if (!work.turnOpened) {
+    work.turnOpened = true;
+    deltas.push({
+      kind: "turn.open",
+      providerTurnId: childId,
+      parentRef: work.parentItemId,
+    });
+  }
+  for (const part of parts) {
+    deltas.push(
+      ...mapPartDelta({
+        state: work.mapState,
+        part,
+        sessionId: childId,
+        parentRef: work.parentItemId,
+      }),
+    );
+  }
+  return deltas;
+}
+
+function resolveLiveTurn(
+  sessionId: string,
+  properties?: unknown,
+): { threadId: string; live: LiveTurn; childId?: string } | undefined {
+  const bound = sessionToThread.get(sessionId);
+  if (bound) {
+    const live = liveTurns.get(bound);
+    if (live) {
+      return {
+        threadId: bound,
+        live,
+        childId: sessionId === live.sessionId ? undefined : sessionId,
+      };
+    }
+  }
+  const parentId = eventParentId(properties);
+  if (parentId) {
+    const threadId = sessionToThread.get(parentId);
+    const live = threadId ? liveTurns.get(threadId) : undefined;
+    if (threadId && live && live.sessionId === parentId) {
+      live.liveChildIds.add(sessionId);
+      return { threadId, live, childId: sessionId };
+    }
+  }
+  for (const [threadId, live] of liveTurns) {
+    if (live.childWork.has(sessionId) || live.liveChildIds.has(sessionId)) {
+      return { threadId, live, childId: sessionId };
+    }
   }
   return undefined;
 }
@@ -1486,6 +1623,7 @@ async function runPrompt(args: {
     textBuffers: new Map(),
     parentBoundaryEmitted: false,
     liveChildIds: new Set(),
+    childWork: new Map(),
   };
   liveTurns.set(args.threadId, live);
   const deltas: ThreadDelta[] = [];

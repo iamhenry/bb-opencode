@@ -39,12 +39,17 @@ describe("map-delta", () => {
         id: "task-1",
         type: "tool",
         tool: "task",
-        state: { status: "running", title: "Explore" },
+        state: {
+          status: "running",
+          title: "Task",
+          input: { description: "Explore" },
+          metadata: { sessionID: "ses_child" },
+        },
       },
     });
     expect(tool[0]).toMatchObject({
       kind: "item.open",
-      item: { type: "delegation", label: "Explore" },
+      item: { type: "delegation", label: "Explore", childRef: "ses_child" },
     });
     const read = mapPartDelta({
       state: createMapDeltaState(),
@@ -73,6 +78,25 @@ describe("map-delta", () => {
     expect(bash[0]).toMatchObject({
       kind: "item.open",
       item: { type: "command", command: "ls" },
+    });
+  });
+
+  it("nests child parts under the Task item via parentRef", () => {
+    const deltas = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "ses_child",
+      parentRef: "task-1",
+      part: {
+        id: "read-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "running", input: { filePath: "ISA.md" } },
+      },
+    });
+    expect(deltas[0]).toMatchObject({
+      kind: "item.open",
+      key: { providerItemId: "read-1", parentRef: "task-1" },
+      item: { type: "fileRead", path: "ISA.md" },
     });
   });
 

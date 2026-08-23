@@ -352,6 +352,76 @@ describe("provider bridge", () => {
     expect(fake.calls.create).toBe(1);
   });
 
+  it("nests Task child tool parts on the parent thread", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "task-1",
+          type: "tool",
+          tool: "task",
+          sessionID: "ses_1",
+          state: {
+            status: "running",
+            title: "Task",
+            input: { description: "Trace todo event flow" },
+            metadata: { sessionID: "ses_child" },
+          },
+        },
+      },
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        part: {
+          id: "read-1",
+          type: "tool",
+          tool: "read",
+          sessionID: "ses_child",
+          state: { status: "running", input: { filePath: "ISA.md" } },
+        },
+      },
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "turn.open" &&
+          delta.providerTurnId === "ses_child" &&
+          delta.parentRef === "task-1",
+      ),
+    ).toBe(true);
+    expect(
+      deltas.some((delta) => {
+        const item = delta.item as { type?: string; path?: string } | undefined;
+        const key = delta.key as { parentRef?: string } | undefined;
+        return (
+          delta.kind === "item.open" &&
+          item?.type === "fileRead" &&
+          item.path === "ISA.md" &&
+          key?.parentRef === "task-1"
+        );
+      }),
+    ).toBe(true);
+  });
+
   it("does not bound the parent when a child goes idle (ISC-73)", async () => {
     installFake();
     send({
