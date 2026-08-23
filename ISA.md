@@ -175,7 +175,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
 - [x] ISC-8.2: Restated. No plugin `messageAction` chrome. Native BB Fork stays on assistant bubbles (`fork: "checkpoint"`). User-bubble plugin Fork was a duplicate of that native control and leaked onto every provider.
 - [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; OpenCode `question.*` cards as native BB `user_question` (ISC-91).
-- [x] Mobile: PWA Agent picker lives in the composer **banner** on compact, coarse-pointer, and narrow viewports (BB hides plugin footer actions in compact composers and clips them in the 36px action row). iOS native app has no plugin frontend; use Settings default agent. Native fork/rewind already follow `fork: "checkpoint"`.
+- [x] Mobile: PWA Agent picker lives in the composer **banner** on compact follow-ups (BB hides plugin footer actions). The **new-thread / pre-session** composer is never compact, so the chip stays in the action row. Visibility is the live model chip, or the project default when the chip is not readable yet. iOS native app has no plugin frontend; use Settings default agent.
 - [x] Provider mark: `app.slots.experimental_providerIcon` inline `currentColor` window (web pickers/settings). Server `icon` stays the currentColor SVG for iOS `ServerSvgIcon`. Branding logos are explicit light/dark fills because Settings uses `<img>`.
 
 ### F1 · Sessions

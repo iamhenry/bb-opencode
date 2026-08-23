@@ -47,8 +47,8 @@ export function resolveComposerProvider(args: {
   composeKind?: "new-thread" | "thread";
 }): string | null {
   if (args.threadProviderId) return args.threadProviderId;
-  // New compose has no thread provider. This plugin owns the OpenCode agent
-  // chip there; stamp is ignored if the user sends with another provider.
-  if (args.composeKind === "new-thread") return "opencode";
+  // New compose has no thread yet. Use the project's default so the Agent
+  // chip can appear on the pre-thread screen when OpenCode is the default.
+  void args.composeKind;
   return args.projectDefaultProviderId ?? null;
 }

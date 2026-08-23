@@ -3,6 +3,7 @@ import {
   chipSuggestsOpencode,
   composerLayoutIsCompact,
   composerSurfaceWantsBanner,
+  newThreadAgentPickerVisible,
   newThreadShowsOpencodeAgent,
   providerIdFromModelTriggerTitle,
 } from "../src/app/live-provider.js";
@@ -50,5 +51,26 @@ describe("live composer provider from model chip", () => {
     expect(composerSurfaceWantsBanner({ layout: "compact" })).toBe(true);
     expect(composerSurfaceWantsBanner({ layout: "expanded" })).toBe(false);
     expect(newThreadShowsOpencodeAgent(null)).toBe(false);
+    expect(
+      newThreadAgentPickerVisible({
+        liveFound: false,
+        liveOpenCode: false,
+        chromeOpenCode: true,
+      }),
+    ).toBe(true);
+    expect(
+      newThreadAgentPickerVisible({
+        liveFound: true,
+        liveOpenCode: false,
+        chromeOpenCode: true,
+      }),
+    ).toBe(false);
+    expect(
+      newThreadAgentPickerVisible({
+        liveFound: true,
+        liveOpenCode: true,
+        chromeOpenCode: false,
+      }),
+    ).toBe(true);
   });
 });

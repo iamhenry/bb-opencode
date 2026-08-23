@@ -56,6 +56,14 @@ describe("next agent + composer chrome", () => {
       shouldRenderOpencodeChrome(
         resolveComposerProvider({ composeKind: "new-thread" }),
       ),
+    ).toBe(false);
+    expect(
+      shouldRenderOpencodeChrome(
+        resolveComposerProvider({
+          composeKind: "new-thread",
+          projectDefaultProviderId: "opencode",
+        }),
+      ),
     ).toBe(true);
     expect(
       shouldRenderOpencodeChrome(
@@ -64,6 +72,6 @@ describe("next agent + composer chrome", () => {
           projectDefaultProviderId: "ollama-cloud",
         }),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 });

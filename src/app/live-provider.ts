@@ -97,32 +97,50 @@ export function composerSurfaceWantsBanner(args: {
   );
 }
 
-export function newThreadShowsOpencodeAgent(from: Element | null): boolean {
+export function inspectLiveComposerProvider(from: Element | null): {
+  found: boolean;
+  opencode: boolean;
+} {
   const shells: ParentNode[] = [];
   const closest = from?.closest("[data-app-composer]");
   if (closest) shells.push(closest);
   if (typeof document !== "undefined") shells.push(document);
 
   for (const shell of shells) {
-    for (const button of modelButtons(shell)) {
-      const title = titleFromModelTrigger(button);
-      const text = button.textContent;
+    for (const node of modelButtons(shell)) {
+      const title = titleFromModelTrigger(node);
+      const text = node.textContent;
       const hasOpencodeLogo = Boolean(
-        button.querySelector(
+        node.querySelector(
           'img[src*="/providers/opencode/"], img[src*="provider=opencode"], [data-plugin-icon-asset*="opencode"]',
         ),
       );
-      if (
-        chipSuggestsOpencode({
-          liveProviderId: providerIdFromModelTriggerTitle(title),
-          title,
-          text,
-          hasOpencodeLogo,
-        })
-      ) {
-        return true;
+      const liveProviderId = providerIdFromModelTriggerTitle(title);
+      const opencode = chipSuggestsOpencode({
+        liveProviderId,
+        title,
+        text,
+        hasOpencodeLogo,
+      });
+      if (opencode || liveProviderId) {
+        return { found: true, opencode };
       }
     }
   }
-  return false;
+  return { found: false, opencode: false };
+}
+
+export function newThreadShowsOpencodeAgent(from: Element | null): boolean {
+  return inspectLiveComposerProvider(from).opencode;
+}
+
+/** Pre-thread screen: live chip wins; otherwise the project default. */
+export function newThreadAgentPickerVisible(args: {
+  liveFound: boolean;
+  liveOpenCode: boolean;
+  chromeOpenCode: boolean;
+}): boolean {
+  if (args.liveOpenCode) return true;
+  if (args.liveFound) return false;
+  return args.chromeOpenCode;
 }

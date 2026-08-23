@@ -8,7 +8,8 @@ import {
 import type { rpcContract } from "../../contract.js";
 import {
   composerSurfaceWantsBanner,
-  newThreadShowsOpencodeAgent,
+  inspectLiveComposerProvider,
+  newThreadAgentPickerVisible,
 } from "./live-provider.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
 import "./composer-agent.css";
@@ -47,7 +48,10 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   );
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [liveOpenCode, setLiveOpenCode] = useState(false);
+  const [liveProvider, setLiveProvider] = useState({
+    found: false,
+    opencode: false,
+  });
   const [chrome, setChrome] = useState<Chrome | null>(null);
   const [agent, setAgent] = useState("build");
   const [open, setOpen] = useState(false);
@@ -64,12 +68,13 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
 
   useEffect(() => {
     const sync = () => {
-      setLiveOpenCode(newThreadShowsOpencodeAgent(rootRef.current));
+      setLiveProvider(inspectLiveComposerProvider(rootRef.current));
       setWantsBanner(
-        composerSurfaceWantsBanner({
-          layout: view.layout,
-          from: rootRef.current,
-        }),
+        !isNewThread &&
+          composerSurfaceWantsBanner({
+            layout: view.layout,
+            from: rootRef.current,
+          }),
       );
     };
     sync();
@@ -117,9 +122,15 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     };
   }, [rpc, scopeProjectId, threadId]);
 
-  const boundOpenCode =
-    Boolean(threadId) && shouldRenderOpencodeChrome(chrome?.providerId);
-  const newThreadOpenCode = isNewThread && liveOpenCode;
+  const chromeOpenCode = shouldRenderOpencodeChrome(chrome?.providerId);
+  const boundOpenCode = Boolean(threadId) && chromeOpenCode;
+  const newThreadOpenCode =
+    isNewThread &&
+    newThreadAgentPickerVisible({
+      liveFound: liveProvider.found,
+      liveOpenCode: liveProvider.opencode,
+      chromeOpenCode,
+    });
   const layoutMatch = layout === "compact" ? wantsBanner : !wantsBanner;
   const visible = layoutMatch && (boundOpenCode || newThreadOpenCode);
 
