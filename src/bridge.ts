@@ -23,6 +23,17 @@ import { shouldPublishOpenCodeTitle } from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
 import { configDefaultModelId } from "./catalog.js";
 import {
+  isCompactRequest,
+  isCompactionSkipError,
+  isOpenCodeCompactCommand,
+} from "./compaction.js";
+import { splitModelRef } from "./task-thread.js";
+import {
+  parseOpenCodeTodos,
+  todoPlanDeltas,
+  todoSnapshotKey,
+} from "./todos.js";
+import {
   assistantsAfterLastUser,
   completedTurnBoundary,
   filterMessagesByRevertPoint,
@@ -154,6 +165,9 @@ let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 const lastTitles = new Map<string, string>();
 const lastRevertCursors = new Map<string, string | null>();
+const lastTodos = new Map<string, string>();
+const compactIssued = new Set<string>();
+const compactInFlight = new Set<string>();
 const modelContextWindows = new Map<string, number>();
 let deps: BridgeDeps = {
   acquire: createSdkClient,
@@ -176,6 +190,9 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   configuredSkillRoots = [];
   lastTitles.clear();
   lastRevertCursors.clear();
+  lastTodos.clear();
+  compactIssued.clear();
+  compactInFlight.clear();
   modelContextWindows.clear();
   if (titleTimer) {
     clearInterval(titleTimer);
@@ -308,6 +325,7 @@ function startTitlePoller(): void {
         await syncPendingQuestions(sessionId);
         await syncLiveTurnParts(sessionId);
         await syncSessionRevert(sessionId);
+        await syncSessionTodos(sessionId);
       }),
     );
   }, 800);
@@ -442,6 +460,22 @@ async function syncPendingQuestions(sessionId: string): Promise<void> {
   }
 }
 
+export async function syncSessionTodos(sessionId: string): Promise<boolean> {
+  if (!client) return false;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return false;
+  try {
+    const todos = parseOpenCodeTodos(await client.sessionTodos(sessionId));
+    const key = todoSnapshotKey(todos);
+    if (lastTodos.get(sessionId) === key) return false;
+    lastTodos.set(sessionId, key);
+    emitDeltas(threadId, todoPlanDeltas(todos) as ThreadDelta[]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function hydrateBoundSession(sessionId: string): Promise<boolean> {
   const threadId = sessionToThread.get(sessionId);
   if (!threadId || !client) return false;
@@ -515,6 +549,45 @@ async function replayHydrate(
     ...hydrateDeltas({ sessionId, messages }),
     ...usageDeltasFromMessages(messages, modelContextWindows),
   ]);
+  try {
+    const todos = parseOpenCodeTodos(await active.sessionTodos(sessionId));
+    lastTodos.set(sessionId, todoSnapshotKey(todos));
+    emitDeltas(threadId, todoPlanDeltas(todos) as ThreadDelta[]);
+  } catch {
+    /* todos are best-effort */
+  }
+}
+
+function attachObservedTurn(threadId: string, sessionId: string): void {
+  if (liveTurns.has(threadId)) return;
+  liveTurns.set(threadId, {
+    threadId,
+    sessionId,
+    promptIssued: false,
+    mapState: createMapDeltaState(),
+    textBuffers: new Map(),
+    parentBoundaryEmitted: false,
+    liveChildIds: new Set(),
+    childWork: new Map(),
+    pendingPrompts: [],
+  });
+  emitDeltas(threadId, [{ kind: "turn.open" }]);
+}
+
+async function finishBindOnlyStart(args: {
+  threadId: string;
+  sessionId: string;
+  active: OpenCodeClient;
+}): Promise<void> {
+  const running = await args.active.sessionIsRunning(args.sessionId);
+  if (running) {
+    attachObservedTurn(args.threadId, args.sessionId);
+    return;
+  }
+  emitDeltas(args.threadId, [
+    { kind: "turn.open" },
+    completedTurnBoundary(),
+  ]);
 }
 
 async function rememberCatalogWindows(active: OpenCodeClient): Promise<void> {
@@ -577,6 +650,39 @@ async function onOpenCodeEvent(event: {
   }
   if (isPermissionAskEvent(event.type)) {
     await handlePermissionAsked(event.properties, sessionId);
+    return;
+  }
+
+  if (event.type === "todo.updated") {
+    const bound = sessionToThread.get(sessionId);
+    if (!bound) return;
+    const todos = parseOpenCodeTodos(
+      event.properties && typeof event.properties === "object"
+        ? (event.properties as { todos?: unknown }).todos
+        : event.properties,
+    );
+    const key = todoSnapshotKey(todos);
+    if (lastTodos.get(sessionId) === key) return;
+    lastTodos.set(sessionId, key);
+    emitDeltas(bound, todoPlanDeltas(todos) as ThreadDelta[]);
+    return;
+  }
+
+  if (event.type === "session.compacted") {
+    const bound = sessionToThread.get(sessionId);
+    if (!bound) return;
+    if (compactIssued.has(sessionId) || compactInFlight.has(sessionId)) {
+      compactIssued.delete(sessionId);
+      return;
+    }
+    emitDeltas(bound, [{ kind: "context.compacted" }]);
+    if (!liveTurns.get(bound)?.promptIssued) {
+      try {
+        if (client) await replayHydrate(bound, sessionId, client);
+      } catch {
+        /* hydrate is best-effort after OpenCode auto-compact */
+      }
+    }
     return;
   }
 
@@ -1310,6 +1416,14 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         if (adoptId) {
           await replayHydrate(parsed.data.threadId, sessionId, active);
         }
+        if (options.bindOnly === true) {
+          await finishBindOnlyStart({
+            threadId: parsed.data.threadId,
+            sessionId,
+            active,
+          });
+          return;
+        }
         const input = parsed.data.input ?? [];
         if (input.length > 0) {
           await runPrompt({
@@ -1658,6 +1772,129 @@ async function runSteer(args: {
   live.pendingPrompts.push(body);
 }
 
+async function resolveCompactModel(
+  active: OpenCodeClient,
+  options: unknown,
+): Promise<{ providerID: string; modelID: string } | null> {
+  const model =
+    typeof (options as { model?: unknown })?.model === "string"
+      ? ((options as { model: string }).model as string)
+      : undefined;
+  return (
+    splitModelRef(model) ??
+    splitModelRef(configDefaultModelId(await active.getConfig()))
+  );
+}
+
+async function runCompact(args: {
+  threadId: string;
+  sessionId: string;
+  options: unknown;
+  active: OpenCodeClient;
+}): Promise<void> {
+  const live = liveTurns.get(args.threadId);
+  if (!live) return;
+  if (compactInFlight.has(args.sessionId)) {
+    live.parentBoundaryEmitted = true;
+    liveTurns.delete(args.threadId);
+    emitDeltas(args.threadId, [
+      {
+        kind: "provider.warning",
+        category: "compaction-skipped",
+        summary: "Context compaction skipped",
+        details: "A compact is already running",
+        vouchedTurn: true,
+      },
+      completedTurnBoundary(),
+    ]);
+    return;
+  }
+  compactInFlight.add(args.sessionId);
+  compactIssued.add(args.sessionId);
+  const key = { channel: "compaction" };
+  emitDeltas(args.threadId, [
+    {
+      kind: "item.open",
+      key,
+      item: { type: "compaction" },
+      presentation: {
+        label: { pending: "Compacting context", completed: "Compacted context" },
+        icon: { glyph: "FoldVertical" },
+      },
+    },
+  ]);
+  try {
+    const model = await resolveCompactModel(args.active, args.options);
+    if (!model) {
+      throw new Error("No OpenCode model available to compact");
+    }
+    await args.active.summarize(args.sessionId, model);
+    emitDeltas(args.threadId, [
+      {
+        kind: "item.close",
+        key,
+        status: "completed",
+        item: { type: "compaction" },
+        presentation: {
+          label: {
+            pending: "Compacting context",
+            completed: "Compacted context",
+          },
+          icon: { glyph: "FoldVertical" },
+        },
+      },
+      { kind: "context.compacted" },
+    ]);
+    live.parentBoundaryEmitted = true;
+    liveTurns.delete(args.threadId);
+    emitDeltas(args.threadId, [completedTurnBoundary()]);
+    await replayHydrate(args.threadId, args.sessionId, args.active);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isCompactionSkipError(message)) {
+      emitDeltas(args.threadId, [
+        {
+          kind: "provider.warning",
+          category: "compaction-skipped",
+          summary: "Context compaction skipped",
+          details: message,
+          vouchedTurn: true,
+        },
+        {
+          kind: "item.close",
+          key,
+          status: "completed",
+          item: { type: "compaction" },
+        },
+      ]);
+      live.parentBoundaryEmitted = true;
+      liveTurns.delete(args.threadId);
+      emitDeltas(args.threadId, [completedTurnBoundary()]);
+      compactIssued.delete(args.sessionId);
+      return;
+    }
+    live.parentBoundaryEmitted = true;
+    liveTurns.delete(args.threadId);
+    compactIssued.delete(args.sessionId);
+    emitDeltas(args.threadId, [
+      {
+        kind: "item.close",
+        key,
+        status: "failed",
+        item: { type: "compaction" },
+      },
+      {
+        kind: "turn.boundary",
+        status: "failed",
+        error: { message },
+      },
+    ]);
+  } finally {
+    compactInFlight.delete(args.sessionId);
+    compactIssued.delete(args.sessionId);
+  }
+}
+
 async function runPrompt(args: {
   threadId: string;
   sessionId: string;
@@ -1732,11 +1969,21 @@ async function runPrompt(args: {
   emitDeltas(args.threadId, deltas);
   try {
     const slash = parseLeadingSlash(firstTextPart(args.input));
+    if (isCompactRequest(args.input)) {
+      await runCompact({
+        threadId: args.threadId,
+        sessionId: args.sessionId,
+        options: args.options,
+        active,
+      });
+      return;
+    }
+    compactIssued.delete(args.sessionId);
     if (slash && !hasNonTextParts(args.input)) {
       const cwd = sessions.get(args.threadId)?.cwd;
       const listed = await active.listCommands(cwd);
       const matched = matchListedCommand(slash.name, listed);
-      if (matched) {
+      if (matched && !isOpenCodeCompactCommand(matched.name)) {
         const variant = openCodeVariantFor(reasoningLevelOf(args.options));
         await active.sessionCommand(args.sessionId, {
           command: matched.name,

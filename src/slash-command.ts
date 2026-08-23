@@ -65,7 +65,9 @@ export function filterListedCommands(
   commands: readonly ListedCommand[],
 ): ListedCommand[] {
   const needle = query.toLowerCase();
-  return commands.filter((command) =>
-    command.name.toLowerCase().startsWith(needle),
-  );
+  return commands.filter((command) => {
+    const name = command.name.toLowerCase();
+    if (name === "compact" || name === "summarize") return false;
+    return name.startsWith(needle);
+  });
 }

@@ -8,6 +8,7 @@ import {
   handleProbe,
   handleRevert,
   handleSessionSnapshot,
+  handleSummarize,
   handleUnrevert,
 } from "./src/host-handlers.js";
 
@@ -61,6 +62,13 @@ export default experimental_defineHostEntry({
       return handleListCommands(
         context.experimental_paths.dataDir,
         input.directory,
+      );
+    },
+    async summarize(input, context) {
+      return handleSummarize(
+        context.experimental_paths.dataDir,
+        input.sessionId,
+        input.model,
       );
     },
   },

@@ -1,9 +1,11 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
+import { configDefaultModelId } from "./catalog.js";
 import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
 import { attachOrSpawn, readLock } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
+import { splitModelRef } from "./task-thread.js";
 
 const clients = new Map<string, OpenCodeClient>();
 
@@ -139,6 +141,26 @@ export async function handleUnrevert(dataDir: string, sessionId: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
   await client.unrevert(sessionId);
+  return { ok: true, error: null };
+}
+
+export async function handleSummarize(
+  dataDir: string,
+  sessionId: string,
+  model?: string,
+) {
+  const attached = await attachOrSpawn({ dataDir });
+  const client = acquire(attached.url);
+  if (await client.sessionIsRunning(sessionId)) {
+    return { ok: false, error: "Cannot summarize a running session" };
+  }
+  const parsed =
+    splitModelRef(model) ??
+    splitModelRef(configDefaultModelId(await client.getConfig()));
+  if (!parsed) {
+    return { ok: false, error: "No OpenCode model available to summarize" };
+  }
+  await client.summarize(sessionId, parsed);
   return { ok: true, error: null };
 }
 

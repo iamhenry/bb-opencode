@@ -40,6 +40,13 @@ describe("slash commands", () => {
         (item) => item.name,
       ),
     ).toEqual(["init"]);
+    expect(
+      filterListedCommands("", [
+        { name: "init" },
+        { name: "compact" },
+        { name: "summarize" },
+      ]).map((item) => item.name),
+    ).toEqual(["init"]);
   });
 
   it("inserts or replaces a leading slash token", () => {

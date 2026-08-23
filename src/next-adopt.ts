@@ -4,40 +4,61 @@ export interface NextAdopt {
   projectId: string;
   hostId: string;
   opencodeSessionId: string;
+  bindOnly?: boolean;
   armedAt: number;
 }
 
-export function createNextAdoptStore(): Map<string, NextAdopt> {
-  return new Map();
+export function createNextAdoptStore(): NextAdopt[] {
+  return [];
 }
 
 export function armNextAdopt(
-  store: Map<string, NextAdopt>,
+  store: NextAdopt[],
   adopt: Omit<NextAdopt, "armedAt">,
   now = Date.now(),
 ): void {
-  store.set(adopt.projectId, { ...adopt, armedAt: now });
+  store.push({ ...adopt, armedAt: now });
+}
+
+function dropExpired(store: NextAdopt[], now: number): void {
+  for (let index = store.length - 1; index >= 0; index -= 1) {
+    const row = store[index];
+    if (!row || now - row.armedAt > NEXT_ADOPT_TTL_MS) {
+      store.splice(index, 1);
+    }
+  }
 }
 
 export function consumeNextAdopt(
-  store: Map<string, NextAdopt>,
+  store: NextAdopt[],
   args: { projectId: string; now?: number; isNewThread?: boolean },
 ): NextAdopt | undefined {
   if (args.isNewThread === false) return undefined;
-  const adopt = store.get(args.projectId);
-  if (!adopt) return undefined;
   const now = args.now ?? Date.now();
-  if (now - adopt.armedAt > NEXT_ADOPT_TTL_MS) {
-    store.delete(args.projectId);
-    return undefined;
-  }
-  store.delete(args.projectId);
+  dropExpired(store, now);
+  const index = store.findIndex((row) => row.projectId === args.projectId);
+  if (index < 0) return undefined;
+  const [adopt] = store.splice(index, 1);
   return adopt;
 }
 
+export function disarmNextAdopt(
+  store: NextAdopt[],
+  args: { projectId: string; opencodeSessionId: string },
+): void {
+  const index = store.findIndex(
+    (row) =>
+      row.projectId === args.projectId &&
+      row.opencodeSessionId === args.opencodeSessionId,
+  );
+  if (index >= 0) store.splice(index, 1);
+}
+
 export function peekNextAdopt(
-  store: Map<string, NextAdopt>,
+  store: NextAdopt[],
   projectId: string,
+  now = Date.now(),
 ): NextAdopt | undefined {
-  return store.get(projectId);
+  dropExpired(store, now);
+  return store.find((row) => row.projectId === projectId);
 }

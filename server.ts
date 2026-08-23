@@ -15,6 +15,7 @@ import {
   armNextAdopt,
   consumeNextAdopt,
   createNextAdoptStore,
+  disarmNextAdopt,
 } from "./src/next-adopt.js";
 import {
   armNextAgent,
@@ -29,6 +30,11 @@ import {
 } from "./src/pending-adopt.js";
 import { classifyImportRow } from "./src/import-row.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
+import {
+  shouldAutoBindTaskChild,
+  taskChildBindInput,
+  taskChildThreadTitle,
+} from "./src/task-thread.js";
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
@@ -91,7 +97,7 @@ export default async function plugin(bb: BbPluginApi) {
       supportsServiceTier: false,
       supportsNativeUserQuestion: true,
       fork: "checkpoint",
-      supportsManualCompaction: false,
+      supportsManualCompaction: true,
       supportsThreadArchive: false,
       supportsThreadRename: false,
       permissionModes: ["accept-edits", "auto", "full"],
@@ -117,7 +123,12 @@ export default async function plugin(bb: BbPluginApi) {
       });
       return {
         agent,
-        ...(adopt ? { adoptSessionId: adopt.opencodeSessionId } : {}),
+        ...(adopt
+          ? {
+              adoptSessionId: adopt.opencodeSessionId,
+              ...(adopt.bindOnly ? { bindOnly: true } : {}),
+            }
+          : {}),
         permissionMode: ctx.permissionMode,
         steerDelivery: steerActiveThreadOnEnter ? "inject" : "queue",
       };
@@ -320,6 +331,35 @@ export default async function plugin(bb: BbPluginApi) {
         currentProjectId: input.projectId,
         directory: snapshot.directory ?? "",
       });
+      const parentThread = snapshot.parentID
+        ? (await listProjectThreads(bb))
+            .map((thread) => fullThreadFields(thread))
+            .find(
+              (thread) =>
+                thread.providerId === PROVIDER_ID &&
+                thread.providerThreadId === snapshot.parentID &&
+                thread.id,
+            )
+        : undefined;
+      if (parentThread?.id && parentThread.projectId) {
+        const threadId = await spawnBoundTaskChild(bb, {
+          projectId: parentThread.projectId,
+          hostId,
+          parentThreadId: parentThread.id,
+          environmentId: parentThread.environmentId,
+          sessionId: input.sessionId,
+          title: snapshot.title,
+          bindOnly: true,
+        });
+        await bb.storage.kv.delete(
+          pendingAdoptStorageKey({
+            projectId: input.projectId,
+            hostId,
+            opencodeSessionId: input.sessionId,
+          }),
+        );
+        return { threadId };
+      }
       armNextAdopt(nextAdopts, {
         projectId: decision.projectId,
         hostId,
@@ -348,6 +388,42 @@ export default async function plugin(bb: BbPluginApi) {
         });
         throw error;
       }
+    },
+    async summarize({ threadId }) {
+      try {
+        const thread = fullThreadFields(await bb.sdk.threads.get({ threadId }));
+        if (thread.providerId !== PROVIDER_ID) {
+          return { ok: false, error: null };
+        }
+        const hostId = await resolveHostId(bb, thread.environmentId);
+        const sessionId = await resolveSessionId(
+          bb,
+          threadId,
+          thread.providerThreadId,
+        );
+        if (!hostId || !sessionId) {
+          return { ok: false, error: "Thread is not bound to an OpenCode session" };
+        }
+        return host.call(
+          "summarize",
+          {
+            sessionId,
+            ...(thread.model ? { model: thread.model } : {}),
+          },
+          { hostId },
+        );
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    async listTaskChildren({ threadId }) {
+      return listTaskChildren(bb, host, threadId);
+    },
+    async openTaskChild(input) {
+      return openTaskChildThread(bb, host, input);
     },
     async listCommands({ directory }) {
       const hostId = await firstHostId(bb);
@@ -408,6 +484,14 @@ export default async function plugin(bb: BbPluginApi) {
       bb.log.warn(`OpenCode probe failed: ${String(error)}`);
     });
   }, 0);
+
+  const pollTaskChildren = () => {
+    void ensureRunningTaskChildThreads(bb, host).catch((error) => {
+      bb.log.warn(`OpenCode task-child bind failed: ${String(error)}`);
+    });
+  };
+  setTimeout(pollTaskChildren, 1500);
+  setInterval(pollTaskChildren, 1500);
 
   bb.cli.register({
     name: "opencode",
@@ -526,16 +610,279 @@ function threadFields(thread: unknown): {
   providerThreadId: string | null;
   environmentId: string | null;
 } {
+  const record = fullThreadFields(thread);
+  return {
+    providerId: record.providerId,
+    providerThreadId: record.providerThreadId,
+    environmentId: record.environmentId,
+  };
+}
+
+function fullThreadFields(thread: unknown): {
+  id: string | null;
+  projectId: string | null;
+  parentThreadId: string | null;
+  providerId: string | null;
+  providerThreadId: string | null;
+  environmentId: string | null;
+  model: string | null;
+  status: string | null;
+} {
   const record = thread as {
+    id?: string | null;
+    projectId?: string | null;
+    parentThreadId?: string | null;
     providerId?: string | null;
     providerThreadId?: string | null;
     environmentId?: string | null;
+    model?: string | null;
+    status?: string | null;
   };
   return {
+    id: record.id ?? null,
+    projectId: record.projectId ?? null,
+    parentThreadId: record.parentThreadId ?? null,
     providerId: record.providerId ?? null,
     providerThreadId: record.providerThreadId ?? null,
     environmentId: record.environmentId ?? null,
+    model: record.model ?? null,
+    status: record.status ?? null,
   };
+}
+
+type ListedSessions = {
+  sessions: Array<{
+    id: string;
+    title: string | null;
+    directory: string | null;
+    parentID: string | null;
+    running: boolean;
+  }>;
+};
+
+type SessionSnapshot = {
+  title: string | null;
+  directory: string | null;
+  parentID: string | null;
+};
+
+const spawningTaskChildren = new Set<string>();
+const skippedTaskChildrenUntil = new Map<string, number>();
+
+async function listProjectThreads(bb: BbPluginApi) {
+  return bb.sdk.threads.list({
+    includeHidden: true,
+    limit: 200,
+  });
+}
+
+function importedSessionIds(threads: unknown[]): Set<string> {
+  return new Set(
+    threads
+      .map((thread) => fullThreadFields(thread))
+      .filter(
+        (thread) =>
+          thread.providerId === PROVIDER_ID && thread.providerThreadId,
+      )
+      .map((thread) => thread.providerThreadId as string),
+  );
+}
+
+async function spawnBoundTaskChild(
+  bb: BbPluginApi,
+  args: {
+    projectId: string;
+    hostId: string;
+    parentThreadId: string;
+    environmentId: string | null;
+    sessionId: string;
+    title: string | null;
+    bindOnly: boolean;
+    prompt?: string;
+  },
+) {
+  armNextAdopt(nextAdopts, {
+    projectId: args.projectId,
+    hostId: args.hostId,
+    opencodeSessionId: args.sessionId,
+    bindOnly: args.bindOnly,
+  });
+  try {
+    const thread = await bb.sdk.threads.spawn({
+      projectId: args.projectId,
+      providerId: PROVIDER_ID,
+      parentThreadId: args.parentThreadId,
+      title: taskChildThreadTitle(args.title),
+      ...(args.prompt
+        ? { prompt: args.prompt }
+        : { input: taskChildBindInput() }),
+      environment: args.environmentId
+        ? { type: "reuse", environmentId: args.environmentId }
+        : { type: "project-default" },
+    });
+    return thread.id;
+  } catch (error) {
+    disarmNextAdopt(nextAdopts, {
+      projectId: args.projectId,
+      opencodeSessionId: args.sessionId,
+    });
+    throw error;
+  }
+}
+
+async function ensureRunningTaskChildThreads(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+): Promise<void> {
+  const hostId = await firstHostId(bb);
+  if (!hostId) return;
+  const listed = (await host.call("listSessions", {}, { hostId })) as ListedSessions;
+  const threads = await listProjectThreads(bb);
+  const imported = importedSessionIds(threads);
+  const bySession = new Map<string, ReturnType<typeof fullThreadFields>>();
+  for (const thread of threads) {
+    const fields = fullThreadFields(thread);
+    if (fields.providerId === PROVIDER_ID && fields.providerThreadId) {
+      bySession.set(fields.providerThreadId, fields);
+    }
+  }
+  for (const session of listed.sessions) {
+    if (!session.parentID) continue;
+    const parent = bySession.get(session.parentID);
+    if (
+      !shouldAutoBindTaskChild({
+        parentBound: Boolean(parent?.id && parent.projectId),
+        alreadyImported: imported.has(session.id),
+        running: session.running,
+      })
+    ) {
+      continue;
+    }
+    const now = Date.now();
+    if ((skippedTaskChildrenUntil.get(session.id) ?? 0) > now) continue;
+    if (spawningTaskChildren.has(session.id) || !parent?.id || !parent.projectId) {
+      continue;
+    }
+    spawningTaskChildren.add(session.id);
+    try {
+      await spawnBoundTaskChild(bb, {
+        projectId: parent.projectId,
+        hostId,
+        parentThreadId: parent.id,
+        environmentId: parent.environmentId,
+        sessionId: session.id,
+        title: session.title,
+        bindOnly: true,
+      });
+    } catch {
+      skippedTaskChildrenUntil.set(session.id, now + 30_000);
+    } finally {
+      spawningTaskChildren.delete(session.id);
+    }
+  }
+}
+
+async function listTaskChildren(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+  threadId: string,
+) {
+  const parent = fullThreadFields(await bb.sdk.threads.get({ threadId }));
+  if (parent.providerId !== PROVIDER_ID) return { children: [] };
+  const hostId = await resolveHostId(bb, parent.environmentId);
+  const parentSessionId = await resolveSessionId(
+    bb,
+    threadId,
+    parent.providerThreadId,
+  );
+  if (!hostId || !parentSessionId) return { children: [] };
+  const listed = (await host.call("listSessions", {}, { hostId })) as ListedSessions;
+  const threads = await listProjectThreads(bb);
+  const threadBySession = new Map<string, string>();
+  for (const thread of threads) {
+    const fields = fullThreadFields(thread);
+    if (fields.providerId === PROVIDER_ID && fields.providerThreadId && fields.id) {
+      threadBySession.set(fields.providerThreadId, fields.id);
+    }
+  }
+  return {
+    children: listed.sessions
+      .filter((session) => session.parentID === parentSessionId)
+      .map((session) => {
+        const childThreadId = threadBySession.get(session.id) ?? null;
+        return {
+          sessionId: session.id,
+          title: taskChildThreadTitle(session.title),
+          running: session.running,
+          threadId: childThreadId,
+          openable: Boolean(childThreadId) || !session.running,
+        };
+      }),
+  };
+}
+
+async function openTaskChildThread(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+  input: { projectId: string; parentThreadId: string; sessionId: string },
+): Promise<{ threadId: string | null; created: boolean; error: string | null }> {
+  try {
+    const parent = fullThreadFields(
+      await bb.sdk.threads.get({ threadId: input.parentThreadId }),
+    );
+    if (parent.providerId !== PROVIDER_ID) {
+      return { threadId: null, created: false, error: "Not an OpenCode thread" };
+    }
+    const hostId = await resolveHostId(bb, parent.environmentId);
+    if (!hostId) {
+      return { threadId: null, created: false, error: "No enrolled host" };
+    }
+    const threads = await listProjectThreads(bb);
+    const existing = threads
+      .map((thread) => fullThreadFields(thread))
+      .find(
+        (thread) =>
+          thread.providerId === PROVIDER_ID &&
+          thread.providerThreadId === input.sessionId &&
+          thread.id,
+      );
+    if (existing?.id) {
+      return { threadId: existing.id, created: false, error: null };
+    }
+    const listed = (await host.call("listSessions", {}, { hostId })) as ListedSessions;
+    const row = listed.sessions.find((session) => session.id === input.sessionId);
+    if (!row) {
+      return { threadId: null, created: false, error: "Unknown OpenCode session" };
+    }
+    if (row.running) {
+      return {
+        threadId: null,
+        created: false,
+        error: "Cannot open a running OpenCode session",
+      };
+    }
+    const snapshot = (await host.call(
+      "sessionSnapshot",
+      { sessionId: input.sessionId },
+      { hostId },
+    )) as SessionSnapshot;
+    const threadId = await spawnBoundTaskChild(bb, {
+      projectId: input.projectId,
+      hostId,
+      parentThreadId: input.parentThreadId,
+      environmentId: parent.environmentId,
+      sessionId: input.sessionId,
+      title: snapshot.title,
+      bindOnly: true,
+    });
+    return { threadId, created: true, error: null };
+  } catch (error) {
+    return {
+      threadId: null,
+      created: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function resolveHostId(

@@ -1271,4 +1271,176 @@ describe("provider bridge", () => {
     await flush();
     expect(fake.lastPrompt?.body).toMatchObject({ variant: "high" });
   });
+
+  it("bind-only adopt hydrates without prompting", async () => {
+    const fake = installFake();
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", [
+      {
+        info: { id: "m1", role: "user" },
+        parts: [{ type: "text", text: "explore" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        input: [{ type: "text", text: "seed", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "child", bindOnly: true },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.create).toBe(0);
+    expect(fake.calls.prompt).toBe(0);
+    const kinds = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
+      ).map((delta) => delta.kind);
+    });
+    expect(kinds).toContain("turn.boundary");
+  });
+
+  it("bind-only running child stays open until idle", async () => {
+    const fake = installFake();
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", []);
+    fake.runningIds.add("child");
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        threadId: "thr_child",
+        input: [{ type: "text", text: "seed", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "child", bindOnly: true },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    const beforeIdle = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
+      ).map((delta) => delta.kind);
+    });
+    expect(beforeIdle).toContain("turn.open");
+    expect(beforeIdle).not.toContain("turn.boundary");
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "child" },
+    });
+    const afterIdle = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
+      ).map((delta) => delta.kind);
+    });
+    expect(afterIdle).toContain("turn.boundary");
+  });
+
+  function deltaKinds(): string[] {
+    return messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
+      ).map((delta) => delta.kind);
+    });
+  }
+
+  it("routes standalone /compact through session.summarize (ISC-92)", async () => {
+    const fake = installFake();
+    fake.commands.push({ name: "compact" });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [
+          {
+            type: "text",
+            text: "/compact",
+            mentions: [
+              {
+                start: 0,
+                end: 8,
+                resource: {
+                  kind: "command",
+                  name: "compact",
+                  origin: "builtin",
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.command).toEqual([]);
+    expect(fake.calls.summarize).toEqual([
+      {
+        id: "ses_1",
+        body: { providerID: "opencode", modelID: "gpt-4.1" },
+      },
+    ]);
+    expect(deltaKinds()).toEqual(
+      expect.arrayContaining([
+        "turn.open",
+        "item.open",
+        "item.close",
+        "context.compacted",
+        "turn.boundary",
+        "session.reset",
+      ]),
+    );
+  });
+
+  it("does not summarize again when OpenCode auto-compacts (ISC-92)", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    const before = fake.calls.summarize.length;
+    await ingestOpenCodeEvent({
+      type: "session.compacted",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(fake.calls.summarize.length).toBe(before);
+    expect(deltaKinds()).toContain("context.compacted");
+  });
+
+  it("maps todo.updated onto native planSteps (ISC-93)", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "todo.updated",
+      properties: {
+        sessionID: "ses_1",
+        todos: [{ id: "t1", content: "Ship compact", status: "in_progress" }],
+      },
+    });
+    const plan = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []
+      );
+    }).find((delta) => delta.kind === "item.close");
+    expect(plan).toMatchObject({
+      kind: "item.close",
+      key: { channel: "planSteps" },
+      item: {
+        type: "planSteps",
+        steps: [{ step: "Ship compact", status: "active" }],
+      },
+    });
+    expect(fake.todos.size).toBe(0);
+  });
 });

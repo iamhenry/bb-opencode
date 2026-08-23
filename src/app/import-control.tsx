@@ -29,8 +29,13 @@ export function ImportControl() {
     setHostId(listed.hostId);
     setSessions(listed.sessions);
     const next: Record<string, boolean> = {};
+    const idleChildren = listed.sessions.filter(
+      (session) => !session.blocked && session.parentID,
+    );
     for (const session of listed.sessions) {
-      next[session.id] = !session.blocked && !session.parentID;
+      next[session.id] = idleChildren.length
+        ? !session.blocked && Boolean(session.parentID)
+        : !session.blocked && !session.parentID;
     }
     setSelected(next);
   }
@@ -150,6 +155,19 @@ export function ImportControl() {
             disabled={busy}
           >
             Open selected
+          </button>
+          <button
+            type="button"
+            onClick={() => void openSelected()}
+            disabled={
+              busy ||
+              !sessions.some(
+                (session) =>
+                  selected[session.id] && session.parentID && !session.blocked,
+              )
+            }
+          >
+            Open this Task
           </button>
           {error ? <p>{error}</p> : null}
         </div>

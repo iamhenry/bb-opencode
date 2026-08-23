@@ -105,6 +105,15 @@ export const hostContract = defineRpcContract({
       })
       .strict(),
   },
+  summarize: {
+    input: z
+      .object({
+        sessionId: z.string().min(1),
+        model: z.string().min(1).optional(),
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
 });
 
 export const rpcContract = defineRpcContract({
@@ -230,6 +239,44 @@ export const rpcContract = defineRpcContract({
       .object({
         threadId: z.string().nullable(),
         projectId: z.string().nullable(),
+        error: z.string().nullable(),
+      })
+      .strict(),
+  },
+  summarize: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  listTaskChildren: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z
+      .object({
+        children: z.array(
+          z
+            .object({
+              sessionId: z.string(),
+              title: z.string(),
+              running: z.boolean(),
+              threadId: z.string().nullable(),
+              openable: z.boolean(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
+  openTaskChild: {
+    input: z
+      .object({
+        projectId: z.string().min(1),
+        parentThreadId: z.string().min(1),
+        sessionId: z.string().min(1),
+      })
+      .strict(),
+    output: z
+      .object({
+        threadId: z.string().nullable(),
+        created: z.boolean(),
         error: z.string().nullable(),
       })
       .strict(),

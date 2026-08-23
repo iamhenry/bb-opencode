@@ -100,6 +100,20 @@ describe("map-delta", () => {
     });
   });
 
+  it("does not emit a generic row for OpenCode todo tools (ISC-93)", () => {
+    const deltas = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "s",
+      part: {
+        id: "todo-1",
+        type: "tool",
+        tool: "todowrite",
+        state: { status: "completed", output: "ok" },
+      },
+    });
+    expect(deltas).toEqual([]);
+  });
+
   it("does not emit a generic row for OpenCode question tools", () => {
     const deltas = mapPartDelta({
       state: createMapDeltaState(),

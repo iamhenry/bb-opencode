@@ -16,7 +16,10 @@ export interface FakeOpenCode {
     get: number;
     messages: number;
     fork: Array<{ id: string; body: Record<string, unknown> }>;
+    summarize: Array<{ id: string; body: Record<string, unknown> }>;
   };
+  runningIds: Set<string>;
+  todos: Map<string, unknown[]>;
   commands: Array<{ name: string; description?: string }>;
   sessions: Map<string, OpenCodeSession>;
   messages: Map<
@@ -51,7 +54,10 @@ export function createFakeOpenCode(): FakeOpenCode {
       get: 0,
       messages: 0,
       fork: [],
+      summarize: [],
     },
+    runningIds: new Set(),
+    todos: new Map(),
     commands: [{ name: "init", description: "guided AGENTS.md setup" }],
     sessions: new Map(),
     messages: new Map(),
@@ -179,6 +185,16 @@ export function createFakeOpenCode(): FakeOpenCode {
       },
       async listPendingPermissions() {
         return [];
+      },
+      async sessionTodos(id) {
+        return fake.todos.get(id) ?? [];
+      },
+      async sessionIsRunning(id) {
+        return fake.runningIds.has(id);
+      },
+      async summarize(id, body) {
+        fake.calls.summarize.push({ id, body });
+        return true;
       },
       async subscribe(next) {
         handler = next;

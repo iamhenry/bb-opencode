@@ -47,7 +47,7 @@ V1 is OpenCode-in-BB, not OpenChamber-in-BB and not a BB core rewrite.
 - No durable BB `pendingAgent` cookie. A click that is never sent is lost on resume, which is honest.
 - No picker `onChange` host RPC whose only job is to remember the click.
 - No subagents (`@mention`, Task tool, `mode: "subagent"`) in the composer agent picker.
-- No auto-created BB thread when Task spawns a child. No custom Task card.
+- No custom Task card. A running Task child of a BB OpenCode parent is bound as a native BB child thread (`parentThreadId`, `originKind: null`) so the above-composer child banner works. The plugin never `session.create`s that child.
 - No writing `opencode.json` `skills` / `command` to make BB skills appear.
 - No BB core change to `host.list_commands` (that table only knows `acp-opencode`). Community `/` typeahead rows for `opencode` are therefore not a V1 seam.
 - No `composerActions: ["plan"]`. That is BB plan mode, not OpenCode `/plan` or the plan agent.
@@ -85,8 +85,8 @@ _Avoid:_ "whatever the picker says when the queue drains."
 **OpenCode subagent.** An `app.agents()` entry with `mode: "subagent"` (built-in general / explore / scout, or a user markdown/json agent). Invoked by `@name` in the prompt or by OpenCode's Task tool. Not a BB Voyager/Atlas child.
 _Avoid:_ putting these in the composer picker; treating BB sub-agents as OpenCode agents.
 
-**Task child.** An OpenCode session the Task tool creates with `parentID` set. The parent timeline shows the Task tool item. A BB thread for that child exists only after user-confirmed adopt.
-_Avoid:_ plugin `session.create` for Task; auto-sidebar; OpenChamber "open subtask" chrome; calling child `idle` the parent turn end.
+**Task child.** An OpenCode session the Task tool creates with `parentID` set. The parent timeline shows the Task `delegation` item. A running child of a BB OpenCode parent is auto-bound as a native BB child thread (adopt, no extra prompt) so BB's above-composer child card can list it. Idle children open through **Open this Task** / Import.
+_Avoid:_ plugin `session.create` for Task; custom Task chrome; calling child `idle` the parent turn end; auto-binding foreign sessions.
 
 **Detached OpenCode.** One long-lived OpenCode server process per host, found via lock/port under the plugin `dataDir`. Bridge workers and the idle-evicted host-RPC worker all attach to it.
 _Avoid:_ in-process child of the bridge, module-singleton client, "the host *is* OpenCode".
@@ -138,14 +138,14 @@ _Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
 - Task children are created by the OpenCode server, not the plugin. The bridge never `session.create`s because Task started. `@mention` text is sent unchanged in `session.prompt` parts.
 - Child-session events never become items on the parent BB thread. Child `session.status`/`session.idle` does not emit the parent's `turn.boundary`.
 - `permission.asked` on a Task child of the in-flight parent uses the same F5 card and reply path, addressed to that child request. Fail-closed still applies.
-- A Task spawn does not create a BB thread or a pending adopt. User-confirmed open of a Task child uses the Import adopt path (ISC-42 family) and is refused while that child is running (same rule as ISC-44). No custom Task card: the confirm control is Import, plus a generic tool-item action only if BB already has that seam.
+- A Task spawn does not `session.create`. A running Task child of a BB-bound parent is adopt-bound as a native BB child (`bindOnly`, agent-only seed, no extra OpenCode prompt). User-confirmed **Open this Task** / Import still adopts an idle child and still refuses a running child (no steal-prompt). No custom Task card: the live surface is BB's native child banner.
 - Stop interrupts the parent session. If `session.children` (or equivalent) lists Task children, those live children are interrupted too. After the parent `turn.boundary`, leftover child `permission.asked` is treated as uncorrelated (no approve, not attached to a card).
 
 ## Goal
 
 "Add first-class OpenCode support in BB so it feels native, not like a generic ACP guest."
 
-A community plugin registers provider `opencode`. A user can start and resume OpenCode sessions from BB, stream thinking/tools/live bash in the BB timeline, stop, undo, redo, attach what OpenCode accepts, answer permissions on BB's card, pick a model and an OpenCode agent and change that agent on the next send, run a listed OpenCode `/command` from the composer, see BB-injected skills in the session catalog, invoke configured OpenCode subagents via `@mention` / Task without leaving the parent thread as a card, open a Task child only by user-confirmed adopt, and manually import existing sessions — with one detached OpenCode per host and honest Settings/CLI when the binary, version, or auth is wrong.
+A community plugin registers provider `opencode`. A user can start and resume OpenCode sessions from BB, stream thinking/tools/live bash in the BB timeline, stop, undo, redo, attach what OpenCode accepts, answer permissions on BB's card, pick a model and an OpenCode agent and change that agent on the next send, run a listed OpenCode `/command` from the composer, see BB-injected skills in the session catalog, invoke configured OpenCode subagents via `@mention` / Task, see a running Task child on BB's native above-composer child card, open an idle Task child with **Open this Task** / Import, compact with native BB `/compact` (OpenCode `session.summarize`), see OpenCode todos on BB's native plan banner, and manually import existing sessions — with one detached OpenCode per host and honest Settings/CLI when the binary, version, or auth is wrong.
 
 ## Not yet specified
 
@@ -279,15 +279,15 @@ Why: one OpenCode on the machine, and the operator can see when it is missing, s
 - [x] ISC-58: Auth probe failure is visible in Settings (not a silent empty model list only).
 
 ### F8 · Task children
-Why: OpenCode Task / `@mention` already creates a child session. BB shows the parent card and can adopt the child; it does not become Voyager or OpenChamber.
+Why: OpenCode Task / `@mention` already creates a child session. The parent keeps the `delegation` row; a running child is adopt-bound as a native BB child so the above-composer banner works. Idle open is Import / Open this Task. It does not become Voyager or OpenChamber.
 
 - [x] ISC-71: Read maps to `fileRead`, Task to `delegation`, bash to `command`, others to generic `tool`. Live `thr_yxpq8846ww` emitted `item/started` `fileRead` for `package.json`. Invalid `{ id }` keys were dropping the whole leftover batch.
 - [x] ISC-71.1: Anti: the plugin does not call `session.create` because Task started.
 - [x] ISC-73: `session.status` idle / `session.idle` for a Task child does not emit `turn.boundary` on the parent BB thread.
-- [x] ISC-74: `permission.asked` whose session is a Task child of the in-flight parent renders on **that parent BB thread's** generic permission card only (never as a timeline item; ISC-22 still holds for items). Once / always / reject are written back to that same child request. Uncorrelated asks, including child asks after the parent `turn.boundary` and asks with no resolvable session, are not approved and are not attached to any thread.
-- [x] ISC-75: Anti: a Task spawn creates zero new BB threads and writes zero pending adopts.
-- [x] ISC-76: User-confirmed open of a Task child's OpenCode id uses the Import adopt path (ISC-42 family) and does not call `session.create`. Confirm control is Import; a generic tool-item action is allowed only if that BB seam already exists.
-- [x] ISC-76.1: Anti: user-confirmed open of a still-running Task child is refused. Open after the child is idle uses the same adopt path as ISC-76. Mid-stream steal / hydrate of a live child is out of V1.
+- [x] ISC-74: `permission.asked` whose session is already bound to a BB thread cards on **that** thread. If the child is not yet bound, a Task child ask of the in-flight parent cards on the parent. Never as a timeline item; ISC-22 still holds for items. Once / always / reject go to that same child request. Uncorrelated asks are not approved.
+- [x] ISC-75: Anti: a Task spawn still creates zero OpenCode sessions (`session.create` stays 0). Auto BB children are adopt-binds of an existing child id.
+- [x] ISC-76: User-confirmed **Open this Task** / Import of an idle Task child uses the adopt path (ISC-42 family) and does not call `session.create`. The new BB thread is parented (`parentThreadId`) when the OpenCode parent is already a BB thread.
+- [x] ISC-76.1: Anti: user-confirmed open of a still-running Task child is refused (no steal-prompt). Auto bind-only of a running child is allowed as a view and does not call `session.prompt`.
 - [x] ISC-77: Anti: a user prompt containing `@<subagent>` is forwarded in `session.prompt` parts unchanged. The plugin does not rewrite it into `session.create` or a V2 `session.subagent` call.
 
 ### F9 · Commands and skills
@@ -306,6 +306,8 @@ Why: OpenCode already has `/commands` and a skill tool. BB has no plugin slash-c
 - [x] ISC-90: `model/list` advertises that model's OpenCode `variants` that are BB reasoning levels (`none`/`low`/`medium`/`high`/`xhigh`/`max`/…). Unknown keys like `minimal` are skipped. Empty variants → `none` only. `turn/start` `reasoningLevel` is sent as OpenCode `variant` (exact name; `ultracode`/`ultra` fall back to `max`/`xhigh` when the model has them). Thinking parts still map as reasoning items (ISC-16).
 - [x] ISC-64.1: An unmappable or un-cardable permission ask with an id is replied `reject` (not left running). Asks with no id still do not approve (ISC-64).
 - [x] ISC-91: OpenCode `question.asked` / `question.v2.asked` emit `interaction/request` `{kind:"user_question"}`. Answers POST `/question/{id}/reply` `{answers}`. Uncardable asks and Stop reject. The `question` tool part is suppressed. `supportsNativeUserQuestion: true` so Ask User Question does not inject a second unused tool.
+- [x] ISC-92: Native BB `/compact` (`supportsManualCompaction: true`) calls OpenCode `session.summarize` once. It does not `session.command("compact")`, does not `session.prompt` `/compact`, and does not emit a second `context.compacted` when OpenCode also fires `session.compacted`. OpenCode `/compact` and `/summarize` are hidden from the plugin slash list. Header Summarize is removed so the two compactors cannot fight.
+- [x] ISC-93: OpenCode `todo.updated` and `GET /session/:id/todo` emit grammar v3 `planSteps` snapshots (BB's native todo banner). `todowrite` / `todo` tool parts are suppressed so they do not become generic rows.
 
 ## Test Strategy
 
@@ -415,6 +417,8 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-89 | vitest | slash suggest only calls `insertCommandToken`; no `session.command` symbol | grep | vitest | derived: intent until send |
 | ISC-90 | vitest | `turn/start` with `reasoningLevel: high` sends `variant: high` | lastPrompt.variant | vitest | literal |
 | ISC-91 | vitest | `question.v2.asked` emits `interaction/request` `user_question`; answer POSTs `answers` | card + reply | vitest | literal |
+| ISC-92 | vitest | standalone `/compact` calls `session.summarize` once; prompt/command 0; `context.compacted` once; auto `session.compacted` does not summarize | summarize 1 | vitest | literal |
+| ISC-93 | vitest | `todo.updated` emits `item.close` `planSteps`; `todowrite` maps to `[]` | snapshot + suppress | vitest | literal |
 
 ## Decisions
 
@@ -446,7 +450,9 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-22: ISA R3 (Kimi `thr_empwuv3fjq` sound; GLM `thr_zrdu8h2f9k` and Opus `thr_59bhcagns8` sound-with-fixes). Applied without expanding product scope: Language **selectable primary**; unknown-id send refused; enqueue stamp that is unlisted at flush refused; drop undefined retry from ISC-29.1; ISC-28/29.4 pin a literal fixture; ISC-29.2 observes host RPC not SDK; `info.agent` is a fog, not a cookie.
 - 2026-08-22: A queued follow-up that flushes after undo/redo keeps the enqueue-stamped agent on the new tail. That interleaving is accepted. Do not rewrite the stamp from the post-revert picker.
 - 2026-08-22: OpenCode Task / `@mention` children are in V1 as F8. Stable Task tool only. Plugin never `session.create`s for Task. Parent shows a generic Task tool item. Child events stay off the parent timeline (ISC-22) except the in-flight child's permission card on the parent thread. Child idle does not end the parent turn. Child permissions use F5. No auto BB thread. Open is user-confirmed adopt of an **idle** child. Cut: V2 `session.subagent`, background Task flag, OpenChamber subtask chrome, BB Voyager-as-OpenCode, custom Task card, subagents in the picker, mid-stream steal of a live child.
-- 2026-08-23: Restate F8/ISC-22: a Task child of the in-flight parent nests under that parent's `delegation` row (`parentRef` + keyed `turn.open`, Claude/Codex shape). Foreign sessions still never leak. Still no auto BB thread.
+- 2026-08-23: Restate F8/ISC-22: a Task child of the in-flight parent nests under that parent's `delegation` row (`parentRef` + keyed `turn.open`, Claude/Codex shape). Foreign sessions still never leak.
+- 2026-08-23: Restate F8 child UX: reuse BB's native above-composer child banner. That card only lists real BB children (`parentThreadId`, `originKind: null`, active or pending). Running Task children of a BB OpenCode parent are therefore adopt-bound as those children (`bindOnly`). Idle open is **Open this Task** / Import. Still no `session.create` for Task. Still no custom Task card. Still no V2 `session.subagent`.
+- 2026-08-23: Restate compact: native BB `/compact` is the only compact UI. It calls OpenCode `session.summarize`. OpenCode auto `session.compacted` emits `context.compacted` without calling summarize again. Plugin header Summarize is gone. `supportsManualCompaction` is true. OpenCode session todos map to native `planSteps`, not a custom strip.
 - 2026-08-22: ISA R4 (Kimi `thr_ycxwi7m9ir`, GLM `thr_kpc99pwr25`, Opus `thr_3qtf84k6ca`) all **sound-with-fixes**. Applied without expanding product scope: stop interrupts listed Task children; leftover child asks after parent boundary are uncorrelated; ISC-74 names the parent thread and reconciles ISC-22; ISC-76.1 refuses running children; Vision says tool item not Task card; probes named and non-vacuous.
 - 2026-08-22: Implement F8 after F2 and F5 (need live tools + permission card). Import (F6) stays last.
 - 2026-08-22 (idle-spawn spike): Public spawn cannot create an idle `opencode` thread. Evidence: `bb thread spawn` requires `--prompt`; `CreateThreadRequest` rejects `input.length === 0` unless `originKind === "fork"` (the only origin kind); SDK `ThreadSpawnArgs` is `input` XOR `prompt` and cannot set `providerThreadId`. `spawn({ input: [] })` is type-legal and server-illegal for a normal/plugin origin. Active path: **ISC-42.3** pending adopt `{projectId, hostId, opencodeSessionId}` + user-confirmed open. **ISC-42.2 tombstoned**. Never smallest-prompt-then-stop.

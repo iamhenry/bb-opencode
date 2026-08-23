@@ -4,6 +4,7 @@ import {
   ComposerAgentPicker,
 } from "./src/app/composer-agent.js";
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
+import { TaskChildrenHeaderAction } from "./src/app/header-actions.js";
 import { OpenCodeProviderIcon } from "./src/app/provider-icon.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 import { PROVIDER_ID } from "./src/identity.js";
@@ -26,6 +27,11 @@ export default definePluginApp((app) => {
       },
       { id: "slash", chrome: "bare", component: ComposerSlashSuggest },
     ],
+  });
+  app.slots.experimental_threadHeaderAction({
+    id: "opencode-open-task",
+    title: "OpenCode Task children",
+    component: TaskChildrenHeaderAction,
   });
   app.slots.settingsSection({
     id: "opencode",

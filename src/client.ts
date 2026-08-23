@@ -77,6 +77,12 @@ export interface OpenCodeClient {
     sessionID: string;
   }): Promise<void>;
   listPendingQuestions(sessionID: string): Promise<unknown[]>;
+  sessionIsRunning(id: string): Promise<boolean>;
+  sessionTodos(id: string): Promise<unknown[]>;
+  summarize(
+    id: string,
+    body: { providerID: string; modelID: string },
+  ): Promise<boolean>;
   subscribe(
     handler: (event: { type: string; properties?: unknown }) => void,
   ): Promise<{ unsubscribe(): void }>;
@@ -345,6 +351,39 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const body = (await response.json()) as { data?: unknown } | unknown[];
       if (Array.isArray(body)) return body;
       return Array.isArray(body.data) ? body.data : [];
+    },
+    async sessionTodos(id) {
+      const result = await sdk.session.todo({ path: { id } });
+      const body = unwrap<unknown>(result);
+      return Array.isArray(body) ? body : [];
+    },
+    async sessionIsRunning(id) {
+      const response = await fetch(`${url}/session/status`);
+      if (!response.ok) return false;
+      const body = (await response.json()) as unknown;
+      if (Array.isArray(body)) {
+        return body.some((item) => {
+          if (!item || typeof item !== "object") return false;
+          const row = item as { id?: unknown; status?: unknown };
+          return row.id === id && row.status && row.status !== "idle";
+        });
+      }
+      if (body && typeof body === "object") {
+        const status = (body as Record<string, unknown>)[id];
+        if (typeof status === "string") return status !== "idle";
+        if (status && typeof status === "object") {
+          const value = (status as { status?: unknown }).status;
+          return typeof value === "string" && value !== "idle";
+        }
+      }
+      return false;
+    },
+    async summarize(id, body) {
+      const result = await sdk.session.summarize({
+        path: { id },
+        body,
+      });
+      return Boolean(unwrap<boolean>(result));
     },
     async subscribe(handler) {
       const controller = new AbortController();
