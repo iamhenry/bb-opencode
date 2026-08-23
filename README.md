@@ -1,6 +1,8 @@
-# bb-plugin-opencode
+# bb-opencode
 
-First-class OpenCode provider for [BB](https://github.com/get-bb/bb). Provider id: `opencode`.
+First-class OpenCode provider for [BB](https://github.com/get-bb/bb).
+
+This is **not** BB’s built-in ACP guest (`acp-opencode` / plugin `provider-acp`). That path runs `opencode acp`. This plugin talks to a detached `opencode serve` as provider id `opencode`, shown in the picker as **OpenCode**.
 
 One detached `opencode serve` per host. BB threads bind 1:1 to OpenCode sessions. Import is manual. Task children stay on the parent card until you adopt them.
 

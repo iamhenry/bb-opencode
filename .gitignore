@@ -4,3 +4,7 @@ opencode.json
 *.log
 .DS_Store
 coverage/
+.env
+.env.*
+*.lock.json
+scratch/
