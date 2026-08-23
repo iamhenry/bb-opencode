@@ -4,11 +4,23 @@ export interface RevertTargetMessage {
 }
 
 export function messageText(message: RevertTargetMessage): string {
+  return textParts(message).join("").trim();
+}
+
+function textParts(message: RevertTargetMessage): string[] {
   return message.parts
     .filter((part) => part.type === "text" && part.text)
-    .map((part) => part.text ?? "")
-    .join("")
-    .trim();
+    .map((part) => (part.text ?? "").trim())
+    .filter((text) => text.length > 0);
+}
+
+/** Texts a BB bubble can legally match, including the prompt after BB instructions. */
+export function comparableMessageTexts(message: RevertTargetMessage): string[] {
+  const parts = textParts(message);
+  const joined = parts.join("").trim();
+  const last = parts[parts.length - 1] ?? "";
+  const stripped = joined.startsWith("[BB project instructions]") ? last : joined;
+  return [...new Set([joined, last, stripped].filter((text) => text.length > 0))];
 }
 
 /** Pick the OpenCode message `session.revert` should target. */
@@ -27,12 +39,16 @@ export function resolveRevertMessageId(args: {
     return true;
   });
   if (!needle) return undefined;
-  const exact = pool.filter((message) => messageText(message) === needle);
+  const exact = pool.filter((message) =>
+    comparableMessageTexts(message).some((text) => text === needle),
+  );
   if (exact.length === 1) return exact[0]?.info.id;
   if (exact.length > 1) return undefined;
   const prefix = needle.slice(0, 80);
   const fuzzy = pool.filter((message) =>
-    messageText(message).includes(prefix),
+    comparableMessageTexts(message).some(
+      (text) => text.includes(prefix) || needle.includes(text.slice(0, 80)),
+    ),
   );
   if (fuzzy.length === 1) return fuzzy[0]?.info.id;
   return undefined;

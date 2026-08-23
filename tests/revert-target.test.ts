@@ -47,6 +47,27 @@ describe("resolveRevertMessageId", () => {
     ).toBe("a1");
   });
 
+  it("matches the visible user prompt after BB project instructions", () => {
+    expect(
+      resolveRevertMessageId({
+        messages: [
+          {
+            info: { id: "u-theme", role: "user" },
+            parts: [
+              { type: "text", text: "[BB project instructions]\nYou are working inside bb" },
+              {
+                type: "text",
+                text: "create a bb theme for both light and dark theme",
+              },
+            ],
+          },
+        ],
+        role: "user",
+        text: "create a bb theme for both light and dark theme",
+      }),
+    ).toBe("u-theme");
+  });
+
   it("refuses when the clicked text matches nothing uniquely", () => {
     expect(
       resolveRevertMessageId({

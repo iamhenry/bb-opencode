@@ -2,7 +2,7 @@ import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js
 import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
 import { attachOrSpawn, readLock } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
-import { hydrateBoundSession, recentUnknownLogLines } from "./bridge.js";
+import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
 
 const clients = new Map<string, OpenCodeClient>();
@@ -132,7 +132,6 @@ export async function handleRevert(
     return { ok: false, error: "Could not match that message" };
   }
   await client.revert(sessionId, { messageID });
-  await hydrateBoundSession(sessionId);
   return { ok: true, error: null };
 }
 
@@ -140,7 +139,6 @@ export async function handleUnrevert(dataDir: string, sessionId: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
   await client.unrevert(sessionId);
-  await hydrateBoundSession(sessionId);
   return { ok: true, error: null };
 }
 

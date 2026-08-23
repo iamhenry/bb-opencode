@@ -725,7 +725,7 @@ async function revertThread(
       return { ok: false, error: "Thread is not bound to an OpenCode session" };
     }
     if (kind === "revert") {
-      await host.call(
+      const result = (await host.call(
         "revert",
         {
           sessionId,
@@ -734,9 +734,21 @@ async function revertThread(
           text: target?.text,
         },
         { hostId },
-      );
+      )) as { ok: boolean; error: string | null };
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error ?? "Could not match that message",
+        };
+      }
     } else {
-      await host.call("unrevert", { sessionId }, { hostId });
+      const result = (await host.call("unrevert", { sessionId }, { hostId })) as {
+        ok: boolean;
+        error: string | null;
+      };
+      if (!result.ok) {
+        return { ok: false, error: result.error ?? "nothing to redo" };
+      }
     }
     return { ok: true, error: null };
   } catch (error) {
