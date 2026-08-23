@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createMapDeltaState, mapPartDelta } from "../src/map-delta.js";
+import {
+  createMapDeltaState,
+  mapPartDelta,
+  mapSessionNextEvent,
+} from "../src/map-delta.js";
 
 describe("map-delta", () => {
   it("maps text parts to agent message deltas (ISC-15)", () => {
@@ -123,7 +127,11 @@ describe("map-delta", () => {
       },
     });
     expect(first[0]).toMatchObject({ key: { providerItemId: "bash-1" } });
-    expect(second[0]).toMatchObject({ key: { providerItemId: "bash-1" } });
+    expect(second[0]).toMatchObject({
+      kind: "command.outputSnapshot",
+      key: { providerItemId: "bash-1" },
+      text: "a",
+    });
     const done = mapPartDelta({
       state,
       sessionId: "s",
@@ -138,11 +146,61 @@ describe("map-delta", () => {
         },
       },
     });
-    expect(done.some((delta) => delta.kind === "command.outputSnapshot")).toBe(
-      true,
-    );
-    expect(
-      done.find((delta) => delta.kind === "command.outputSnapshot"),
-    ).toMatchObject({ text: "a" });
+    expect(done.map((delta) => delta.kind)).toEqual(["item.close"]);
+  });
+
+  it("does not reopen a tool already mapped from a poll snapshot", () => {
+    const state = createMapDeltaState();
+    const first = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "read-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "running", input: { filePath: "package.json" } },
+      },
+    });
+    const again = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "read-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "running", input: { filePath: "package.json" } },
+      },
+    });
+    expect(first).toHaveLength(1);
+    expect(again).toEqual([]);
+    const done = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "read-1",
+        type: "tool",
+        tool: "read",
+        state: { status: "completed", input: { filePath: "package.json" } },
+      },
+    });
+    expect(done.map((delta) => delta.kind)).toEqual(["item.close"]);
+  });
+
+  it("maps session.next text deltas", () => {
+    const state = createMapDeltaState();
+    const first = mapSessionNextEvent({
+      type: "session.next.text.delta",
+      properties: { textID: "t1", delta: "Hi" },
+      state,
+      sessionId: "s",
+    });
+    const second = mapSessionNextEvent({
+      type: "session.next.text.delta",
+      properties: { textID: "t1", delta: " there" },
+      state,
+      sessionId: "s",
+    });
+    expect(first[0]).toMatchObject({ text: "Hi" });
+    expect(second[0]).toMatchObject({ text: " there" });
   });
 });

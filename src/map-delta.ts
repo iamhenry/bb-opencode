@@ -10,6 +10,8 @@ export interface MapDeltaState {
   itemKeys: Map<string, { channel: string } | { providerItemId: string }>;
   emittedText: Map<string, string>;
   openedItems: Map<string, "command" | "tool">;
+  closedItems: Set<string>;
+  lastSnapshots: Map<string, string>;
 }
 
 export function createMapDeltaState(): MapDeltaState {
@@ -18,6 +20,8 @@ export function createMapDeltaState(): MapDeltaState {
     itemKeys: new Map(),
     emittedText: new Map(),
     openedItems: new Map(),
+    closedItems: new Set(),
+    lastSnapshots: new Map(),
   };
 }
 
@@ -176,12 +180,14 @@ export function mapPartDelta(args: {
   if (type === "tool") {
     const toolName = part.tool ?? "tool";
     const itemId = part.id ?? part.callID ?? toolName;
+    if (args.state.closedItems.has(itemId)) return [];
     const key = { providerItemId: itemId };
     args.state.itemKeys.set(itemId, key);
-    args.state.openedItems.set(
-      itemId,
-      isBashToolName(toolName) ? "command" : "tool",
-    );
+    const alreadyOpen = args.state.openedItems.has(itemId);
+    const kind = isBashToolName(toolName) ? "command" : "tool";
+    if (!alreadyOpen) args.state.openedItems.set(itemId, kind);
+    const finished =
+      part.state?.status === "completed" || part.state?.status === "error";
     if (isBashToolName(toolName)) {
       const command =
         (typeof part.state?.input?.command === "string" &&
@@ -192,8 +198,9 @@ export function mapPartDelta(args: {
           part.state.metadata.output) ||
         part.state?.output ||
         "";
-      const deltas: ThreadDelta[] = [
-        {
+      const deltas: ThreadDelta[] = [];
+      if (!alreadyOpen) {
+        deltas.push({
           kind: "item.open",
           key,
           item: {
@@ -202,20 +209,22 @@ export function mapPartDelta(args: {
             cwd: "",
             aggregatedOutput: output,
           },
-        },
-      ];
-      if (output) {
+        });
+      }
+      if (output && args.state.lastSnapshots.get(itemId) !== output) {
+        args.state.lastSnapshots.set(itemId, output);
         deltas.push({
           kind: "command.outputSnapshot",
           key,
           text: output,
         });
       }
-      if (part.state?.status === "completed" || part.state?.status === "error") {
+      if (finished) {
+        args.state.closedItems.add(itemId);
         deltas.push({
           kind: "item.close",
           key,
-          status: part.state.status === "error" ? "failed" : "completed",
+          status: part.state?.status === "error" ? "failed" : "completed",
           item: {
             type: "command",
             command,
@@ -234,26 +243,28 @@ export function mapPartDelta(args: {
       icon: { glyph: toolName === "task" ? "Bot" : "Wrench" },
     };
     const item = coreToolItem(toolName, part);
-    const deltas: ThreadDelta[] = [
-      {
+    const deltas: ThreadDelta[] = [];
+    if (!alreadyOpen) {
+      deltas.push({
         kind: "item.open",
         key,
         item,
         presentation,
-      },
-    ];
-    if (part.state?.status === "completed" || part.state?.status === "error") {
+      });
+    }
+    if (finished) {
+      args.state.closedItems.add(itemId);
       deltas.push({
         kind: "item.close",
         key,
-        status: part.state.status === "error" ? "failed" : "completed",
+        status: part.state?.status === "error" ? "failed" : "completed",
         item: {
           ...item,
           ...(item.type === "tool"
             ? {
                 result: part.state?.output,
                 error:
-                  part.state.status === "error"
+                  part.state?.status === "error"
                     ? String(part.state.error ?? part.state.output ?? "error")
                     : undefined,
               }
@@ -265,6 +276,105 @@ export function mapPartDelta(args: {
     return deltas;
   }
   tallyUnknown(args.state, type);
+  return [];
+}
+
+/** Map OpenCode 1.18 `session.next.*` SSE into the same deltas as part snapshots. */
+export function mapSessionNextEvent(args: {
+  type: string;
+  properties?: unknown;
+  state: MapDeltaState;
+  sessionId: string;
+}): ThreadDelta[] {
+  const record =
+    args.properties && typeof args.properties === "object"
+      ? (args.properties as Record<string, unknown>)
+      : {};
+  if (args.type === "session.next.text.delta") {
+    const id = typeof record.textID === "string" ? record.textID : undefined;
+    const delta = typeof record.delta === "string" ? record.delta : undefined;
+    if (!id || !delta) return [];
+    return mapPartDelta({
+      state: args.state,
+      sessionId: args.sessionId,
+      part: { id, type: "text" },
+      delta,
+    });
+  }
+  if (args.type === "session.next.text.ended") {
+    const id = typeof record.textID === "string" ? record.textID : undefined;
+    const text = typeof record.text === "string" ? record.text : "";
+    if (!id) return [];
+    const leftover = mapPartDelta({
+      state: args.state,
+      sessionId: args.sessionId,
+      part: { id, type: "text", text },
+    });
+    return [...leftover, ...closeText(id, text)];
+  }
+  if (args.type === "session.next.reasoning.delta") {
+    const id =
+      typeof record.reasoningID === "string" ? record.reasoningID : undefined;
+    const delta = typeof record.delta === "string" ? record.delta : undefined;
+    if (!id || !delta) return [];
+    return mapPartDelta({
+      state: args.state,
+      sessionId: args.sessionId,
+      part: { id, type: "reasoning" },
+      delta,
+    });
+  }
+  if (args.type === "session.next.tool.called") {
+    const id = typeof record.callID === "string" ? record.callID : undefined;
+    const tool = typeof record.tool === "string" ? record.tool : "tool";
+    if (!id) return [];
+    const input =
+      record.input && typeof record.input === "object"
+        ? (record.input as Record<string, unknown>)
+        : undefined;
+    return mapPartDelta({
+      state: args.state,
+      sessionId: args.sessionId,
+      part: {
+        id,
+        type: "tool",
+        tool,
+        callID: id,
+        state: { status: "running", input },
+      },
+    });
+  }
+  if (
+    args.type === "session.next.tool.success" ||
+    args.type === "session.next.tool.error"
+  ) {
+    const id = typeof record.callID === "string" ? record.callID : undefined;
+    if (!id) return [];
+    const output =
+      typeof record.result === "string"
+        ? record.result
+        : typeof record.output === "string"
+          ? record.output
+          : undefined;
+    return mapPartDelta({
+      state: args.state,
+      sessionId: args.sessionId,
+      part: {
+        id,
+        type: "tool",
+        tool: typeof record.tool === "string" ? record.tool : "tool",
+        callID: id,
+        state: {
+          status: args.type.endsWith("error") ? "error" : "completed",
+          output,
+          error:
+            args.type.endsWith("error") && typeof record.error === "string"
+              ? record.error
+              : undefined,
+        },
+      },
+    });
+  }
   return [];
 }
 

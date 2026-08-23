@@ -33,6 +33,7 @@ import {
   createMapDeltaState,
   formatUnknownTally,
   mapPartDelta,
+  mapSessionNextEvent,
   tallyUnknown,
   type MapDeltaState,
   type ThreadDelta,
@@ -253,10 +254,39 @@ function startTitlePoller(): void {
       [...sessionToThread.keys()].map(async (sessionId) => {
         await syncSessionTitle(sessionId);
         await syncPendingPermissions(sessionId);
+        await syncLiveTurnParts(sessionId);
       }),
     );
   }, 800);
   titleTimer.unref?.();
+}
+
+export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
+  if (!client) return false;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return false;
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted) return false;
+  try {
+    const messages = (await client.sessionMessages(sessionId)) as HydrateMessage[];
+    const leftovers: ThreadDelta[] = [];
+    for (const message of assistantsAfterLastUser(messages)) {
+      for (const part of message.parts) {
+        leftovers.push(
+          ...mapPartDelta({
+            state: live.mapState,
+            part,
+            sessionId,
+          }),
+        );
+      }
+    }
+    if (leftovers.length === 0) return false;
+    emitDeltas(threadId, leftovers);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function syncSessionTitle(sessionId: string): Promise<boolean> {
@@ -436,6 +466,17 @@ async function onOpenCodeEvent(event: {
     if (event.type === "session.idle" || event.type === "session.status") {
       live.liveChildIds.delete(sessionId);
     }
+    return;
+  }
+
+  if (event.type.startsWith("session.next.")) {
+    const nextDeltas = mapSessionNextEvent({
+      type: event.type,
+      properties: event.properties,
+      state: live.mapState,
+      sessionId,
+    });
+    if (nextDeltas.length > 0) emitDeltas(threadId, nextDeltas);
     return;
   }
 

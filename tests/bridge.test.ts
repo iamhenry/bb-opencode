@@ -6,6 +6,7 @@ import {
   ingestOpenCodeEvent,
   recentUnknownLogLines,
   resetBridgeForTests,
+  syncLiveTurnParts,
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
@@ -470,6 +471,42 @@ describe("provider bridge", () => {
         .map((delta) => delta.text);
     });
     expect(texts).not.toContain("from-child");
+  });
+
+  it("polls live session parts when SSE is silent", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "t1", type: "text", text: "SMOKE_OK" }],
+      },
+    ]);
+    messages.length = 0;
+    expect(await syncLiveTurnParts("ses_1")).toBe(true);
+    const texts = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textDelta")
+        .map((delta) => delta.text);
+    });
+    expect(texts).toContain("SMOKE_OK");
+    expect(await syncLiveTurnParts("ses_1")).toBe(false);
   });
 
   it("updates the BB title when OpenCode title changes without SSE (ISC-12)", async () => {
