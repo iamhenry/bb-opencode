@@ -139,7 +139,10 @@ export function createFakeOpenCode(): FakeOpenCode {
           providers: [
             {
               id: "opencode",
-              models: { "gpt-4.1": {}, "claude-sonnet-4": {} },
+              models: {
+                "gpt-4.1": { limit: { context: 1_047_576 } },
+                "claude-sonnet-4": { limit: { context: 200_000 } },
+              },
             },
           ],
         };

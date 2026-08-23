@@ -188,7 +188,18 @@ describe("provider bridge", () => {
           parts: [{ type: "text", text: "hi" }],
         },
         {
-          info: { id: "a_chk", role: "assistant" },
+          info: {
+            id: "a_chk",
+            role: "assistant",
+            providerID: "opencode",
+            modelID: "gpt-4.1",
+            tokens: {
+              input: 100,
+              output: 10,
+              reasoning: 0,
+              cache: { read: 900, write: 0 },
+            },
+          },
           parts: [{ type: "text", text: "yo" }],
         },
       ]);
@@ -209,6 +220,14 @@ describe("provider bridge", () => {
           delta.kind === "turn.boundary" &&
           delta.status === "completed" &&
           delta.providerCheckpointId === "a_chk",
+      ),
+    ).toBe(true);
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "contextWindow" &&
+          delta.used === 1000 &&
+          delta.size === 1_047_576,
       ),
     ).toBe(true);
   });

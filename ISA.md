@@ -173,7 +173,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
-- [ ] ISC-8.2: Per-message Revert/Fork/Redo `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; icons still appear on other providers.
+- [ ] ISC-8.2: Per-message Fork `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; the Fork icon still appears on other providers. Revert/Redo chrome removed (native Edit is the mid-thread resubmit).
 - [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; questions fail-closed (1.18 has no question API).
 - [x] Mobile: compact PWA banner hosts the Agent picker (BB hides plugin composer actions); touch targets + visualViewport; declarative `defaultAgent` for the iOS app (no plugin frontend). Native fork/rewind already follow `fork: "checkpoint"`.
 - [x] Provider mark: `app.slots.experimental_providerIcon` inline `currentColor` window (web pickers/settings). Server `icon` stays the currentColor SVG for iOS `ServerSvgIcon`. Branding logos are explicit light/dark fills because Settings uses `<img>`.
@@ -207,6 +207,7 @@ Why: the BB timeline *is* the OpenCode turn — text, thinking, tools, live bash
 - [x] ISC-24: If the transport dies mid-prompt, the bridge refetches and does not call `session.prompt` again.
 - [x] ISC-25: Unknown OpenCode event types are tallied in the plugin log and do not fail the turn.
 - [x] ISC-26: OpenCode process death mid-turn emits `turn.boundary` with an error and does not crash the host worker.
+- [x] Context meter: settle/hydrate emit `usage` + `contextWindow` from assistant `tokens` (`used` = input + cache.read) and catalog `limit.context`. BB draws the native composer ring.
 
 ### F3 · Catalog
 Why: model and OpenCode agent are real start/resume **and later-turn** choices, not fake models.
@@ -222,10 +223,10 @@ Why: model and OpenCode agent are real start/resume **and later-turn** choices, 
 - [x] ISC-29.5: A follow-up BB queues because `turn/steer` is `-32601` is stamped with the agent selected at enqueue, not the picker value at flush. If that stamped id is no longer a selectable primary at flush, the send is refused (same as ISC-29.3 unknown), not rewritten to the default.
 
 ### F4 · Revert
-Why: undo/redo is OpenCode `session.revert({ messageID })` / `unrevert`, shown on the message action bar — not title-bar chrome and not BB session rewind.
+Why: mid-thread resubmit is BB native **Edit message** (`fork: "checkpoint"` + `supportsSessionRewind`). OpenCode `session.revert` / `unrevert` stay as host RPCs; they are not message-bar chrome.
 
-- [x] ISC-30: Per-message Undo maps the bubble (`role` + `text`) to an OpenCode `messageID`, calls `session.revert`, then the same hydrate path as resume.
-- [x] ISC-31: Per-message Redo calls `session.unrevert` then the same hydrate path as resume.
+- [x] ISC-30: Host `undo` maps `role` + `text` to an OpenCode `messageID` and calls `session.revert`. Not shown on the bubble (native Edit owns that verb).
+- [x] ISC-31: Host `redo` calls `session.unrevert`. Not shown on the bubble.
 - [x] ISC-32: After a successful revert, a following send that is rejected restores the previous tail (no permanent optimistic loss).
 
 ### F5 · Permissions
@@ -420,7 +421,8 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-21: Steal OpenChamber boundaries, not its UI: one SDK door, tagged permission results, actions-only mutation, live truth from events, fail closed.
 - 2026-08-21: Three-entry plugin. One detached OpenCode per host. Attach-first. No in-process child. No module-singleton client.
 - 2026-08-21: `fork: "none"`. Revert is undo chrome. Capabilities only narrow.
-- 2026-08-23 (edit-from-here): Native BB **Edit message** is OpenCode's mid-thread resubmit. It rewinds via `thread/fork` at the *previous* turn's `providerCheckpointId`, then sends the new text on this same BB thread. Checkpoint must be the last message that turn should keep (usually the assistant id). Stamping the user id dropped the previous reply. Plugin **Revert from here** is a different verb (in-place cursor, no resend) and should not restuff the composer.
+- 2026-08-23 (edit-from-here): Native BB **Edit message** is OpenCode's mid-thread resubmit. It rewinds via `thread/fork` at the *previous* turn's `providerCheckpointId`, then sends the new text on this same BB thread. Checkpoint must be the last message that turn should keep (usually the assistant id). Stamping the user id dropped the previous reply. Plugin Revert/Redo buttons removed so they do not compete with Edit.
+- 2026-08-23 (context meter): BB already draws `ThreadContextWindowIndicator` from `contextWindow` deltas. V1 maps OpenCode assistant `tokens` + catalog `limit.context` and does not invent a plugin usage widget.
 - 2026-08-22: Restated. OpenCode has a real `POST /session/:id/fork { messageID }`. V1 now advertises `fork: "checkpoint"`, stamps `providerCheckpointId` = last retained OpenCode message id on `turn.boundary`, and handles `thread/fork`. Revert stays in-place and is not a fork.
 - 2026-08-21: Core OpenCode is in V1: start/resume, models, agents, live tools/bash, stop, revert/unrevert, permissions on the generic card, attachments mapped or rejected, `turn/steer` refuse.
 - 2026-08-21: Permissions are core, not a second knob. BB modes are the ceiling. `full` ≈ auto-approve. Fail-closed `{ok|resolved|unknown}`.

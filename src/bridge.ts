@@ -48,6 +48,10 @@ import {
   shouldShowCard,
   unwrapPermissionAsk,
 } from "./permissions/map.js";
+import {
+  rememberModelWindows,
+  usageDeltasFromMessages,
+} from "./usage.js";
 import { attachOrSpawn } from "./process.js";
 import { buildPrompt } from "./prompt-builder.js";
 import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
@@ -124,6 +128,7 @@ let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 const lastTitles = new Map<string, string>();
 const lastRevertCursors = new Map<string, string | null>();
+const modelContextWindows = new Map<string, number>();
 let deps: BridgeDeps = {
   acquire: createSdkClient,
   attach: async (dir) => attachOrSpawn({ dataDir: dir }),
@@ -144,6 +149,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   configuredSkillRoots = [];
   lastTitles.clear();
   lastRevertCursors.clear();
+  modelContextWindows.clear();
   if (titleTimer) {
     clearInterval(titleTimer);
     titleTimer = undefined;
@@ -415,7 +421,21 @@ async function replayHydrate(
     (await active.sessionMessages(sessionId)) as HydrateMessage[],
     cursor ?? undefined,
   );
-  emitDeltas(threadId, hydrateDeltas({ sessionId, messages }));
+  await rememberCatalogWindows(active);
+  emitDeltas(threadId, [
+    ...hydrateDeltas({ sessionId, messages }),
+    ...usageDeltasFromMessages(messages, modelContextWindows),
+  ]);
+}
+
+async function rememberCatalogWindows(active: OpenCodeClient): Promise<void> {
+  if (modelContextWindows.size > 0) return;
+  try {
+    const catalog = await active.providers();
+    rememberModelWindows(modelContextWindows, catalog.providers ?? []);
+  } catch {
+    /* size stays unknown; meter still gets used tokens */
+  }
 }
 
 function eventSessionId(event: { type: string; properties?: unknown }): string | undefined {
@@ -502,6 +522,20 @@ async function onOpenCodeEvent(event: {
     if (event.type === "session.idle" || event.type === "session.status") {
       live.liveChildIds.delete(sessionId);
     }
+    return;
+  }
+
+  if (event.type === "message.updated") {
+    const info =
+      event.properties && typeof event.properties === "object"
+        ? (event.properties as { info?: unknown }).info
+        : undefined;
+    const usage = usageDeltasFromMessages(
+      [{ info }],
+      modelContextWindows,
+      "open",
+    );
+    if (usage.length > 0) emitDeltas(threadId, usage);
     return;
   }
 
@@ -979,6 +1013,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       try {
         const active = await ensureClient();
         const catalog = await active.providers();
+        rememberModelWindows(modelContextWindows, catalog.providers ?? []);
         const models = (catalog.providers ?? []).flatMap((provider) => {
           const modelsRecord =
             provider.models && typeof provider.models === "object"
@@ -1321,7 +1356,11 @@ async function settleIssuedTurn(
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);
-  emitDeltas(threadId, [completedTurnBoundary(messages)]);
+  await rememberCatalogWindows(active);
+  emitDeltas(threadId, [
+    completedTurnBoundary(messages),
+    ...usageDeltasFromMessages(messages, modelContextWindows),
+  ]);
 }
 
 async function runPrompt(args: {
