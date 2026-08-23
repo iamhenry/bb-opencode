@@ -7,6 +7,10 @@ export function messageText(message: RevertTargetMessage): string {
   return textParts(message).join("").trim();
 }
 
+function normalizeVisibleText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
 function textParts(message: RevertTargetMessage): string[] {
   return message.parts
     .filter((part) => part.type === "text" && part.text)
@@ -20,7 +24,13 @@ export function comparableMessageTexts(message: RevertTargetMessage): string[] {
   const joined = parts.join("").trim();
   const last = parts[parts.length - 1] ?? "";
   const stripped = joined.startsWith("[BB project instructions]") ? last : joined;
-  return [...new Set([joined, last, stripped].filter((text) => text.length > 0))];
+  return [
+    ...new Set(
+      [joined, last, stripped]
+        .flatMap((text) => [text, normalizeVisibleText(text)])
+        .filter((text) => text.length > 0),
+    ),
+  ];
 }
 
 /** Pick the OpenCode message `session.revert` should target. */
@@ -38,9 +48,14 @@ export function resolveRevertMessageId(args: {
     if (role && message.info.role !== role) return false;
     return true;
   });
-  if (!needle) return undefined;
+  if (!needle) {
+    return pool.length === 1 ? pool[0]?.info.id : undefined;
+  }
+  const normalizedNeedle = normalizeVisibleText(needle);
   const exact = pool.filter((message) =>
-    comparableMessageTexts(message).some((text) => text === needle),
+    comparableMessageTexts(message).some(
+      (text) => text === needle || text === normalizedNeedle,
+    ),
   );
   if (exact.length === 1) return exact[0]?.info.id;
   if (exact.length > 1) return undefined;
@@ -51,5 +66,5 @@ export function resolveRevertMessageId(args: {
     ),
   );
   if (fuzzy.length === 1) return fuzzy[0]?.info.id;
-  return undefined;
+  return pool.length === 1 ? pool[0]?.info.id : undefined;
 }

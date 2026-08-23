@@ -23,8 +23,10 @@ import { configDefaultModelId } from "./catalog.js";
 import {
   assistantsAfterLastUser,
   completedTurnBoundary,
+  filterMessagesByRevertPoint,
   hydrateDeltas,
   lastUserAgent,
+  revertMessageIdOf,
   type HydrateMessage,
 } from "./hydrate.js";
 import {
@@ -384,7 +386,11 @@ async function replayHydrate(
   sessionId: string,
   active: OpenCodeClient,
 ): Promise<void> {
-  const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+  const session = await active.getSession(sessionId);
+  const messages = filterMessagesByRevertPoint(
+    (await active.sessionMessages(sessionId)) as HydrateMessage[],
+    revertMessageIdOf(session),
+  );
   emitDeltas(threadId, hydrateDeltas({ sessionId, messages }));
 }
 

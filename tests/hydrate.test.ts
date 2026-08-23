@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assistantsAfterLastUser,
+  filterMessagesByRevertPoint,
   hydrateDeltas,
   lastUserAgent,
   lastUserMessageId,
+  revertMessageIdOf,
 } from "../src/hydrate.js";
 
 describe("hydrate", () => {
@@ -63,4 +65,19 @@ describe("hydrate", () => {
       { info: { role: "assistant" }, parts: [] },
     ])).toBe("plan");
   });
+
+  it("hides the revert cursor and everything after it, like OpenChamber",
+    () => {
+      expect(revertMessageIdOf({ revert: { messageID: "u1" } })).toBe("u1");
+      expect(
+        filterMessagesByRevertPoint(
+          [
+            { info: { id: "u1", role: "user" }, parts: [] },
+            { info: { id: "a1", role: "assistant" }, parts: [] },
+          ],
+          "u1",
+        ).map((message) => message.info.id),
+      ).toEqual([]);
+    },
+  );
 });

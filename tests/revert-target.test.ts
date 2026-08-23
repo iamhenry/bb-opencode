@@ -68,6 +68,24 @@ describe("resolveRevertMessageId", () => {
     ).toBe("u-theme");
   });
 
+  it("uses the only user message when the bubble text cannot be matched", () => {
+    expect(
+      resolveRevertMessageId({
+        messages: [
+          {
+            info: { id: "only", role: "user" },
+            parts: [
+              { type: "text", text: "[BB project instructions]\nYou are working" },
+              { type: "text", text: "sup" },
+            ],
+          },
+        ],
+        role: "user",
+        text: "sup?",
+      }),
+    ).toBe("only");
+  });
+
   it("refuses when the clicked text matches nothing uniquely", () => {
     expect(
       resolveRevertMessageId({

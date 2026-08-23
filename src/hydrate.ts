@@ -27,6 +27,24 @@ export interface HydrateMessage {
   }>;
 }
 
+/** OpenCode revert is a cursor: keep messages strictly before `revert.messageID`. */
+export function revertMessageIdOf(session: { revert?: unknown }): string | undefined {
+  const revert = session.revert;
+  if (!revert || typeof revert !== "object") return undefined;
+  const id = (revert as { messageID?: unknown }).messageID;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
+export function filterMessagesByRevertPoint<T extends { info: { id?: string } }>(
+  messages: readonly T[],
+  revertMessageId?: string,
+): T[] {
+  if (!revertMessageId) return [...messages];
+  const index = messages.findIndex((message) => message.info.id === revertMessageId);
+  if (index < 0) return [...messages];
+  return messages.slice(0, index);
+}
+
 export function lastUserMessageId(
   messages: readonly HydrateMessage[],
 ): string | undefined {
