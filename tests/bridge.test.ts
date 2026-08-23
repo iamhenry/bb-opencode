@@ -551,6 +551,23 @@ describe("provider bridge", () => {
     expect(await syncLiveTurnParts("ses_1")).toBe(false);
   });
 
+  it("does not stamp OpenCode placeholder titles onto BB", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    const session = fake.sessions.get("ses_1");
+    if (session) session.title = "New session - 2026-07-06T22:33:57.776Z";
+    messages.length = 0;
+    expect(await syncSessionTitle("ses_1")).toBe(false);
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string }> })
+          ?.deltas;
+        return deltas?.some((delta) => delta.kind === "thread.name");
+      }),
+    ).toBe(false);
+  });
+
   it("updates the BB title when OpenCode title changes without SSE (ISC-12)", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -614,6 +631,41 @@ describe("provider bridge", () => {
       messages.some((message) => {
         const deltas = (message.params as { deltas?: Array<{ kind: string }> })?.deltas;
         return deltas?.some((delta) => delta.kind === "session.reset");
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores session.updated placeholder titles until ensureTitle lands", async () => {
+    installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.updated",
+      properties: {
+        sessionID: "ses_1",
+        title: "New session - 2026-07-06T22:33:57.776Z",
+      },
+    });
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string }> })
+          ?.deltas;
+        return deltas?.some((delta) => delta.kind === "thread.name");
+      }),
+    ).toBe(false);
+    await ingestOpenCodeEvent({
+      type: "session.updated",
+      properties: { sessionID: "ses_1", title: "Ask a yes or no question" },
+    });
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string; name?: string }> })
+          ?.deltas;
+        return deltas?.some(
+          (delta) =>
+            delta.kind === "thread.name" && delta.name === "Ask a yes or no question",
+        );
       }),
     ).toBe(true);
   });

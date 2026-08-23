@@ -19,6 +19,7 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
+import { shouldPublishOpenCodeTitle } from "./session-title.js";
 import { configDefaultModelId } from "./catalog.js";
 import {
   assistantsAfterLastUser,
@@ -357,6 +358,7 @@ export async function syncSessionTitle(sessionId: string): Promise<boolean> {
     const title = session.title;
     if (title && lastTitles.get(sessionId) !== title) {
       lastTitles.set(sessionId, title);
+      if (!shouldPublishOpenCodeTitle(title)) return false;
       emitDeltas(threadId, [{ kind: "thread.name", name: title }]);
       return true;
     }
@@ -533,7 +535,9 @@ async function onOpenCodeEvent(event: {
     const title = sessionTitle(event.properties);
     if (title && threadId) {
       lastTitles.set(sessionId, title);
-      emitDeltas(threadId, [{ kind: "thread.name", name: title }]);
+      if (shouldPublishOpenCodeTitle(title)) {
+        emitDeltas(threadId, [{ kind: "thread.name", name: title }]);
+      }
     } else {
       void syncSessionTitle(sessionId);
     }
@@ -1419,6 +1423,8 @@ async function settleIssuedTurn(
     completedTurnBoundary(messages),
     ...usageDeltasFromMessages(messages, modelContextWindows),
   ]);
+  // Native ensureTitle forks on the first prompt step and may finish after idle.
+  await syncSessionTitle(sessionId);
 }
 
 async function runPrompt(args: {

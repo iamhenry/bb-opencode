@@ -76,7 +76,7 @@ export function createFakeOpenCode(): FakeOpenCode {
         const session: OpenCodeSession = {
           id,
           directory: args.directory,
-          title: args.title,
+          title: args.title ?? `New session - ${new Date().toISOString()}`,
           parentID: args.parentID,
         };
         fake.sessions.set(id, session);

@@ -552,7 +552,7 @@ Live-fired against the attached serve (pid 11174, port 50876, lock `~/.bb/plugin
 Model picker labels are now `llmProvider/modelName` (e.g. `hpc-ai/DeepSeek V4 Flash`). New-thread Agent chip shows only when the live model trigger is OpenCode (title, `OpenCode` text, or `/providers/opencode/` logo).
 
 **Closed this pass:**
-- ISC-12 — `PATCH /session/:id {title}` on `ses_fd50d2319ffeQnaNfL86bfOSc2` produced BB `thread/name/updated` with `threadName=bb-isa-title-probe-2` (no `thread/resume`). Poller covers the missing `session.updated` SSE.
+- ISC-12 — `PATCH /session/:id {title}` on `ses_fd50d2319ffeQnaNfL86bfOSc2` produced BB `thread/name/updated` with `threadName=bb-isa-title-probe-2` (no `thread/resume`). Poller covers the missing `session.updated` SSE. Native auto-rename is OpenCode `SessionPrompt.ensureTitle` on first prompt step when the title is still `New session - <ISO>` / `Child session - <ISO>`; we never pass a create title, never stamp those placeholders onto BB, and publish `thread.name` only after `setTitle`.
 - ISC-30/31 — `POST /api/v1/plugins/opencode/rpc/undo` and `.../redo` on `thr_9ahbvj6i2v` returned `{ok:true}` after identity-event bind lookup; host revert/unrevert then `hydrateBoundSession` (same `session.reset` path as resume). Unit: `hydrateBoundSession` emits `session.reset`.
 - ISC-53 — `OPENCODE_BIN` pointing at a missing file → `probe.needsConfiguration === true` (does not hide the real binary).
 - ISC-74 — vitest fixtures: child+in-flight parent attaches to parent; missing session drops; post-boundary child drops.
