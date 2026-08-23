@@ -174,7 +174,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
 - [x] ISC-8.2: Restated. No plugin `messageAction` chrome. Native BB Fork stays on assistant bubbles (`fork: "checkpoint"`). User-bubble plugin Fork was a duplicate of that native control and leaked onto every provider.
-- [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; questions fail-closed (1.18 has no question API).
+- [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; OpenCode `question.*` cards as native BB `user_question` (ISC-91).
 - [x] Mobile: compact PWA banner hosts the Agent picker (BB hides plugin composer actions); touch targets + visualViewport; declarative `defaultAgent` for the iOS app (no plugin frontend). Native fork/rewind already follow `fork: "checkpoint"`.
 - [x] Provider mark: `app.slots.experimental_providerIcon` inline `currentColor` window (web pickers/settings). Server `icon` stays the currentColor SVG for iOS `ServerSvgIcon`. Branding logos are explicit light/dark fills because Settings uses `<img>`.
 
@@ -305,6 +305,7 @@ Why: OpenCode already has `/commands` and a skill tool. BB has no plugin slash-c
 - [x] ISC-89: Anti: choosing an autocomplete row inserts `/name ` into the draft and issues zero `session.command` / `session.prompt` calls.
 - [x] ISC-90: `model/list` advertises that model's OpenCode `variants` that are BB reasoning levels (`none`/`low`/`medium`/`high`/`xhigh`/`max`/…). Unknown keys like `minimal` are skipped. Empty variants → `none` only. `turn/start` `reasoningLevel` is sent as OpenCode `variant` (exact name; `ultracode`/`ultra` fall back to `max`/`xhigh` when the model has them). Thinking parts still map as reasoning items (ISC-16).
 - [x] ISC-64.1: An unmappable or un-cardable permission ask with an id is replied `reject` (not left running). Asks with no id still do not approve (ISC-64).
+- [x] ISC-91: OpenCode `question.asked` / `question.v2.asked` emit `interaction/request` `{kind:"user_question"}`. Answers POST `/question/{id}/reply` `{answers}`. Uncardable asks and Stop reject. The `question` tool part is suppressed. `supportsNativeUserQuestion: true` so Ask User Question does not inject a second unused tool.
 
 ## Test Strategy
 
@@ -413,6 +414,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-88 | vitest | slash suggest uses the same OpenCode visibility helper; `app.tsx` has no Command action | helper present; no command action | vitest | derived: no chrome leak |
 | ISC-89 | vitest | slash suggest only calls `insertCommandToken`; no `session.command` symbol | grep | vitest | derived: intent until send |
 | ISC-90 | vitest | `turn/start` with `reasoningLevel: high` sends `variant: high` | lastPrompt.variant | vitest | literal |
+| ISC-91 | vitest | `question.v2.asked` emits `interaction/request` `user_question`; answer POSTs `answers` | card + reply | vitest | literal |
 
 ## Decisions
 

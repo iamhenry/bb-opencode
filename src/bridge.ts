@@ -52,6 +52,13 @@ import {
   rememberModelWindows,
   usageDeltasFromMessages,
 } from "./usage.js";
+import {
+  answersForOpenCode,
+  isQuestionAskEvent,
+  toUserQuestionPayload,
+  unwrapQuestionAsk,
+  type BbUserQuestionPayload,
+} from "./questions.js";
 import { attachOrSpawn } from "./process.js";
 import { buildPrompt } from "./prompt-builder.js";
 import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
@@ -119,6 +126,15 @@ const pendingPermission = new Map<
   string,
   { requestId: string; sessionId: string; threadId: string }
 >();
+const pendingQuestion = new Map<
+  string,
+  {
+    requestId: string;
+    sessionId: string;
+    threadId: string;
+    payload: BbUserQuestionPayload;
+  }
+>();
 
 let dataDir = "";
 let client: OpenCodeClient | undefined;
@@ -146,6 +162,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   sessionToThread.clear();
   liveTurns.clear();
   pendingPermission.clear();
+  pendingQuestion.clear();
   configuredSkillRoots = [];
   lastTitles.clear();
   lastRevertCursors.clear();
@@ -215,7 +232,7 @@ async function ensureClient(): Promise<OpenCodeClient> {
   if (!isVersionInWindow(health.version)) {
     throw new Error(versionSkewMessage(health.version));
   }
-  await ensureSubscribed(client);
+  void ensureSubscribed(client);
   return client;
 }
 
@@ -251,7 +268,13 @@ async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
   });
 }
 
+function requireSessionId(sessionId: string | undefined, action: string): string {
+  if (typeof sessionId === "string" && sessionId.length > 0) return sessionId;
+  throw new Error(`OpenCode ${action} returned no session id`);
+}
+
 function bindSession(threadId: string, session: BoundSession): void {
+  requireSessionId(session.sessionId, "bind");
   sessions.set(threadId, session);
   sessionToThread.set(session.sessionId, threadId);
   if (!lastRevertCursors.has(session.sessionId)) {
@@ -272,6 +295,7 @@ function startTitlePoller(): void {
       [...sessionToThread.keys()].map(async (sessionId) => {
         await syncSessionTitle(sessionId);
         await syncPendingPermissions(sessionId);
+        await syncPendingQuestions(sessionId);
         await syncLiveTurnParts(sessionId);
         await syncSessionRevert(sessionId);
       }),
@@ -352,6 +376,22 @@ async function syncPendingPermissions(sessionId: string): Promise<void> {
     const pending = await client.listPendingPermissions(sessionId);
     for (const ask of pending) {
       await handlePermissionAsked(ask, sessionId);
+    }
+  } catch {
+    /* list is best-effort; SSE remains the primary path */
+  }
+}
+
+async function syncPendingQuestions(sessionId: string): Promise<void> {
+  if (!client) return;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return;
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted) return;
+  try {
+    const pending = await client.listPendingQuestions(sessionId);
+    for (const ask of pending) {
+      await handleQuestionAsked(ask, sessionId);
     }
   } catch {
     /* list is best-effort; SSE remains the primary path */
@@ -480,14 +520,8 @@ async function onOpenCodeEvent(event: {
   const threadId = sessionToThread.get(sessionId);
   const live = threadId ? liveTurns.get(threadId) : undefined;
 
-  if (event.type.startsWith("question.")) {
-    if (threadId) {
-      await denyQuestionAsk({
-        properties: event.properties,
-        sessionId,
-        threadId,
-      });
-    }
+  if (isQuestionAskEvent(event.type)) {
+    await handleQuestionAsked(event.properties, sessionId);
     return;
   }
   if (isPermissionAskEvent(event.type)) {
@@ -724,38 +758,62 @@ async function denyPermissionAsk(args: {
   ]);
 }
 
-async function denyQuestionAsk(args: {
-  properties: unknown;
-  sessionId: string;
-  threadId: string;
-}): Promise<void> {
-  const active = client;
-  const ask = unwrapPermissionAsk(args.properties);
-  const requestId =
-    ask && typeof ask === "object" && typeof (ask as { id?: unknown }).id === "string"
-      ? (ask as { id: string }).id
-      : undefined;
-  if (active && requestId) {
-    try {
-      await active.replyQuestion({
-        requestID: requestId,
-        sessionID: args.sessionId,
-        reply: "reject",
-      });
-    } catch {
-      /* 1.18 has no question API; best-effort */
+async function handleQuestionAsked(
+  raw: unknown,
+  fallbackSessionId: string,
+): Promise<void> {
+  const ask = unwrapQuestionAsk(raw);
+  const sessionId = ask?.sessionID ?? fallbackSessionId;
+  const threadId = sessionToThread.get(sessionId);
+  const live = threadId ? liveTurns.get(threadId) : undefined;
+  const requestId = ask?.id;
+  const payload = ask ? toUserQuestionPayload(ask) : undefined;
+  if (!threadId || !live || !requestId || !payload || !client) {
+    if (client && requestId) {
+      await client.rejectQuestion({ requestID: requestId, sessionID: sessionId }).catch(() => undefined);
     }
+    return;
   }
-  await denyPermissionAsk({
-    active: active ?? (await ensureClient()),
+  const existing = `oc-q-${requestId}`;
+  if (pendingQuestion.has(existing)) return;
+  pendingQuestion.set(existing, {
     requestId,
-    sessionId: args.sessionId,
-    threadId: args.threadId,
-    reason: "OpenCode question has no BB answer UI; rejected so the turn cannot hang",
+    sessionId,
+    threadId,
+    payload,
+  });
+  deps.write({
+    id: existing,
+    method: BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest,
+    params: {
+      providerThreadId: sessionId,
+      threadId,
+      turnId: null,
+      providerNativeIds: true,
+      payload,
+    },
   });
 }
 
+async function rejectPendingQuestions(threadId: string): Promise<void> {
+  const active = client;
+  for (const [key, pending] of [...pendingQuestion]) {
+    if (pending.threadId !== threadId) continue;
+    pendingQuestion.delete(key);
+    if (!active) continue;
+    try {
+      await active.rejectQuestion({
+        requestID: pending.requestId,
+        sessionID: pending.sessionId,
+      });
+    } catch {
+      /* fail closed */
+    }
+  }
+}
+
 async function rejectPendingPermissions(threadId: string): Promise<void> {
+  await rejectPendingQuestions(threadId);
   const active = client;
   for (const [key, pending] of [...pendingPermission]) {
     if (pending.threadId !== threadId) continue;
@@ -1090,7 +1148,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
             directory: parsed.data.cwd,
           });
           createCount += 1;
-          sessionId = created.id;
+          sessionId = requireSessionId(created.id, "session.create");
         }
         const bound: BoundSession = {
           threadId: parsed.data.threadId,
@@ -1185,7 +1243,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         );
         bindSession(parsed.data.threadId, {
           threadId: parsed.data.threadId,
-          sessionId: forked.id,
+          sessionId: requireSessionId(forked.id, "session.fork"),
           cwd: parsed.data.cwd,
           permissionMode: permissionModeOf(parsed.data.options),
           ...sessionPolicy(parsed.data),
@@ -1505,6 +1563,36 @@ export function handleLine(line: string): void {
     error?: unknown;
   };
   if (typeof method !== "string") {
+    if (typeof id === "string" && pendingQuestion.has(id)) {
+      const pending = pendingQuestion.get(id);
+      pendingQuestion.delete(id);
+      if (pending && client) {
+        const resolution =
+          result && typeof result === "object"
+            ? (result as {
+                kind?: unknown;
+                answers?: Record<string, { selected?: string[]; freeText?: string }>;
+              })
+            : undefined;
+        if (resolution?.kind === "user_answer") {
+          void client
+            .replyQuestion({
+              requestID: pending.requestId,
+              sessionID: pending.sessionId,
+              answers: answersForOpenCode(pending.payload, resolution),
+            })
+            .catch(() => undefined);
+        } else {
+          void client
+            .rejectQuestion({
+              requestID: pending.requestId,
+              sessionID: pending.sessionId,
+            })
+            .catch(() => undefined);
+        }
+      }
+      return;
+    }
     if (typeof id === "string" && pendingPermission.has(id)) {
       const pending = pendingPermission.get(id);
       pendingPermission.delete(id);

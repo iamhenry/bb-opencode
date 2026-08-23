@@ -69,8 +69,13 @@ export interface OpenCodeClient {
   replyQuestion(args: {
     requestID: string;
     sessionID: string;
-    reply: "reject";
+    answers?: string[][];
   }): Promise<void>;
+  rejectQuestion(args: {
+    requestID: string;
+    sessionID: string;
+  }): Promise<void>;
+  listPendingQuestions(sessionID: string): Promise<unknown[]>;
   subscribe(
     handler: (event: { type: string; properties?: unknown }) => void,
   ): Promise<{ unsubscribe(): void }>;
@@ -97,6 +102,24 @@ function formatError(error: unknown): string {
 }
 
 function wrap(url: string, sdk: SdkClient): OpenCodeClient {
+  const rejectQuestion = async (args: {
+    requestID: string;
+    sessionID: string;
+  }): Promise<void> => {
+    const paths = [
+      `/api/session/${args.sessionID}/question/${args.requestID}/reject`,
+      `/question/${args.requestID}/reject`,
+    ];
+    for (const path of paths) {
+      const response = await fetch(`${url}${path}`, { method: "POST" });
+      if (response.ok || response.status === 204 || response.status !== 404) {
+        if (!response.ok && response.status !== 204) {
+          throw new Error(`question.reject failed: ${response.status}`);
+        }
+        return;
+      }
+    }
+  };
   return {
     url,
     async health() {
@@ -261,26 +284,40 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       }
       return asks;
     },
-    async replyQuestion({ requestID, sessionID, reply }) {
+    async replyQuestion({ requestID, sessionID, answers }) {
+      if (!answers) {
+        await rejectQuestion({ requestID, sessionID });
+        return;
+      }
       const paths = [
-        `/session/${sessionID}/question/${requestID}`,
-        `/session/${sessionID}/questions/${requestID}`,
+        `/api/session/${sessionID}/question/${requestID}/reply`,
         `/question/${requestID}/reply`,
+        `/session/${sessionID}/question/${requestID}`,
       ];
       for (const path of paths) {
         const response = await fetch(`${url}${path}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ reply, response: reply }),
+          body: JSON.stringify({ answers }),
         });
-        if (response.ok || response.status !== 404) {
-          if (!response.ok) {
+        if (response.ok || response.status === 204 || response.status !== 404) {
+          if (!response.ok && response.status !== 204) {
             throw new Error(`question.reply failed: ${response.status}`);
           }
           return;
         }
       }
       throw new Error("question.reply not available");
+    },
+    rejectQuestion,
+    async listPendingQuestions(sessionID) {
+      const response = await fetch(
+        `${url}/api/session/${sessionID}/question`,
+      );
+      if (!response.ok) return [];
+      const body = (await response.json()) as { data?: unknown } | unknown[];
+      if (Array.isArray(body)) return body;
+      return Array.isArray(body.data) ? body.data : [];
     },
     async subscribe(handler) {
       const controller = new AbortController();

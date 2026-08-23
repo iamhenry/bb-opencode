@@ -9,6 +9,8 @@ export interface FakeOpenCode {
     revert: number;
     unrevert: number;
     reply: Array<{ requestID: string; reply: string }>;
+    questionReply: Array<{ requestID: string; answers?: string[][] }>;
+    questionReject: string[];
     command: Array<{ id: string; body: Record<string, unknown> }>;
     get: number;
     messages: number;
@@ -41,6 +43,8 @@ export function createFakeOpenCode(): FakeOpenCode {
       revert: 0,
       unrevert: 0,
       reply: [],
+      questionReply: [],
+      questionReject: [],
       command: [],
       get: 0,
       messages: 0,
@@ -154,8 +158,14 @@ export function createFakeOpenCode(): FakeOpenCode {
         fake.calls.command.push({ id, body });
         return {};
       },
-      async replyQuestion() {
-        return;
+      async replyQuestion({ requestID, answers }) {
+        fake.calls.questionReply.push({ requestID, answers });
+      },
+      async rejectQuestion({ requestID }) {
+        fake.calls.questionReject.push(requestID);
+      },
+      async listPendingQuestions() {
+        return [];
       },
       async replyPermission({ requestID, reply }) {
         fake.calls.reply.push({ requestID, reply });

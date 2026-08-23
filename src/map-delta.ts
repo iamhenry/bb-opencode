@@ -179,6 +179,7 @@ export function mapPartDelta(args: {
   }
   if (type === "tool") {
     const toolName = part.tool ?? "tool";
+    if (toolName === "question") return [];
     const itemId = part.id ?? part.callID ?? toolName;
     if (args.state.closedItems.has(itemId)) return [];
     const key = { providerItemId: itemId };

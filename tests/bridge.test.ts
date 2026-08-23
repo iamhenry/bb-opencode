@@ -103,6 +103,8 @@ describe("provider bridge", () => {
       params: { threadId: "thr_1" },
     });
 
+    expect(identity?.params).toMatchObject({ providerThreadId: "ses_1" });
+
     const createAfterStart = fake.calls.create;
     send({
       id: "resume",
@@ -122,6 +124,26 @@ describe("provider bridge", () => {
         return deltas?.some((delta) => delta.kind === "session.reset");
       }),
     ).toBe(true);
+  });
+
+  it("errors when session.create has no id instead of returning empty identity", async () => {
+    const fake = installFake();
+    fake.client.createSession = async () => ({}) as never;
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("no session id"),
+          }),
+        }),
+      ]),
+    );
+    expect(messages.some((message) => message.method === "thread/identity")).toBe(
+      false,
+    );
   });
 
   it("forks at a message checkpoint without session.create", async () => {
@@ -800,6 +822,52 @@ describe("provider bridge", () => {
         (message) => message.method === "interaction/request",
       ),
     ).toBe(true);
+  });
+
+  it("cards OpenCode question.v2.asked as native user_question", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "question.v2.asked",
+      properties: {
+        id: "que_1",
+        sessionID: "ses_1",
+        questions: [
+          {
+            question: "Is the plugin done?",
+            header: "Done?",
+            options: [{ label: "Yes" }, { label: "No" }],
+          },
+        ],
+      },
+    });
+    const request = messages.find(
+      (message) => message.method === "interaction/request",
+    );
+    expect(request).toMatchObject({
+      id: "oc-q-que_1",
+      params: {
+        payload: {
+          kind: "user_question",
+          questions: [{ id: "que_1:q1", prompt: "Is the plugin done?" }],
+        },
+      },
+    });
+    send({
+      id: "oc-q-que_1",
+      result: {
+        kind: "user_answer",
+        answers: { "que_1:q1": { selected: ["Yes"] } },
+      },
+    });
+    await flush();
+    expect(fake.calls.questionReply).toEqual([
+      { requestID: "que_1", answers: [["Yes"]] },
+    ]);
   });
 
   it("routes a listed /command through session.command (ISC-81)", async () => {

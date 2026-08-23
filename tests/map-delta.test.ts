@@ -76,6 +76,20 @@ describe("map-delta", () => {
     });
   });
 
+  it("does not emit a generic row for OpenCode question tools", () => {
+    const deltas = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "s",
+      part: {
+        id: "q1",
+        type: "tool",
+        tool: "question",
+        state: { status: "running" },
+      },
+    });
+    expect(deltas).toEqual([]);
+  });
+
   it("emits only new text suffix so turns stream instead of dumping", () => {
     const state = createMapDeltaState();
     const first = mapPartDelta({
