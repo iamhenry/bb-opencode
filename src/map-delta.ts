@@ -1,6 +1,19 @@
 import { isBashToolName } from "./permissions/map.js";
 import { taskChildSessionId, taskDelegationLabel } from "./task-child.js";
+import {
+  fileChangePresentation,
+  fileChangesFromToolInput,
+  isFileChangeToolName,
+} from "./file-change.js";
 import { isTodoToolName } from "./todos.js";
+import {
+  isWebFetchToolName,
+  isWebSearchToolName,
+  webFetchItem,
+  webFetchPresentation,
+  webSearchItem,
+  webSearchPresentation,
+} from "./web-items.js";
 
 export interface ThreadDelta {
   kind: string;
@@ -109,6 +122,16 @@ function coreToolItem(
         path: stringField(input, "path"),
       };
     }
+  }
+  if (isFileChangeToolName(toolName)) {
+    const changes = fileChangesFromToolInput(toolName, input);
+    return { type: "fileChange", changes };
+  }
+  if (isWebSearchToolName(toolName)) {
+    return webSearchItem(input);
+  }
+  if (isWebFetchToolName(toolName)) {
+    return webFetchItem(input);
   }
   if (toolName === "task" || toolName === "Task") {
     const child =
@@ -238,15 +261,21 @@ export function mapPartDelta(args: {
       return deltas;
     }
     const isTask = toolName === "task" || toolName === "Task";
-    const presentation = {
-      label: isTask
-        ? { pending: "Running subagent", completed: "Subagent finished" }
-        : {
-            pending: part.state?.title || `Running ${toolName}`,
-            completed: part.state?.title || `Ran ${toolName}`,
-          },
-      icon: { glyph: isTask ? "Bot" : "Wrench" },
-    };
+    const presentation = isFileChangeToolName(toolName)
+      ? fileChangePresentation(toolName)
+      : isWebSearchToolName(toolName)
+        ? webSearchPresentation(webSearchItem(part.state?.input).queries[0] ?? "")
+        : isWebFetchToolName(toolName)
+          ? webFetchPresentation(webFetchItem(part.state?.input).url)
+          : {
+              label: isTask
+                ? { pending: "Running subagent", completed: "Subagent finished" }
+                : {
+                    pending: part.state?.title || `Running ${toolName}`,
+                    completed: part.state?.title || `Ran ${toolName}`,
+                  },
+              icon: { glyph: isTask ? "Bot" : "Wrench" },
+            };
     const item = coreToolItem(toolName, part);
     const deltas: ThreadDelta[] = [];
     if (!alreadyOpen) {

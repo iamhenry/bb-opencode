@@ -79,6 +79,44 @@ describe("map-delta", () => {
       kind: "item.open",
       item: { type: "command", command: "ls" },
     });
+    const edit = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "s",
+      part: {
+        id: "edit-1",
+        type: "tool",
+        tool: "edit",
+        state: {
+          status: "completed",
+          input: {
+            filePath: "src/a.ts",
+            oldString: "a",
+            newString: "b",
+          },
+        },
+      },
+    });
+    expect(edit[0]).toMatchObject({
+      kind: "item.open",
+      item: {
+        type: "fileChange",
+        changes: [{ path: "src/a.ts", kind: "update" }],
+      },
+    });
+    const search = mapPartDelta({
+      state: createMapDeltaState(),
+      sessionId: "s",
+      part: {
+        id: "web-1",
+        type: "tool",
+        tool: "websearch",
+        state: { status: "completed", input: { query: "opencode" } },
+      },
+    });
+    expect(search[0]).toMatchObject({
+      kind: "item.open",
+      item: { type: "webSearch", queries: ["opencode"] },
+    });
   });
 
   it("nests child parts under the Task item via parentRef", () => {

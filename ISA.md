@@ -308,6 +308,11 @@ Why: OpenCode already has `/commands` and a skill tool. BB has no plugin slash-c
 - [x] ISC-91: OpenCode `question.asked` / `question.v2.asked` emit `interaction/request` `{kind:"user_question"}`. Answers POST `/question/{id}/reply` `{answers}`. Uncardable asks and Stop reject. The `question` tool part is suppressed. `supportsNativeUserQuestion: true` so Ask User Question does not inject a second unused tool.
 - [x] ISC-92: Native BB `/compact` (`supportsManualCompaction: true`) calls OpenCode `session.summarize` once. It does not `session.command("compact")`, does not `session.prompt` `/compact`, and does not emit a second `context.compacted` when OpenCode also fires `session.compacted`. OpenCode `/compact` and `/summarize` are hidden from the plugin slash list. Header Summarize is removed so the two compactors cannot fight.
 - [x] ISC-93: OpenCode `todo.updated` and `GET /session/:id/todo` emit grammar v3 `planSteps` snapshots (BB's native todo banner). `todowrite` / `todo` tool parts are suppressed so they do not become generic rows.
+- [x] ISC-94: `edit` / `write` / `apply_patch` / `multiedit` emit grammar v3 `fileChange` rows (path + old/new text). Web search/fetch emit `webSearch` / `webFetch`.
+- [x] ISC-95: Native Edit (`threadId` contains `:rewind:`) does not restore files at prepare. The first `turn/start` on that forked session after it is bound to a non-staging thread calls `session.revert` on the **source** session at the first message after the checkpoint. User Fork never restores files (shared cwd).
+- [x] ISC-96: `@` mention provider lists OpenCode `mode: "subagent"` agents. `resolve` attaches Task context. Typed `@name` is still forwarded unchanged (ISC-77).
+- [x] ISC-97: `provider/usage` is implemented. OpenCode has no account quota API; the result is an honest error pointing at the thread context meter.
+- [x] ISC-98: Anti: the plugin cannot inject OpenCode `/commands` into BB-core `/` typeahead (`host.list_commands` has no `opencode` key; plugin composerActions are only plan/goal). Listed commands stay on the plugin slash banner. Native `/compact` still comes from `supportsManualCompaction`.
 
 ## Test Strategy
 
@@ -419,6 +424,11 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-91 | vitest | `question.v2.asked` emits `interaction/request` `user_question`; answer POSTs `answers` | card + reply | vitest | literal |
 | ISC-92 | vitest | standalone `/compact` calls `session.summarize` once; prompt/command 0; `context.compacted` once; auto `session.compacted` does not summarize | summarize 1 | vitest | literal |
 | ISC-93 | vitest | `todo.updated` emits `item.close` `planSteps`; `todowrite` maps to `[]` | snapshot + suppress | vitest | literal |
+| ISC-94 | vitest | `edit` opens `fileChange`; `websearch` opens `webSearch` | kinds | vitest | literal |
+| ISC-95 | vitest | rewind prepare revert 0; user fork revert 0; edit commit revert source at next message | revert 1 | vitest | literal |
+| ISC-96 | vitest | subagent mention list is `@explore` only for `ex` query | exact set | vitest | literal |
+| ISC-97 | vitest | `provider/usage` returns supported error, not a fake window | status error | vitest | literal |
+| ISC-98 | grep | no `composerActions: ["plan"]`; slash list still filters compact | 0 plan action | grep | derived |
 
 ## Decisions
 
@@ -453,6 +463,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-23: Restate F8/ISC-22: a Task child of the in-flight parent nests under that parent's `delegation` row (`parentRef` + keyed `turn.open`, Claude/Codex shape). Foreign sessions still never leak.
 - 2026-08-23: Restate F8 child UX: reuse BB's native above-composer child banner. That card only lists real BB children (`parentThreadId`, `originKind: null`, active or pending). Running Task children of a BB OpenCode parent are therefore adopt-bound as those children (`bindOnly`). Idle open is **Open this Task** / Import. Still no `session.create` for Task. Still no custom Task card. Still no V2 `session.subagent`.
 - 2026-08-23: Restate compact: native BB `/compact` is the only compact UI. It calls OpenCode `session.summarize`. OpenCode auto `session.compacted` emits `context.compacted` without calling summarize again. Plugin header Summarize is gone. `supportsManualCompaction` is true. OpenCode session todos map to native `planSteps`, not a custom strip.
+- 2026-08-23: File restore on Edit uses OpenCode `session.revert` (snapshot) only after rewind prepare is committed. Never restore on `session.fork` / user Fork. Native `/` typeahead for OpenCode commands is BB-core; plugin cannot add them.
 - 2026-08-22: ISA R4 (Kimi `thr_ycxwi7m9ir`, GLM `thr_kpc99pwr25`, Opus `thr_3qtf84k6ca`) all **sound-with-fixes**. Applied without expanding product scope: stop interrupts listed Task children; leftover child asks after parent boundary are uncorrelated; ISC-74 names the parent thread and reconciles ISC-22; ISC-76.1 refuses running children; Vision says tool item not Task card; probes named and non-vacuous.
 - 2026-08-22: Implement F8 after F2 and F5 (need live tools + permission card). Import (F6) stays last.
 - 2026-08-22 (idle-spawn spike): Public spawn cannot create an idle `opencode` thread. Evidence: `bb thread spawn` requires `--prompt`; `CreateThreadRequest` rejects `input.length === 0` unless `originKind === "fork"` (the only origin kind); SDK `ThreadSpawnArgs` is `input` XOR `prompt` and cannot set `providerThreadId`. `spawn({ input: [] })` is type-legal and server-illegal for a normal/plugin origin. Active path: **ISC-42.3** pending adopt `{projectId, hostId, opencodeSessionId}` + user-confirmed open. **ISC-42.2 tombstoned**. Never smallest-prompt-then-stop.

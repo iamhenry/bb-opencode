@@ -29,6 +29,7 @@ import {
   type PendingAdoptRecord,
 } from "./src/pending-adopt.js";
 import { classifyImportRow } from "./src/import-row.js";
+import { listSubagentMentions, mentionResolveContext } from "./src/mentions.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
   shouldAutoBindTaskChild,
@@ -92,7 +93,7 @@ export default async function plugin(bb: BbPluginApi) {
     icon: "./assets/icon.svg",
     capabilities: {
       experimental_providerHealth: true,
-      experimental_providerUsage: false,
+      experimental_providerUsage: true,
       experimental_providerInstallation: false,
       supportsServiceTier: false,
       supportsNativeUserQuestion: true,
@@ -463,6 +464,28 @@ export default async function plugin(bb: BbPluginApi) {
           error: error instanceof Error ? error.message : String(error),
         };
       }
+    },
+  });
+
+  bb.ui.registerMentionProvider({
+    id: "opencode-subagent",
+    label: "OpenCode agents",
+    triggers: ["@"],
+    async search({ query, threadId }) {
+      try {
+        if (!threadId) return [];
+        const thread = threadFields(await bb.sdk.threads.get({ threadId }));
+        if (thread.providerId !== PROVIDER_ID) return [];
+        const hostId = await firstHostId(bb);
+        if (!hostId) return [];
+        const agents = await loadAgents(host, hostId);
+        return listSubagentMentions(agents, query);
+      } catch {
+        return [];
+      }
+    },
+    resolve(itemId) {
+      return mentionResolveContext(itemId);
     },
   });
 

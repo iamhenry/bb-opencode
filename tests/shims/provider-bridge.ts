@@ -4,6 +4,7 @@ export const BRIDGE_REQUEST_METHODS = {
   initialize: "initialize",
   modelList: "model/list",
   experimentalProviderHealth: "provider/health",
+  experimentalProviderUsage: "provider/usage",
   threadStart: "thread/start",
   threadResume: "thread/resume",
   threadFork: "thread/fork",
