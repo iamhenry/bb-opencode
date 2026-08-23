@@ -56,7 +56,12 @@ import {
   parseLeadingSlash,
 } from "./slash-command.js";
 import { formatModelDisplayName } from "./model-label.js";
-import { openCodeVariantFor, reasoningLevelOf } from "./reasoning.js";
+import {
+  defaultReasoningEffortFor,
+  openCodeVariantFor,
+  reasoningLevelOf,
+  supportedReasoningEffortsForModel,
+} from "./reasoning.js";
 import {
   resolvePermissionAttach,
 } from "./permissions/target.js";
@@ -953,6 +958,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
               const raw = (modelsRecord as Record<string, { name?: string }>)[
                 modelId
               ];
+              const supportedReasoningEfforts =
+                supportedReasoningEffortsForModel(raw);
               return {
                 id: `${provider.id}/${modelId}`,
                 model: modelId,
@@ -961,12 +968,10 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
                   raw?.name ?? modelId,
                 ),
                 description: provider.id,
-                supportedReasoningEfforts: [
-                  { reasoningEffort: "low", description: "Low" },
-                  { reasoningEffort: "medium", description: "Medium" },
-                  { reasoningEffort: "high", description: "High" },
-                ],
-                defaultReasoningEffort: "medium",
+                supportedReasoningEfforts,
+                defaultReasoningEffort: defaultReasoningEffortFor(
+                  supportedReasoningEfforts,
+                ),
                 isDefault: false,
               };
             },
