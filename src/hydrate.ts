@@ -57,6 +57,17 @@ export function lastUserMessageId(
   return undefined;
 }
 
+/** Inclusive fork/rewind cursor: last OpenCode message this turn should keep. */
+export function retainThroughMessageId(
+  messages: readonly HydrateMessage[],
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const id = messages[i]?.info.id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  return undefined;
+}
+
 export function lastUserAgent(messages: readonly HydrateMessage[]): string | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
@@ -85,7 +96,7 @@ export function assistantsAfterLastUser(
 export function completedTurnBoundary(
   messages?: readonly HydrateMessage[],
 ): ThreadDelta {
-  const checkpoint = messages ? lastUserMessageId(messages) : undefined;
+  const checkpoint = messages ? retainThroughMessageId(messages) : undefined;
   return {
     kind: "turn.boundary",
     status: "completed",
@@ -108,14 +119,16 @@ export function hydrateDeltas(args: {
   const state = createMapDeltaState();
   const deltas: ThreadDelta[] = [{ kind: "session.reset" }];
   let turnOpen = false;
-  const closeTurn = () => {
+  const closeTurn = (throughIndex: number) => {
     if (!turnOpen) return;
-    deltas.push(completedTurnBoundary(args.messages));
+    deltas.push(completedTurnBoundary(args.messages.slice(0, throughIndex + 1)));
     turnOpen = false;
   };
-  for (const message of args.messages) {
+  for (let i = 0; i < args.messages.length; i += 1) {
+    const message = args.messages[i];
+    if (!message) continue;
     if (message.info.role === "user") {
-      closeTurn();
+      closeTurn(i - 1);
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
       const text = userText(message);
@@ -141,6 +154,6 @@ export function hydrateDeltas(args: {
       }
     }
   }
-  closeTurn();
+  closeTurn(args.messages.length - 1);
   return deltas;
 }

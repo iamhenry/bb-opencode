@@ -420,7 +420,8 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-21: Steal OpenChamber boundaries, not its UI: one SDK door, tagged permission results, actions-only mutation, live truth from events, fail closed.
 - 2026-08-21: Three-entry plugin. One detached OpenCode per host. Attach-first. No in-process child. No module-singleton client.
 - 2026-08-21: `fork: "none"`. Revert is undo chrome. Capabilities only narrow.
-- 2026-08-22: Restated. OpenCode has a real `POST /session/:id/fork { messageID }`. V1 now advertises `fork: "checkpoint"`, stamps `providerCheckpointId` = last user OpenCode message id on `turn.boundary`, and handles `thread/fork`. Revert stays in-place and is not a fork.
+- 2026-08-23 (edit-from-here): Native BB **Edit message** is OpenCode's mid-thread resubmit. It rewinds via `thread/fork` at the *previous* turn's `providerCheckpointId`, then sends the new text on this same BB thread. Checkpoint must be the last message that turn should keep (usually the assistant id). Stamping the user id dropped the previous reply. Plugin **Revert from here** is a different verb (in-place cursor, no resend) and should not restuff the composer.
+- 2026-08-22: Restated. OpenCode has a real `POST /session/:id/fork { messageID }`. V1 now advertises `fork: "checkpoint"`, stamps `providerCheckpointId` = last retained OpenCode message id on `turn.boundary`, and handles `thread/fork`. Revert stays in-place and is not a fork.
 - 2026-08-21: Core OpenCode is in V1: start/resume, models, agents, live tools/bash, stop, revert/unrevert, permissions on the generic card, attachments mapped or rejected, `turn/steer` refuse.
 - 2026-08-21: Permissions are core, not a second knob. BB modes are the ceiling. `full` ≈ auto-approve. Fail-closed `{ok|resolved|unknown}`.
 - 2026-08-21: Manual import only. Never auto-import. Never "smallest prompt then stop."

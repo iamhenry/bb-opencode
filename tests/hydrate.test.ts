@@ -5,6 +5,7 @@ import {
   hydrateDeltas,
   lastUserAgent,
   lastUserMessageId,
+  retainThroughMessageId,
   revertMessageIdOf,
 } from "../src/hydrate.js";
 
@@ -60,6 +61,28 @@ describe("hydrate", () => {
         { info: { id: "u2", role: "user" }, parts: [] },
       ]),
     ).toBe("u2");
+    expect(
+      retainThroughMessageId([
+        { info: { id: "u1", role: "user" }, parts: [] },
+        { info: { id: "a1", role: "assistant" }, parts: [] },
+      ]),
+    ).toBe("a1");
+    const twoTurns = hydrateDeltas({
+      sessionId: "s",
+      messages: [
+        { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "one" }] },
+        { info: { id: "a1", role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
+        { info: { id: "u2", role: "user" }, parts: [{ type: "text", text: "two" }] },
+        { info: { id: "a2", role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
+      ],
+    }).filter(
+      (delta) =>
+        delta.kind === "turn.boundary" && delta.status === "completed",
+    );
+    expect(twoTurns.map((delta) => delta.providerCheckpointId)).toEqual([
+      "a1",
+      "a2",
+    ]);
     expect(lastUserAgent([
       { info: { role: "user", agent: "plan" }, parts: [] },
       { info: { role: "assistant" }, parts: [] },

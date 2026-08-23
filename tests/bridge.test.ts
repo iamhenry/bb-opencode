@@ -208,7 +208,7 @@ describe("provider bridge", () => {
         (delta) =>
           delta.kind === "turn.boundary" &&
           delta.status === "completed" &&
-          delta.providerCheckpointId === "u_chk",
+          delta.providerCheckpointId === "a_chk",
       ),
     ).toBe(true);
   });
