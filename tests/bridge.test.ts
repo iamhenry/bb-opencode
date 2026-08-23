@@ -7,6 +7,7 @@ import {
   recentUnknownLogLines,
   resetBridgeForTests,
   syncLiveTurnParts,
+  syncSessionRevert,
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
@@ -526,6 +527,34 @@ describe("provider bridge", () => {
         );
       }),
     ).toBe(true);
+  });
+
+  it("rehydrates in place when the OpenCode revert cursor changes", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "sup" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ type: "text", text: "hey" }],
+      },
+    ]);
+    const session = fake.sessions.get("ses_1");
+    if (session) session.revert = { messageID: "u1" };
+    messages.length = 0;
+    expect(await syncSessionRevert("ses_1")).toBe(true);
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string }> })
+          ?.deltas;
+        return deltas?.some((delta) => delta.kind === "session.reset");
+      }),
+    ).toBe(true);
+    expect(await syncSessionRevert("ses_1")).toBe(false);
   });
 
   it("hydrates the BB timeline after revert (ISC-30)", async () => {

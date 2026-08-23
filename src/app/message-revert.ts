@@ -25,9 +25,7 @@ export async function runMessageUndo(args: {
         "Revert from here",
         result.error ?? "could not match that message",
       );
-      return;
     }
-    reloadThread();
   } catch (error) {
     reportActionError(
       "Revert from here",
@@ -49,9 +47,7 @@ export async function runMessageRedo(args: { threadId: string }): Promise<void> 
     );
     if (!result.ok) {
       reportActionError("Redo revert", result.error ?? "nothing to redo");
-      return;
     }
-    reloadThread();
   } catch (error) {
     reportActionError(
       "Redo revert",
@@ -60,7 +56,3 @@ export async function runMessageRedo(args: { threadId: string }): Promise<void> 
   }
 }
 
-function reloadThread(): void {
-  if (typeof window === "undefined") return;
-  window.location.reload();
-}

@@ -123,6 +123,7 @@ let createCount = 0;
 let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 const lastTitles = new Map<string, string>();
+const lastRevertCursors = new Map<string, string | null>();
 let deps: BridgeDeps = {
   acquire: createSdkClient,
   attach: async (dir) => attachOrSpawn({ dataDir: dir }),
@@ -142,6 +143,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   pendingPermission.clear();
   configuredSkillRoots = [];
   lastTitles.clear();
+  lastRevertCursors.clear();
   if (titleTimer) {
     clearInterval(titleTimer);
     titleTimer = undefined;
@@ -246,6 +248,9 @@ async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
 function bindSession(threadId: string, session: BoundSession): void {
   sessions.set(threadId, session);
   sessionToThread.set(session.sessionId, threadId);
+  if (!lastRevertCursors.has(session.sessionId)) {
+    lastRevertCursors.set(session.sessionId, null);
+  }
   notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
     threadId,
     providerThreadId: session.sessionId,
@@ -262,6 +267,7 @@ function startTitlePoller(): void {
         await syncSessionTitle(sessionId);
         await syncPendingPermissions(sessionId);
         await syncLiveTurnParts(sessionId);
+        await syncSessionRevert(sessionId);
       }),
     );
   }, 800);
@@ -290,6 +296,22 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     }
     if (leftovers.length === 0) return false;
     emitDeltas(threadId, leftovers);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function syncSessionRevert(sessionId: string): Promise<boolean> {
+  if (!client) return false;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return false;
+  try {
+    const session = await client.getSession(sessionId);
+    const cursor = revertMessageIdOf(session) ?? null;
+    if (lastRevertCursors.get(sessionId) === cursor) return false;
+    lastRevertCursors.set(sessionId, cursor);
+    await replayHydrate(threadId, sessionId, client);
     return true;
   } catch {
     return false;
@@ -387,9 +409,11 @@ async function replayHydrate(
   active: OpenCodeClient,
 ): Promise<void> {
   const session = await active.getSession(sessionId);
+  const cursor = revertMessageIdOf(session) ?? null;
+  lastRevertCursors.set(sessionId, cursor);
   const messages = filterMessagesByRevertPoint(
     (await active.sessionMessages(sessionId)) as HydrateMessage[],
-    revertMessageIdOf(session),
+    cursor ?? undefined,
   );
   emitDeltas(threadId, hydrateDeltas({ sessionId, messages }));
 }
@@ -456,9 +480,10 @@ async function onOpenCodeEvent(event: {
     if (title && threadId) {
       lastTitles.set(sessionId, title);
       emitDeltas(threadId, [{ kind: "thread.name", name: title }]);
-      return;
+    } else {
+      void syncSessionTitle(sessionId);
     }
-    void syncSessionTitle(sessionId);
+    void syncSessionRevert(sessionId);
     return;
   }
 
