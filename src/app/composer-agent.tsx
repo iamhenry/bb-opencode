@@ -7,7 +7,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
 import {
-  composerLayoutIsCompact,
+  composerSurfaceWantsBanner,
   newThreadShowsOpencodeAgent,
 } from "./live-provider.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
@@ -42,7 +42,9 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const view = useComposerView();
   const isNewThread = view.scope.kind === "new-thread" || !threadId;
   const rootRef = useRef<HTMLSpanElement>(null);
-  const [compact, setCompact] = useState(false);
+  const [wantsBanner, setWantsBanner] = useState(
+    () => view.layout === "compact",
+  );
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [liveOpenCode, setLiveOpenCode] = useState(false);
@@ -63,7 +65,12 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   useEffect(() => {
     const sync = () => {
       setLiveOpenCode(newThreadShowsOpencodeAgent(rootRef.current));
-      setCompact(composerLayoutIsCompact(rootRef.current));
+      setWantsBanner(
+        composerSurfaceWantsBanner({
+          layout: view.layout,
+          from: rootRef.current,
+        }),
+      );
     };
     sync();
     const root =
@@ -72,15 +79,26 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     observer.observe(root, {
       subtree: true,
       childList: true,
+      characterData: true,
       attributes: true,
       attributeFilter: ["title", "aria-label", "data-promptbox-compact"],
     });
     const timer = window.setInterval(sync, 250);
+    const media = [
+      window.matchMedia("(pointer: coarse)"),
+      window.matchMedia("(max-width: 767px)"),
+    ];
+    for (const query of media) {
+      query.addEventListener("change", sync);
+    }
     return () => {
       observer.disconnect();
       window.clearInterval(timer);
+      for (const query of media) {
+        query.removeEventListener("change", sync);
+      }
     };
-  }, [isNewThread, threadId]);
+  }, [isNewThread, threadId, view.layout]);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,7 +120,7 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const boundOpenCode =
     Boolean(threadId) && shouldRenderOpencodeChrome(chrome?.providerId);
   const newThreadOpenCode = isNewThread && liveOpenCode;
-  const layoutMatch = layout === "compact" ? compact : !compact;
+  const layoutMatch = layout === "compact" ? wantsBanner : !wantsBanner;
   const visible = layoutMatch && (boundOpenCode || newThreadOpenCode);
 
   useEffect(() => {
@@ -206,7 +224,9 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
           <button
             ref={triggerRef}
             type="button"
-            className="oc-agent"
+            className={
+              layout === "compact" ? "oc-agent oc-agent--banner" : "oc-agent"
+            }
             data-opencode-agent-picker="true"
             data-layout={layout}
             data-open={open ? "true" : "false"}

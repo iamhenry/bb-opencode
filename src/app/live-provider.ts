@@ -40,8 +40,14 @@ export function chipSuggestsOpencode(args: {
 }
 
 function modelButtons(shell: ParentNode): Element[] {
-  return Array.from(
+  const labeled = Array.from(
     shell.querySelectorAll('[aria-label^="Provider, model and reasoning"]'),
+  );
+  if (labeled.length > 0) return labeled;
+  return Array.from(
+    shell.querySelectorAll(
+      '[title^="OpenCode"], [title^="opencode"], [title*=": "][title*="reasoning"]',
+    ),
   );
 }
 
@@ -72,6 +78,25 @@ export function composerLayoutIsCompact(from: Element | null): boolean {
   return shells.some((shell) => shell.querySelector("[data-promptbox-compact]") !== null);
 }
 
+/**
+ * Plugin footer actions are omitted in compact composers and clipped on
+ * coarse/narrow PWA. The banner slot is the surface that still mounts.
+ */
+export function composerSurfaceWantsBanner(args: {
+  layout?: "compact" | "expanded" | "zen" | null;
+  from?: Element | null;
+}): boolean {
+  if (args.layout === "compact") return true;
+  if (composerLayoutIsCompact(args.from ?? null)) return true;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return (
+    window.matchMedia("(pointer: coarse)").matches ||
+    window.matchMedia("(max-width: 767px)").matches
+  );
+}
+
 export function newThreadShowsOpencodeAgent(from: Element | null): boolean {
   const shells: ParentNode[] = [];
   const closest = from?.closest("[data-app-composer]");
@@ -84,7 +109,7 @@ export function newThreadShowsOpencodeAgent(from: Element | null): boolean {
       const text = button.textContent;
       const hasOpencodeLogo = Boolean(
         button.querySelector(
-          'img[src*="/providers/opencode/"], img[src*="provider=opencode"]',
+          'img[src*="/providers/opencode/"], img[src*="provider=opencode"], [data-plugin-icon-asset*="opencode"]',
         ),
       );
       if (

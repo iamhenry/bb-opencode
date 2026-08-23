@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   chipSuggestsOpencode,
   composerLayoutIsCompact,
+  composerSurfaceWantsBanner,
+  newThreadShowsOpencodeAgent,
   providerIdFromModelTriggerTitle,
 } from "../src/app/live-provider.js";
 
@@ -42,5 +44,11 @@ describe("live composer provider from model chip", () => {
         title: "Pi: Opus 5 1M · Medium reasoning",
       }),
     ).toBe(false);
+  });
+
+  it("puts the agent chip on the banner for compact/coarse surfaces", () => {
+    expect(composerSurfaceWantsBanner({ layout: "compact" })).toBe(true);
+    expect(composerSurfaceWantsBanner({ layout: "expanded" })).toBe(false);
+    expect(newThreadShowsOpencodeAgent(null)).toBe(false);
   });
 });

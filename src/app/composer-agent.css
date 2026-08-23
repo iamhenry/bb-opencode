@@ -228,11 +228,24 @@
   }
 }
 
+.oc-agent--banner {
+  display: flex;
+  width: 100%;
+  min-height: 2.75rem;
+  height: auto;
+  max-width: none;
+  padding: 0.45rem 0.7rem;
+  border-color: color-mix(in srgb, var(--foreground, currentColor) 12%, transparent);
+  background: color-mix(in srgb, var(--foreground, currentColor) 4%, transparent);
+}
+
+.oc-agent--banner .oc-agent__name {
+  flex: 1 1 auto;
+}
+
 @media (pointer: coarse) {
-  .oc-agent {
+  .oc-agent--banner {
     min-height: 2.75rem;
-    height: 2.75rem;
-    padding: 0 0.7rem;
   }
 
   .oc-agent[data-layout="compact"] .oc-agent__prefix {
