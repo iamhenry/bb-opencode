@@ -57,12 +57,35 @@ const FILE_CHANGE_PERMISSIONS = new Set([
 ]);
 
 export function isPermissionAskEvent(type: string): boolean {
-  return type === "permission.asked" || type === "permission.updated";
+  return (
+    type === "permission.asked" ||
+    type === "permission.updated" ||
+    type === "permission.v2.asked"
+  );
+}
+
+export function unwrapPermissionAsk(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const record = raw as Record<string, unknown>;
+  if (record.properties && typeof record.properties === "object") {
+    return record.properties;
+  }
+  if (record.data && typeof record.data === "object") {
+    return record.data;
+  }
+  return raw;
 }
 
 function permissionNameOf(ask: OpenCodePermissionAsk): string | undefined {
   if (typeof ask.permission === "string" && ask.permission.length > 0) {
     return ask.permission;
+  }
+  const action =
+    ask && typeof ask === "object"
+      ? (ask as { action?: unknown }).action
+      : undefined;
+  if (typeof action === "string" && action.length > 0) {
+    return action;
   }
   const type =
     ask && typeof ask === "object"
@@ -77,6 +100,13 @@ function permissionNameOf(ask: OpenCodePermissionAsk): string | undefined {
 function patternsOf(ask: OpenCodePermissionAsk): string[] {
   if (Array.isArray(ask.patterns)) {
     return ask.patterns.filter((item): item is string => typeof item === "string");
+  }
+  const resources =
+    ask && typeof ask === "object"
+      ? (ask as { resources?: unknown }).resources
+      : undefined;
+  if (Array.isArray(resources)) {
+    return resources.filter((item): item is string => typeof item === "string");
   }
   const pattern =
     ask && typeof ask === "object"
@@ -97,6 +127,17 @@ function callIdOf(ask: OpenCodePermissionAsk): string | undefined {
   ) {
     return (ask.tool as { callID: string }).callID;
   }
+  const source =
+    ask && typeof ask === "object"
+      ? (ask as { source?: unknown }).source
+      : undefined;
+  if (
+    source &&
+    typeof source === "object" &&
+    typeof (source as { callID?: unknown }).callID === "string"
+  ) {
+    return (source as { callID: string }).callID;
+  }
   const callID =
     ask && typeof ask === "object"
       ? (ask as { callID?: unknown }).callID
@@ -105,10 +146,11 @@ function callIdOf(ask: OpenCodePermissionAsk): string | undefined {
 }
 
 export function mapPermissionAsk(raw: unknown): MappedPermission {
-  if (!raw || typeof raw !== "object") {
+  const unwrapped = unwrapPermissionAsk(raw);
+  if (!unwrapped || typeof unwrapped !== "object") {
     return { tag: "unknown", reason: "ask is not an object" };
   }
-  const ask = raw as OpenCodePermissionAsk;
+  const ask = unwrapped as OpenCodePermissionAsk;
   const permission = permissionNameOf(ask);
   if (typeof ask.id !== "string" || ask.id.length === 0) {
     return { tag: "unknown", reason: "missing permission id" };

@@ -620,6 +620,54 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
+  it("surfaces a 1.18 permission.v2.asked edit as a card", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          permissionMode: "accept-edits",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        ...turnParams({
+          options: {
+            permissionMode: "accept-edits",
+            permissionScope: "full",
+            approvalReviewer: null,
+            permissionEscalation: null,
+            providerOptions: { agent: "build" },
+          },
+        }),
+      },
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.v2.asked",
+      properties: {
+        id: "per_v2",
+        sessionID: "ses_1",
+        action: "edit",
+        resources: ["scratch/isc33-probe.txt"],
+        source: { type: "tool", messageID: "msg_1", callID: "call_v2" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(true);
+  });
+
   it("does not auto-approve under accept-edits (ISC-36)", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);

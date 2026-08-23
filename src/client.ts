@@ -65,6 +65,7 @@ export interface OpenCodeClient {
     sessionID: string;
     reply: "once" | "always" | "reject";
   }): Promise<void>;
+  listPendingPermissions(sessionID?: string): Promise<unknown[]>;
   replyQuestion(args: {
     requestID: string;
     sessionID: string;
@@ -210,26 +211,55 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       return response.json();
     },
     async replyPermission({ requestID, sessionID, reply }) {
-      const legacy = await fetch(
-        `${url}/session/${sessionID}/permissions/${requestID}`,
+      const attempts: Array<{ path: string; body: unknown }> = [
         {
+          path: `/api/session/${sessionID}/permission/${requestID}/reply`,
+          body: { reply },
+        },
+        {
+          path: `/session/${sessionID}/permissions/${requestID}`,
+          body: { response: reply },
+        },
+        {
+          path: `/permission/${requestID}/reply`,
+          body: { reply },
+        },
+      ];
+      let lastStatus = 0;
+      for (const attempt of attempts) {
+        const response = await fetch(`${url}${attempt.path}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ response: reply }),
-        },
-      );
-      if (legacy.ok) return;
-      if (legacy.status !== 404) {
-        throw new Error(`permission.reply failed: ${legacy.status}`);
+          body: JSON.stringify(attempt.body),
+        });
+        if (response.ok) return;
+        lastStatus = response.status;
+        if (response.status !== 404) {
+          throw new Error(`permission.reply failed: ${response.status}`);
+        }
       }
-      const next = await fetch(`${url}/permission/${requestID}/reply`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ reply }),
-      });
-      if (!next.ok) {
-        throw new Error(`permission.reply failed: ${next.status}`);
+      throw new Error(`permission.reply failed: ${lastStatus || 404}`);
+    },
+    async listPendingPermissions(sessionID) {
+      const asks: unknown[] = [];
+      if (sessionID) {
+        const v2 = await fetch(`${url}/api/session/${sessionID}/permission`);
+        if (v2.ok) {
+          const body = (await v2.json()) as { data?: unknown } | unknown[];
+          const rows = Array.isArray(body)
+            ? body
+            : Array.isArray(body.data)
+              ? body.data
+              : [];
+          asks.push(...rows);
+        }
       }
+      const v1 = await fetch(`${url}/permission`);
+      if (v1.ok) {
+        const body = (await v1.json()) as unknown;
+        if (Array.isArray(body)) asks.push(...body);
+      }
+      return asks;
     },
     async replyQuestion({ requestID, sessionID, reply }) {
       const paths = [
@@ -283,7 +313,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
                 const parsed = JSON.parse(dataLines.join("\n")) as {
                   type?: string;
                   properties?: unknown;
-                  payload?: { type?: string; properties?: unknown };
+                  data?: unknown;
+                  payload?: {
+                    type?: string;
+                    properties?: unknown;
+                    data?: unknown;
+                  };
                 };
                 const event =
                   typeof parsed.type === "string"
@@ -294,7 +329,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
                 if (event?.type) {
                   handler({
                     type: event.type,
-                    properties: event.properties,
+                    properties: event.properties ?? event.data,
                   });
                 }
               } catch {

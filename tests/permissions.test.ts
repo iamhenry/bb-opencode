@@ -52,6 +52,41 @@ describe("permission map", () => {
     });
     expect(isPermissionAskEvent("permission.updated")).toBe(true);
     expect(isPermissionAskEvent("permission.asked")).toBe(true);
+    expect(isPermissionAskEvent("permission.v2.asked")).toBe(true);
+  });
+
+  it("maps 1.18 permission.v2.asked edit asks (action/resources/source)", () => {
+    const mapped = mapPermissionAsk({
+      id: "per_1",
+      sessionID: "ses_1",
+      action: "edit",
+      resources: ["scratch/isc33-probe.txt"],
+      source: { type: "tool", messageID: "msg_1", callID: "call_v2" },
+    });
+    expect(mapped.tag).toBe("ok");
+    expect(mapped.permission).toBe("edit");
+    expect(mapped.subject).toMatchObject({
+      kind: "file_change",
+      itemId: "call_v2",
+      writeScope: "scratch/isc33-probe.txt",
+    });
+  });
+
+  it("unwraps durable data envelopes", () => {
+    const mapped = mapPermissionAsk({
+      type: "permission.v2.asked",
+      data: {
+        id: "per_2",
+        sessionID: "ses_1",
+        action: "apply_patch",
+        resources: ["scratch/isc33-probe.txt"],
+      },
+    });
+    expect(mapped.tag).toBe("ok");
+    expect(mapped.subject).toMatchObject({
+      kind: "file_change",
+      writeScope: "scratch/isc33-probe.txt",
+    });
   });
 
   it("writes card decisions back as OpenCode replies", () => {

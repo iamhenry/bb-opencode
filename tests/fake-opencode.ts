@@ -157,6 +157,9 @@ export function createFakeOpenCode(): FakeOpenCode {
       async replyPermission({ requestID, reply }) {
         fake.calls.reply.push({ requestID, reply });
       },
+      async listPendingPermissions() {
+        return [];
+      },
       async subscribe(next) {
         handler = next;
         return {

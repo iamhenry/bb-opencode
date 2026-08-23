@@ -43,6 +43,7 @@ import {
   mapPermissionAsk,
   shouldAutoApprove,
   shouldShowCard,
+  unwrapPermissionAsk,
 } from "./permissions/map.js";
 import { attachOrSpawn } from "./process.js";
 import { buildPrompt } from "./prompt-builder.js";
@@ -249,7 +250,10 @@ function startTitlePoller(): void {
   if (titleTimer) return;
   titleTimer = setInterval(() => {
     void Promise.all(
-      [...sessionToThread.keys()].map((sessionId) => syncSessionTitle(sessionId)),
+      [...sessionToThread.keys()].map(async (sessionId) => {
+        await syncSessionTitle(sessionId);
+        await syncPendingPermissions(sessionId);
+      }),
     );
   }, 800);
   titleTimer.unref?.();
@@ -271,6 +275,22 @@ export async function syncSessionTitle(sessionId: string): Promise<boolean> {
     return false;
   }
   return false;
+}
+
+async function syncPendingPermissions(sessionId: string): Promise<void> {
+  if (!client) return;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return;
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted) return;
+  try {
+    const pending = await client.listPendingPermissions(sessionId);
+    for (const ask of pending) {
+      await handlePermissionAsked(ask, sessionId);
+    }
+  } catch {
+    /* list is best-effort; SSE remains the primary path */
+  }
 }
 
 export async function hydrateBoundSession(sessionId: string): Promise<boolean> {
@@ -338,6 +358,14 @@ function eventSessionId(event: { type: string; properties?: unknown }): string |
   if (!properties || typeof properties !== "object") return undefined;
   const record = properties as Record<string, unknown>;
   if (typeof record.sessionID === "string") return record.sessionID;
+  const unwrapped = unwrapPermissionAsk(record);
+  if (
+    unwrapped &&
+    typeof unwrapped === "object" &&
+    typeof (unwrapped as { sessionID?: unknown }).sessionID === "string"
+  ) {
+    return (unwrapped as { sessionID: string }).sessionID;
+  }
   const info = record.info;
   if (info && typeof info === "object" && typeof (info as { sessionID?: unknown }).sessionID === "string") {
     return (info as { sessionID: string }).sessionID;
@@ -591,11 +619,10 @@ async function denyQuestionAsk(args: {
   threadId: string;
 }): Promise<void> {
   const active = client;
+  const ask = unwrapPermissionAsk(args.properties);
   const requestId =
-    args.properties &&
-    typeof args.properties === "object" &&
-    typeof (args.properties as { id?: unknown }).id === "string"
-      ? (args.properties as { id: string }).id
+    ask && typeof ask === "object" && typeof (ask as { id?: unknown }).id === "string"
+      ? (ask as { id: string }).id
       : undefined;
   if (active && requestId) {
     try {
@@ -686,6 +713,10 @@ async function handlePermissionAsked(
   const live = liveTurns.get(targetThreadId);
   const permissionMode = sessions.get(targetThreadId)?.permissionMode;
 
+  if (mapped.requestId) {
+    const existing = `oc-perm-${mapped.requestId}`;
+    if (pendingPermission.has(existing)) return;
+  }
   if (mapped.tag === "unknown" || !mapped.requestId || !mapped.subject) {
     await denyPermissionAsk({
       active,
