@@ -5,6 +5,7 @@ export interface FakeOpenCode {
   calls: {
     create: number;
     prompt: number;
+    promptAsync: number;
     abort: number;
     revert: number;
     unrevert: number;
@@ -39,6 +40,7 @@ export function createFakeOpenCode(): FakeOpenCode {
     calls: {
       create: 0,
       prompt: 0,
+      promptAsync: 0,
       abort: 0,
       revert: 0,
       unrevert: 0,
@@ -98,6 +100,11 @@ export function createFakeOpenCode(): FakeOpenCode {
       async sessionMessages(id) {
         fake.calls.messages += 1;
         return fake.messages.get(id) ?? [];
+      },
+      async promptAsync(id, body) {
+        fake.calls.promptAsync += 1;
+        fake.lastPrompt = { id, body };
+        return;
       },
       async prompt(id, body) {
         fake.calls.prompt += 1;

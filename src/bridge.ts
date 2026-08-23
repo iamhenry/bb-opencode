@@ -1454,7 +1454,23 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       );
       return;
     }
-    respondError(id, -32601, "Method not found: turn/steer");
+    const bound = sessions.get(parsed.data.threadId);
+    if (!bound) {
+      respondError(id, BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR, "Unknown thread");
+      return;
+    }
+    bound.permissionMode = permissionModeOf(parsed.data.options);
+    Object.assign(bound, sessionPolicy(parsed.data));
+    /* Ack before delivery. A JSON-RPC error here becomes BB run.failed
+       and kills the live turn ("Steer failed"). */
+    respondResult(id, {});
+    void runSteer({
+      threadId: parsed.data.threadId,
+      sessionId: bound.sessionId,
+      input: parsed.data.input,
+      options: parsed.data.options,
+      clientRequestId: parsed.data.clientRequestId,
+    });
   },
 
   [BRIDGE_REQUEST_METHODS.skillsConfigure]: (id, params) => {
@@ -1562,6 +1578,54 @@ async function settleIssuedTurn(
   ]);
   // Native ensureTitle forks on the first prompt step and may finish after idle.
   await syncSessionTitle(sessionId);
+}
+
+async function runSteer(args: {
+  threadId: string;
+  sessionId: string;
+  input: readonly PromptInput[];
+  options: unknown;
+  clientRequestId?: string;
+}): Promise<void> {
+  const live = liveTurns.get(args.threadId);
+  if (!live || live.parentBoundaryEmitted || live.sessionId !== args.sessionId) {
+    await runPrompt(args);
+    return;
+  }
+  const active = await ensureClient();
+  const options = providerOptions(args.options);
+  const requested =
+    typeof options.agent === "string" ? options.agent : undefined;
+  const resolved = await resolveSelectableAgent({
+    active,
+    requested,
+    sessionId: args.sessionId,
+  });
+  if (!resolved.ok) return;
+  const built = buildPrompt({
+    agent: resolved.agent,
+    input: args.input,
+    model:
+      typeof (args.options as { model?: unknown })?.model === "string"
+        ? ((args.options as { model: string }).model as string)
+        : undefined,
+  });
+  if (!built.ok) return;
+  if (args.clientRequestId) {
+    emitDeltas(args.threadId, [
+      { kind: "input.accepted", clientRequestId: args.clientRequestId },
+    ]);
+  }
+  const variant = openCodeVariantFor(reasoningLevelOf(args.options));
+  const body = {
+    ...built.prompt,
+    ...(variant ? { variant } : {}),
+  };
+  try {
+    await active.promptAsync(args.sessionId, body);
+  } catch {
+    void active.prompt(args.sessionId, body);
+  }
 }
 
 async function runPrompt(args: {

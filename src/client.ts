@@ -39,6 +39,7 @@ export interface OpenCodeClient {
     Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
   >;
   prompt(id: string, body: Record<string, unknown>): Promise<unknown>;
+  promptAsync(id: string, body: Record<string, unknown>): Promise<void>;
   abort(id: string): Promise<void>;
   revert(id: string, body: Record<string, unknown>): Promise<unknown>;
   unrevert(id: string): Promise<unknown>;
@@ -177,6 +178,32 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
         throw new Error(`session.prompt failed: ${response.status} ${await response.text()}`);
       }
       return response.json();
+    },
+    async promptAsync(id, body) {
+      const send = (payload: Record<string, unknown>) =>
+        fetch(`${url}/session/${id}/prompt_async`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      let response = await send(body);
+      if (response.status === 404) {
+        void fetch(`${url}/session/${id}/message`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        return;
+      }
+      if (!response.ok && response.status === 400 && "variant" in body) {
+        const { variant: _variant, thinking: _thinking, ...rest } = body;
+        response = await send(rest);
+      }
+      if (!response.ok) {
+        throw new Error(
+          `session.prompt_async failed: ${response.status} ${await response.text()}`,
+        );
+      }
     },
     async abort(id) {
       await sdk.session.abort({ path: { id } });

@@ -127,7 +127,7 @@ _Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
 - Capabilities: `fork: "checkpoint"`, `sessionRestore: true`, `supportsThreadRename: true` only if title writes work. Permission modes and reasoning only if honestly mapped. Runtime may narrow, never widen.
 - Permissions use the provider-bridge grammar and BB's generic card. Honor `opencode.json`. BB mode is the ceiling. A fail-closed `unknown` result never approves, including under BB mode `full`.
 - Manual import only. Refuse running sessions. Dedup on `providerId === "opencode"` + `providerThreadId`. Directory comes from the server-confirmed OpenCode session path. No managed worktree invented. Personal project if the path is outside every project.
-- `turn/steer` refuses with JSON-RPC `-32601` so BB queues. A queued follow-up captures its OpenCode agent at enqueue, not at flush.
+- `turn/steer` accepts while a turn is live and delivers via OpenCode `prompt_async` (same session, no second `turn.open`). A JSON-RPC error here is `run.failed` in BB and kills the live turn — do not refuse with `-32601`.
 - A listed `/name` send uses `session.command`, not `session.prompt`. Unknown slashes and slash+attachment sends stay `session.prompt`. `skills/configure` is accepted; the plugin never writes OpenCode config files.
 - Every `session.prompt` includes `agent`. Never omit it (OpenCode #21728). Resume and import do not write an agent. A send is refused (no `session.prompt`) while the picker is in the unknown-agent error state, and at flush if the enqueue-stamped agent is no longer a selectable primary.
 - Pin the current stable `@opencode-ai/sdk` / `opencode serve` surface. Do not call V2-only routes.
@@ -199,7 +199,7 @@ Why: the BB timeline *is* the OpenCode turn — text, thinking, tools, live bash
 - [x] ISC-17: Tool parts appear as BB tool or command items.
 - [x] ISC-18: Bash/shell progress updates the same command item live.
 - [x] ISC-19: Stop calls `session.interrupt` on the parent and on each listed live Task child of that parent; the parent turn reaches `turn.boundary`.
-- [x] ISC-20: `turn/steer` returns JSON-RPC `-32601`.
+- [x] ISC-20: `turn/steer` acks, emits `input.accepted`, and calls `prompt_async` on the live session. It does not emit `turn.boundary` and does not start a second prompt HTTP wait.
 - [x] ISC-21: An attachment type OpenCode cannot take fails the whole send with a visible error. The part is not stripped and sent anyway.
 - [x] ISC-65: A supported attachment type is included in the `session.prompt` parts.
 - [x] ISC-22: Events for OpenCode session B never appear as items on BB thread A while both turns run.
@@ -220,7 +220,7 @@ Why: model and OpenCode agent are real start/resume **and later-turn** choices, 
 - [x] ISC-29.2: Anti: a composer agent-picker change with no following send issues zero host RPCs and zero OpenCode calls (no `session.prompt`, no `noReply`, no V2 `switchAgent`).
 - [x] ISC-29.3: After resume, import, undo, or redo hydrate, the picker shows the last user-message `info.agent` that is a currently listed selectable primary; if that field is absent or names a non-selectable-primary id that is known (hidden / system / subagent), the default primary; if it names an unknown id, a visible error and the next send is refused until the user picks a listed selectable primary — never a persisted BB cookie, never a silent `build`, never sending the unknown id.
 - [x] ISC-29.4: Anti: ids that are not selectable primaries never appear as picker values and are never hydrated into the picker.
-- [x] ISC-29.5: A follow-up BB queues because `turn/steer` is `-32601` is stamped with the agent selected at enqueue, not the picker value at flush. If that stamped id is no longer a selectable primary at flush, the send is refused (same as ISC-29.3 unknown), not rewritten to the default.
+- [x] ISC-29.5: A follow-up that BB still queues (no live turn / later flush) is stamped with the agent selected at enqueue, not the picker value at flush. If that stamped id is no longer a selectable primary at flush, the send is refused (same as ISC-29.3 unknown), not rewritten to the default. A live-turn send is `turn/steer` and uses the agent on that request.
 
 ### F4 · Revert
 Why: mid-thread resubmit is BB native **Edit message** (`fork: "checkpoint"` + `supportsSessionRewind`). OpenCode `session.revert` / `unrevert` stay as host RPCs; they are not message-bar chrome.
@@ -337,7 +337,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 | ISC-17 | bun-test | `map-delta` snapshot: tool part → tool/command item | snapshot match | bun-test | literal |
 | ISC-18 | bun-test | `map-delta` snapshot: successive bash parts update one item id | same item id | bun-test | literal |
 | ISC-19 | bash | stop a running parent that has a live Task child; parent and that child are idle; parent turn has boundary | parent+child idle; parent bounded | bb + OpenCode | literal |
-| ISC-20 | bun-test | `turn/steer` returns error code `-32601` | code exact | bun-test | derived: BB queues |
+| ISC-20 | bun-test | live `turn/steer` acks, `input.accepted`, `prompt_async` once, no `turn.boundary` | assertions | bun-test | derived: mid-turn send |
 | ISC-21 | bash | send an unmapped attachment type; visible error; `session.prompt` is not called | error shown; prompt calls 0 | bb | derived: attachments honest |
 | ISC-65 | bash | send a mapped attachment; OpenCode prompt parts include that file/image | part present | bb + OpenCode | literal |
 | ISC-22 | bash | two concurrent `opencode` turns, including parent + Task child; no item whose OpenCode session id is B appears on thread A | 0 cross items | bb | derived: one event door |
@@ -466,6 +466,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-22 (agent hydrate fog): 1.18.21 `UserMessage` requires `agent`. ISC-29.3 uses last user `info.agent`. Absent / hidden / system / subagent → default primary. Unknown id → visible error, send refused.
 - 2026-08-22 (Task permission correlation): `permission.asked.sessionID` + `Session.parentID`. In-flight parent match → parent card, reply to child ids. Else uncorrelated.
 - 2026-08-22 (agent stamp channel): Picker `onChange` stays local (ISC-29.2). Selected agent reaches the bridge via `stampAgent` RPC at submit/enqueue (not on click) plus `deriveProviderOptions`. Queued stamps are a FIFO consumed after the in-flight turn settles so flush keeps the enqueue agent (ISC-29.5).
+- 2026-08-23 (steer): ISA `-32601` was wrong. BB always sends `turn/steer` for a mid-turn composer send. A JSON-RPC error is `client/turn/rejected` ("Steer failed") plus `run.failed`, which stops the live session. V1 acks, emits `input.accepted`, and `POST /session/:id/prompt_async` so OpenCode injects the user message into the running loop. No second `turn.open`. Tombstone: refuse-steer-so-BB-queues.
 
 ## Proposed file tree (locked after spikes)
 

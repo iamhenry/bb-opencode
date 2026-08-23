@@ -68,16 +68,45 @@ describe("provider bridge", () => {
     return fake;
   }
 
-  it("answers turn/steer with -32601 (ISC-20)", () => {
-    installFake();
+  it("accepts turn/steer into a live turn without failing it (ISC-20)", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
     send({
-      id: 1,
-      method: "turn/steer",
-      params: turnParams({ expectedTurnId: "turn_1" }),
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
-    expect(messages[0]).toMatchObject({
-      id: 1,
-      error: { code: -32601 },
+    await flush();
+    const prompts = fake.calls.prompt;
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_steer",
+        input: [{ type: "text", text: "use the v2 API", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(messages[0]).toMatchObject({ id: "steer", result: {} });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(deltas).toContainEqual({
+      kind: "input.accepted",
+      clientRequestId: "req_steer",
+    });
+    expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
+    expect(fake.calls.prompt).toBe(prompts);
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "build",
+      parts: [{ type: "text", text: "use the v2 API" }],
     });
   });
 
