@@ -173,7 +173,7 @@ Why: the plugin can ship as a community package and later be vendored as `provid
 - [x] ISC-7: Anti: after install, existing threads with `providerId === "acp-opencode"` still have that id.
 - [x] ISC-8: Composer agent picker renders only when `threadProvider({ threadId })` returns `providerId === "opencode"`.
 - [x] ISC-8.1: The composer agent picker is hidden unless that RPC returns `opencode`.
-- [ ] ISC-8.2: Per-message Fork `run` no-ops unless the thread is `opencode`. BB `messageAction` has no `isAvailable` or `roles`; the Fork icon still appears on other providers. Revert/Redo chrome removed (native Edit is the mid-thread resubmit).
+- [x] ISC-8.2: Restated. No plugin `messageAction` chrome. Native BB Fork stays on assistant bubbles (`fork: "checkpoint"`). User-bubble plugin Fork was a duplicate of that native control and leaked onto every provider.
 - [x] ISC-6 checkpoint stamp on completed settle; unmatched revert refuses instead of last-of-role; `turn.boundary` uses `failed` not `error`; `provider/health` implemented; hydrate emits `turn.open` + `input.provider` for user bubbles; BB `instructions` prepended; `disallowedTools` deny; questions fail-closed (1.18 has no question API).
 - [x] Mobile: compact PWA banner hosts the Agent picker (BB hides plugin composer actions); touch targets + visualViewport; declarative `defaultAgent` for the iOS app (no plugin frontend). Native fork/rewind already follow `fork: "checkpoint"`.
 - [x] Provider mark: `app.slots.experimental_providerIcon` inline `currentColor` window (web pickers/settings). Server `icon` stays the currentColor SVG for iOS `ServerSvgIcon`. Branding logos are explicit light/dark fills because Settings uses `<img>`.
@@ -422,6 +422,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-21: Three-entry plugin. One detached OpenCode per host. Attach-first. No in-process child. No module-singleton client.
 - 2026-08-21: `fork: "none"`. Revert is undo chrome. Capabilities only narrow.
 - 2026-08-23 (edit-from-here): Native BB **Edit message** is OpenCode's mid-thread resubmit. It rewinds via `thread/fork` at the *previous* turn's `providerCheckpointId`, then sends the new text on this same BB thread. Checkpoint must be the last message that turn should keep (usually the assistant id). Stamping the user id dropped the previous reply. Plugin Revert/Redo buttons removed so they do not compete with Edit.
+- 2026-08-23 (duplicate Fork): Native BB Fork is assistant-only. Plugin `messageAction` Fork had no `roles` filter, so assistant bubbles showed two Forks and every other provider got a dead extra Fork. Removed the plugin action. User bubbles keep **Edit message**; assistant bubbles keep native Fork.
 - 2026-08-23 (context meter): BB already draws `ThreadContextWindowIndicator` from `contextWindow` deltas. V1 maps OpenCode assistant `tokens` + catalog `limit.context` and does not invent a plugin usage widget.
 - 2026-08-22: Restated. OpenCode has a real `POST /session/:id/fork { messageID }`. V1 now advertises `fork: "checkpoint"`, stamps `providerCheckpointId` = last retained OpenCode message id on `turn.boundary`, and handles `thread/fork`. Revert stays in-place and is not a fork.
 - 2026-08-21: Core OpenCode is in V1: start/resume, models, agents, live tools/bash, stop, revert/unrevert, permissions on the generic card, attachments mapped or rejected, `turn/steer` refuse.
@@ -525,7 +526,7 @@ tests/*.test.ts
 - [x] ISA review round 3 (agent-switch delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] ISA review round 4 (Task-child delta) — Kimi/GLM/Opus 2026-08-22; revised in-scope only. No plugin implementation from this ISA pass.
 - [x] Implement in feature order after spikes: F0 → F7 → F1 → F2 → F3 → F4 → F5 → F8 → F6 last.
-- [ ] Hard blockers / remaining live: ISC-33/34 (need `bash: ask` + human card), ISC-8.2 (`messageAction` has no `isAvailable` so Undo/Redo icons leak onto other providers). ISC-63 deny and ISC-71 Read item/* are live-proven.
+- [ ] Hard blockers / remaining live: ISC-33/34 (need human card). ISC-8.2 restated closed (no plugin message actions). ISC-63 deny still operator-confirm.
 - [ ] Polish live-verify: streaming suffixes, tool flush, title poll, Stop, `/` autocomplete, reasoning chip actually changes the turn.
 
 ## Live smoke (operator thread, 2026-08-22 evening)
