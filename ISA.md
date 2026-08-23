@@ -127,7 +127,7 @@ _Avoid:_ calling `session.command` from the chip; showing the chip on Pi/Claude.
 - Capabilities: `fork: "checkpoint"`, `sessionRestore: true`, `supportsThreadRename: true` only if title writes work. Permission modes and reasoning only if honestly mapped. Runtime may narrow, never widen.
 - Permissions use the provider-bridge grammar and BB's generic card. Honor `opencode.json`. BB mode is the ceiling. A fail-closed `unknown` result never approves, including under BB mode `full`.
 - Manual import only. Refuse running sessions. Dedup on `providerId === "opencode"` + `providerThreadId`. Directory comes from the server-confirmed OpenCode session path. No managed worktree invented. Personal project if the path is outside every project.
-- `turn/steer` accepts while a turn is live and delivers via OpenCode `prompt_async` (same session, no second `turn.open`). A JSON-RPC error here is `run.failed` in BB and kills the live turn — do not refuse with `-32601`.
+- `turn/steer` always acks (a JSON-RPC error is BB `run.failed` and kills the live turn). Delivery follows native Settings → General **Steer running threads on Enter**: on → `prompt_async` inject; off (default) → hold until the current prompt settles, then `session.prompt`. No second `turn.open`.
 - A listed `/name` send uses `session.command`, not `session.prompt`. Unknown slashes and slash+attachment sends stay `session.prompt`. `skills/configure` is accepted; the plugin never writes OpenCode config files.
 - Every `session.prompt` includes `agent`. Never omit it (OpenCode #21728). Resume and import do not write an agent. A send is refused (no `session.prompt`) while the picker is in the unknown-agent error state, and at flush if the enqueue-stamped agent is no longer a selectable primary.
 - Pin the current stable `@opencode-ai/sdk` / `opencode serve` surface. Do not call V2-only routes.
@@ -199,7 +199,7 @@ Why: the BB timeline *is* the OpenCode turn — text, thinking, tools, live bash
 - [x] ISC-17: Tool parts appear as BB tool or command items.
 - [x] ISC-18: Bash/shell progress updates the same command item live.
 - [x] ISC-19: Stop calls `session.interrupt` on the parent and on each listed live Task child of that parent; the parent turn reaches `turn.boundary`.
-- [x] ISC-20: `turn/steer` acks, emits `input.accepted`, and calls `prompt_async` on the live session. It does not emit `turn.boundary` and does not start a second prompt HTTP wait.
+- [x] ISC-20: `turn/steer` acks and emits `input.accepted`. Inject when BB `steerActiveThreadOnEnter` is on; otherwise queue until settle. Never `-32601`.
 - [x] ISC-21: An attachment type OpenCode cannot take fails the whole send with a visible error. The part is not stripped and sent anyway.
 - [x] ISC-65: A supported attachment type is included in the `session.prompt` parts.
 - [x] ISC-22: Events for OpenCode session B never appear as items on BB thread A while both turns run.
@@ -466,7 +466,7 @@ Probes attach at the seam the user or BB core actually consumes. No claim is clo
 - 2026-08-22 (agent hydrate fog): 1.18.21 `UserMessage` requires `agent`. ISC-29.3 uses last user `info.agent`. Absent / hidden / system / subagent → default primary. Unknown id → visible error, send refused.
 - 2026-08-22 (Task permission correlation): `permission.asked.sessionID` + `Session.parentID`. In-flight parent match → parent card, reply to child ids. Else uncorrelated.
 - 2026-08-22 (agent stamp channel): Picker `onChange` stays local (ISC-29.2). Selected agent reaches the bridge via `stampAgent` RPC at submit/enqueue (not on click) plus `deriveProviderOptions`. Queued stamps are a FIFO consumed after the in-flight turn settles so flush keeps the enqueue agent (ISC-29.5).
-- 2026-08-23 (steer): ISA `-32601` was wrong. BB always sends `turn/steer` for a mid-turn composer send. A JSON-RPC error is `client/turn/rejected` ("Steer failed") plus `run.failed`, which stops the live session. V1 acks, emits `input.accepted`, and `POST /session/:id/prompt_async` so OpenCode injects the user message into the running loop. No second `turn.open`. Tombstone: refuse-steer-so-BB-queues.
+- 2026-08-23 (steer): ISA `-32601` was wrong. A JSON-RPC error is `client/turn/rejected` ("Steer failed") plus `run.failed`, which stops the live session. V1 always acks. Delivery follows native `steerActiveThreadOnEnter` (default off = queue until settle; on = `prompt_async`). Tombstone: refuse-steer-so-BB-queues; tombstone: always-inject.
 
 ## Proposed file tree (locked after spikes)
 

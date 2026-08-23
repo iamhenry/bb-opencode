@@ -115,6 +115,7 @@ interface LiveTurn {
   parentBoundaryEmitted: boolean;
   liveChildIds: Set<string>;
   childWork: Map<string, ChildWork>;
+  pendingPrompts: Array<Record<string, unknown>>;
 }
 
 interface BoundSession {
@@ -446,6 +447,11 @@ export async function hydrateBoundSession(sessionId: string): Promise<boolean> {
   if (!threadId || !client) return false;
   await replayHydrate(threadId, sessionId, client);
   return true;
+}
+
+function steerDeliveryOf(options: unknown): "inject" | "queue" {
+  const value = providerOptions(options).steerDelivery;
+  return value === "inject" ? "inject" : "queue";
 }
 
 function providerOptions(options: unknown): Record<string, unknown> {
@@ -1552,6 +1558,26 @@ async function settleIssuedTurn(
 ): Promise<void> {
   const liveAfter = liveTurns.get(threadId);
   if (!liveAfter || liveAfter.parentBoundaryEmitted) return;
+  const queued = liveAfter.pendingPrompts.shift();
+  if (queued) {
+    try {
+      await active.prompt(sessionId, queued);
+      await settleIssuedTurn(threadId, sessionId, active);
+    } catch (error) {
+      liveAfter.parentBoundaryEmitted = true;
+      liveTurns.delete(threadId);
+      emitDeltas(threadId, [
+        {
+          kind: "turn.boundary",
+          status: "failed",
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+          },
+        },
+      ]);
+    }
+    return;
+  }
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
   const leftovers: ThreadDelta[] = [];
   for (const message of assistantsAfterLastUser(messages)) {
@@ -1621,11 +1647,15 @@ async function runSteer(args: {
     ...built.prompt,
     ...(variant ? { variant } : {}),
   };
-  try {
-    await active.promptAsync(args.sessionId, body);
-  } catch {
-    void active.prompt(args.sessionId, body);
+  if (steerDeliveryOf(args.options) === "inject") {
+    try {
+      await active.promptAsync(args.sessionId, body);
+    } catch {
+      void active.prompt(args.sessionId, body);
+    }
+    return;
   }
+  live.pendingPrompts.push(body);
 }
 
 async function runPrompt(args: {
@@ -1688,6 +1718,7 @@ async function runPrompt(args: {
     parentBoundaryEmitted: false,
     liveChildIds: new Set(),
     childWork: new Map(),
+    pendingPrompts: [],
   };
   liveTurns.set(args.threadId, live);
   const deltas: ThreadDelta[] = [];

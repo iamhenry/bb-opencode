@@ -68,7 +68,7 @@ describe("provider bridge", () => {
     return fake;
   }
 
-  it("accepts turn/steer into a live turn without failing it (ISC-20)", async () => {
+  it("injects turn/steer when BB steer-on-Enter is on (ISC-20)", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -88,6 +88,10 @@ describe("provider bridge", () => {
         expectedTurnId: "turn_1",
         clientRequestId: "req_steer",
         input: [{ type: "text", text: "use the v2 API", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
       }),
     });
     await flush();
@@ -107,6 +111,43 @@ describe("provider bridge", () => {
     expect(fake.lastPrompt?.body).toMatchObject({
       agent: "build",
       parts: [{ type: "text", text: "use the v2 API" }],
+    });
+  });
+
+  it("queues turn/steer until the live turn settles when steer-on-Enter is off", async () => {
+    const fake = installFake();
+    let release: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise((resolve) => {
+        release = () => resolve({});
+      });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    const prompts = fake.calls.prompt;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_queue",
+        input: [{ type: "text", text: "after this, update the README", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(0);
+    expect(fake.calls.prompt).toBe(prompts);
+    release?.();
+    await flush();
+    expect(fake.calls.prompt).toBe(prompts + 1);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "build",
+      parts: [{ type: "text", text: "after this, update the README" }],
     });
   });
 

@@ -39,6 +39,7 @@ const stamps = createAgentStampStore();
 const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
 const seenThreadIds = new Set<string>();
+let steerActiveThreadOnEnter = false;
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
@@ -60,6 +61,23 @@ export default async function plugin(bb: BbPluginApi) {
   await readConfiguredAgent();
   settings.onChange(() => {
     void readConfiguredAgent();
+  });
+  const refreshSteerSetting = async () => {
+    try {
+      const config = await bb.sdk.system.config();
+      steerActiveThreadOnEnter = Boolean(
+        config.generalSettings.steerActiveThreadOnEnter,
+      );
+    } catch {
+      steerActiveThreadOnEnter = false;
+    }
+  };
+  await refreshSteerSetting();
+  bb.sdk.subscribe({
+    event: "system:config-changed",
+    callback: () => {
+      void refreshSteerSetting();
+    },
   });
 
   bb.agents.experimental_registerProvider({
@@ -101,6 +119,7 @@ export default async function plugin(bb: BbPluginApi) {
         agent,
         ...(adopt ? { adoptSessionId: adopt.opencodeSessionId } : {}),
         permissionMode: ctx.permissionMode,
+        steerDelivery: steerActiveThreadOnEnter ? "inject" : "queue",
       };
     },
   });
