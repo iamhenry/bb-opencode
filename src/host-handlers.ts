@@ -27,7 +27,10 @@ export async function handleLogs(limit = 80): Promise<{ lines: string[] }> {
   return { lines: [...serve, ...events].slice(-limit) };
 }
 
-export async function handleListSessions(dataDir: string) {
+export async function handleListSessions(
+  dataDir: string,
+  parentSessionId?: string,
+) {
   let attached;
   try {
     attached = await attachOrSpawn({ dataDir, spawn: false });
@@ -35,7 +38,18 @@ export async function handleListSessions(dataDir: string) {
     return { sessions: [] };
   }
   const client = acquire(attached.url);
-  const sessions = await client.listSessions();
+  let sessions;
+  if (parentSessionId) {
+    let directory: string | undefined;
+    try {
+      directory = (await client.getSession(parentSessionId)).directory;
+    } catch {
+      directory = undefined;
+    }
+    sessions = await client.sessionChildren(parentSessionId, directory);
+  } else {
+    sessions = await client.listSessions();
+  }
   const statuses = new Set<string>();
   try {
     const response = await fetch(`${attached.url}/session/status`);

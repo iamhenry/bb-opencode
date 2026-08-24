@@ -30,7 +30,9 @@ export const hostContract = defineRpcContract({
     output: z.object({ lines: z.array(z.string()) }).strict(),
   },
   listSessions: {
-    input: z.object({}).strict(),
+    input: z.object({
+      parentSessionId: z.string().min(1).optional(),
+    }).strict(),
     output: z.object({
       sessions: z.array(
         z

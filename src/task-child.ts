@@ -47,3 +47,13 @@ export function taskDelegationLabel(part: {
   }
   return title || "Task";
 }
+
+/** OpenCode wraps Task output in <task>; BB should show the result only. */
+export function taskResultSummary(output: string | undefined): string | undefined {
+  if (!output) return undefined;
+  const result = output.match(/<task_result>\s*([\s\S]*?)\s*<\/task_result>/i);
+  if (result?.[1]) return result[1].trim();
+  const trimmed = output.trim();
+  if (trimmed.startsWith("<task")) return undefined;
+  return output;
+}

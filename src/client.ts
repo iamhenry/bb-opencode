@@ -37,7 +37,7 @@ export interface OpenCodeClient {
   getSession(id: string): Promise<OpenCodeSession>;
   updateSession(id: string, body: { title: string }): Promise<OpenCodeSession>;
   listSessions(): Promise<OpenCodeSession[]>;
-  sessionChildren(id: string): Promise<OpenCodeSession[]>;
+  sessionChildren(id: string, directory?: string): Promise<OpenCodeSession[]>;
   sessionMessages(id: string): Promise<
     Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
   >;
@@ -272,8 +272,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const result = await sdk.session.list();
       return unwrap<OpenCodeSession[]>(result) ?? [];
     },
-    async sessionChildren(id) {
-      const result = await sdk.session.children({ path: { id } });
+    async sessionChildren(id, directory) {
+      const result = await sdk.session.children({
+        path: { id },
+        ...(directory ? { query: { directory } } : {}),
+      });
       return unwrap<OpenCodeSession[]>(result) ?? [];
     },
     async sessionMessages(id) {

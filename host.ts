@@ -39,8 +39,11 @@ export default experimental_defineHostEntry({
     async logs(input) {
       return handleLogs(input.limit);
     },
-    async listSessions(_input, context) {
-      return handleListSessions(context.experimental_paths.dataDir);
+    async listSessions(input, context) {
+      return handleListSessions(
+        context.experimental_paths.dataDir,
+        input.parentSessionId,
+      );
     },
     async sessionSnapshot(input, context) {
       return handleSessionSnapshot(

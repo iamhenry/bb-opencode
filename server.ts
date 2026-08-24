@@ -876,24 +876,42 @@ async function ensureRunningTaskChildThreads(
 ): Promise<void> {
   const hostId = await firstHostId(bb);
   if (!hostId) return;
-  const listed = (await host.call("listSessions", {}, { hostId })) as ListedSessions;
   const threads = await listProjectThreads(bb);
   const imported = importedSessionIds(threads);
-  const bySession = new Map<string, ReturnType<typeof fullThreadFields>>();
-  for (const thread of threads) {
-    const fields = fullThreadFields(thread);
-    if (fields.providerId === PROVIDER_ID && fields.providerThreadId) {
-      bySession.set(fields.providerThreadId, fields);
+  const parents = threads
+    .map((thread) => fullThreadFields(thread))
+    .filter(
+      (thread) =>
+        thread.providerId === PROVIDER_ID &&
+        thread.providerThreadId &&
+        thread.id &&
+        thread.projectId &&
+        !thread.parentThreadId,
+    );
+  const listedById = new Map<string, ListedSessions["sessions"][number]>();
+  for (const parent of parents) {
+    const listed = (await host.call(
+      "listSessions",
+      { parentSessionId: parent.providerThreadId },
+      { hostId },
+    )) as ListedSessions;
+    for (const session of listed.sessions) {
+      listedById.set(session.id, {
+        ...session,
+        parentID: session.parentID ?? parent.providerThreadId,
+      });
     }
   }
-  for (const session of listed.sessions) {
+  for (const session of listedById.values()) {
     if (!session.parentID) continue;
-    const parent = bySession.get(session.parentID);
+    const parent = parents.find((row) => row.providerThreadId === session.parentID);
+    const parentActive =
+      parent?.status === "active" || parent?.status === "running";
     if (
       !shouldAutoBindTaskChild({
         parentBound: Boolean(parent?.id && parent.projectId),
         alreadyImported: imported.has(session.id),
-        running: session.running,
+        running: session.running || Boolean(parentActive),
       })
     ) {
       continue;

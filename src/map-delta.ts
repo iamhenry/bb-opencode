@@ -1,5 +1,9 @@
 import { isBashToolName } from "./permissions/map.js";
-import { taskChildSessionId, taskDelegationLabel } from "./task-child.js";
+import {
+  taskChildSessionId,
+  taskDelegationLabel,
+  taskResultSummary,
+} from "./task-child.js";
 import {
   fileChangePresentation,
   fileChangesFromToolInput,
@@ -199,8 +203,9 @@ function coreToolItem(
       childRef: child,
       label: taskDelegationLabel(part),
       background: false,
-      summary:
+      summary: taskResultSummary(
         typeof part.state?.output === "string" ? part.state.output : undefined,
+      ),
     };
   }
   return {
