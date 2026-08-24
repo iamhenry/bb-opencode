@@ -14,6 +14,9 @@ const probeOutput = z
     authError: z.string().nullable(),
     error: z.string().nullable(),
     needsConfiguration: z.boolean(),
+    serveCwd: z.string().nullable(),
+    configSummary: z.string().nullable(),
+    serveLog: z.array(z.string()),
   })
   .strict();
 

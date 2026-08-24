@@ -1,7 +1,7 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
 import { configDefaultModelId } from "./catalog.js";
 import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
-import { attachOrSpawn, readLock } from "./process.js";
+import { attachOrSpawn, readLock, recentServeLog } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
@@ -22,7 +22,9 @@ export async function handleProbe(dataDir: string): Promise<ProbeResult> {
 }
 
 export async function handleLogs(limit = 80): Promise<{ lines: string[] }> {
-  return { lines: recentUnknownLogLines().slice(-limit) };
+  const serve = recentServeLog(Math.min(40, limit)).map((line) => `serve ${line}`);
+  const events = recentUnknownLogLines();
+  return { lines: [...serve, ...events].slice(-limit) };
 }
 
 export async function handleListSessions(dataDir: string) {

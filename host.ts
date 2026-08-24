@@ -31,6 +31,9 @@ export default experimental_defineHostEntry({
         authError: result.authError ?? null,
         error: result.error ?? null,
         needsConfiguration: result.needsConfiguration,
+        serveCwd: result.serveCwd ?? null,
+        configSummary: result.configSummary ?? null,
+        serveLog: result.serveLog ?? [],
       };
     },
     async logs(input) {

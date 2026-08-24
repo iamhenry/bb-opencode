@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   answersForOpenCode,
   isQuestionAskEvent,
+  questionAskFromToolPart,
   toUserQuestionPayload,
   unwrapQuestionAsk,
 } from "../src/questions.js";
@@ -65,4 +66,26 @@ describe("questions", () => {
       }),
     ).toEqual([["Yes"]]);
   });
+
+  it("rebuilds an ask from a question tool part",
+    () => {
+      expect(
+        questionAskFromToolPart("ses_1", {
+          id: "prt_q",
+          tool: "question",
+          state: {
+            status: "running",
+            input: {
+              questions: [
+                {
+                  question: "Ship it?",
+                  options: [{ label: "Yes" }, { label: "No" }],
+                },
+              ],
+            },
+          },
+        }),
+      ).toMatchObject({ id: "prt_q", sessionID: "ses_1" });
+    },
+  );
 });

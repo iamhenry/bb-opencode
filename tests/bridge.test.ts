@@ -1097,6 +1097,57 @@ describe("provider bridge", () => {
     ]);
   });
 
+  it("cards a question tool part as native user_question", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: {
+          id: "prt_q",
+          type: "tool",
+          tool: "question",
+          state: {
+            status: "running",
+            input: {
+              questions: [
+                {
+                  question: "Section name?",
+                  options: [{ label: "A" }, { label: "B" }],
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const request = messages.find(
+      (message) => message.method === "interaction/request",
+    );
+    expect(request).toMatchObject({
+      id: "oc-q-prt_q",
+      params: {
+        payload: {
+          kind: "user_question",
+          questions: [{ id: "prt_q:q1", prompt: "Section name?" }],
+        },
+      },
+    });
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind?: string; tool?: string }> })
+          ?.deltas;
+        return deltas?.some((delta) => delta.tool === "question");
+      }),
+    ).toBe(false);
+  });
+
   it("routes a listed /command through session.command (ISC-81)", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });

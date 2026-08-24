@@ -76,6 +76,8 @@ import {
 import {
   answersForOpenCode,
   isQuestionAskEvent,
+  isQuestionToolName,
+  questionAskFromToolPart,
   toUserQuestionPayload,
   unwrapQuestionAsk,
   type BbUserQuestionPayload,
@@ -172,6 +174,7 @@ let createCount = 0;
 let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 let titleWatchEpoch = 0;
+const pollInFlight = new Set<string>();
 const lastTitles = new Map<string, string>();
 const lastRevertCursors = new Map<string, string | null>();
 const lastTodos = new Map<string, string>();
@@ -207,6 +210,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   lastTodos.clear();
   compactIssued.clear();
   compactInFlight.clear();
+  pollInFlight.clear();
   rewindRestores.clear();
   modelContextWindows.clear();
   if (titleTimer) {
@@ -274,7 +278,10 @@ async function ensureClient(): Promise<OpenCodeClient> {
   if (!isVersionInWindow(health.version)) {
     throw new Error(versionSkewMessage(health.version));
   }
-  void ensureSubscribed(client);
+  void ensureSubscribed(client).catch((error) => {
+    unknownLogLines.push(`subscribe-error ${String(error)}`);
+    dropConnection("OpenCode event stream failed to start");
+  });
   return client;
 }
 
@@ -293,10 +300,27 @@ function failLiveTurns(message: string): void {
   liveTurns.clear();
 }
 
+function dropConnection(message: string): void {
+  const had = Boolean(client || subscribed);
+  subscribed = false;
+  client = undefined;
+  failLiveTurns(message);
+  if (!had) return;
+  notify(BRIDGE_NOTIFICATION_METHODS.providerRecovery, {
+    kind: "restartRecommended",
+    message,
+    retryable: true,
+  });
+}
+
 async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
   if (subscribed) return;
   subscribed = true;
   const sub = await active.subscribe((event) => {
+    if (event.type === "server.disconnected") {
+      dropConnection("OpenCode event stream closed");
+      return;
+    }
     void onOpenCodeEvent(event).catch((error) => {
       unknownLogLines.push(`event-handler-error ${String(error)}`);
     });
@@ -305,7 +329,7 @@ async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
     const original = handle.unsubscribe;
     handle.unsubscribe = () => {
       original.call(handle);
-      failLiveTurns("OpenCode event stream closed");
+      dropConnection("OpenCode event stream closed");
     };
   });
 }
@@ -336,12 +360,18 @@ function startTitlePoller(): void {
   titleTimer = setInterval(() => {
     void Promise.all(
       [...sessionToThread.keys()].map(async (sessionId) => {
-        await syncSessionTitle(sessionId);
-        await syncPendingPermissions(sessionId);
-        await syncPendingQuestions(sessionId);
-        await syncLiveTurnParts(sessionId);
-        await syncSessionRevert(sessionId);
-        await syncSessionTodos(sessionId);
+        if (pollInFlight.has(sessionId)) return;
+        pollInFlight.add(sessionId);
+        try {
+          await syncSessionTitle(sessionId);
+          await syncPendingPermissions(sessionId);
+          await syncPendingQuestions(sessionId);
+          await syncLiveTurnParts(sessionId);
+          await syncSessionRevert(sessionId);
+          await syncSessionTodos(sessionId);
+        } finally {
+          pollInFlight.delete(sessionId);
+        }
       }),
     );
   }, 800);
@@ -368,6 +398,10 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
             part,
             sessionId,
           }),
+        );
+        void maybeCardQuestionFromPart(
+          sessionId,
+          part as Record<string, unknown>,
         );
       }
     }
@@ -464,8 +498,6 @@ async function syncPendingQuestions(sessionId: string): Promise<void> {
   if (!client) return;
   const threadId = sessionToThread.get(sessionId);
   if (!threadId) return;
-  const live = liveTurns.get(threadId);
-  if (!live || live.parentBoundaryEmitted) return;
   try {
     const pending = await client.listPendingQuestions(sessionId);
     for (const ask of pending) {
@@ -616,6 +648,40 @@ async function rememberCatalogWindows(active: OpenCodeClient): Promise<void> {
   }
 }
 
+function questionPartFromEvent(event: {
+  type: string;
+  properties?: unknown;
+}): Record<string, unknown> | undefined {
+  const properties =
+    event.properties && typeof event.properties === "object"
+      ? (event.properties as Record<string, unknown>)
+      : undefined;
+  if (!properties) return undefined;
+  if (event.type === "session.next.tool.called") {
+    const tool = typeof properties.tool === "string" ? properties.tool : undefined;
+    if (!isQuestionToolName(tool)) return undefined;
+    return {
+      id: properties.callID,
+      callID: properties.callID,
+      tool,
+      state: { status: "running", input: properties.input },
+    };
+  }
+  if (
+    event.type === "message.part.updated" ||
+    event.type === "message.part.delta"
+  ) {
+    const part =
+      properties.part && typeof properties.part === "object"
+        ? (properties.part as Record<string, unknown>)
+        : properties;
+    if (!part || typeof part.tool !== "string") return undefined;
+    if (!isQuestionToolName(part.tool)) return undefined;
+    return part;
+  }
+  return undefined;
+}
+
 function eventSessionId(event: { type: string; properties?: unknown }): string | undefined {
   const properties = event.properties;
   if (!properties || typeof properties !== "object") return undefined;
@@ -645,11 +711,15 @@ async function onOpenCodeEvent(event: {
   properties?: unknown;
 }): Promise<void> {
   if (event.type === "server.disconnected") {
-    failLiveTurns("OpenCode event stream closed");
+    dropConnection("OpenCode event stream closed");
     return;
   }
   const sessionId = eventSessionId(event);
   if (!sessionId) {
+    if (isQuestionAskEvent(event.type)) {
+      const ask = unwrapQuestionAsk(event.properties);
+      if (ask) await handleQuestionAsked(event.properties, ask.sessionID);
+    }
     if (event.type.startsWith("permission.")) {
       return;
     }
@@ -667,6 +737,10 @@ async function onOpenCodeEvent(event: {
   if (isPermissionAskEvent(event.type)) {
     await handlePermissionAsked(event.properties, sessionId);
     return;
+  }
+  const questionPart = questionPartFromEvent(event);
+  if (questionPart) {
+    await maybeCardQuestionFromPart(sessionId, questionPart);
   }
 
   if (event.type === "todo.updated") {
@@ -1034,10 +1108,9 @@ async function handleQuestionAsked(
   const ask = unwrapQuestionAsk(raw);
   const sessionId = ask?.sessionID ?? fallbackSessionId;
   const threadId = sessionToThread.get(sessionId);
-  const live = threadId ? liveTurns.get(threadId) : undefined;
   const requestId = ask?.id;
   const payload = ask ? toUserQuestionPayload(ask) : undefined;
-  if (!threadId || !live || !requestId || !payload || !client) {
+  if (!threadId || !requestId || !payload || !client) {
     if (client && requestId) {
       await client.rejectQuestion({ requestID: requestId, sessionID: sessionId }).catch(() => undefined);
     }
@@ -1062,6 +1135,78 @@ async function handleQuestionAsked(
       payload,
     },
   });
+}
+
+async function maybeCardQuestionFromPart(
+  sessionId: string,
+  part: Record<string, unknown>,
+): Promise<void> {
+  if (!isQuestionToolName(
+    typeof part.tool === "string" ? part.tool : undefined,
+  )) {
+    return;
+  }
+  if (client) {
+    try {
+      const pending = await client.listPendingQuestions(sessionId);
+      if (pending.length > 0) {
+        for (const ask of pending) {
+          await handleQuestionAsked(ask, sessionId);
+        }
+        return;
+      }
+    } catch {
+      /* fall through to the tool snapshot */
+    }
+  }
+  const synthesized = questionAskFromToolPart(sessionId, part);
+  if (synthesized) {
+    await handleQuestionAsked(synthesized, sessionId);
+    return;
+  }
+  const state =
+    part.state && typeof part.state === "object"
+      ? (part.state as Record<string, unknown>)
+      : undefined;
+  const input =
+    (state?.input && typeof state.input === "object"
+      ? (state.input as Record<string, unknown>)
+      : undefined) ??
+    (part.input && typeof part.input === "object"
+      ? (part.input as Record<string, unknown>)
+      : undefined);
+  if (!input || !Array.isArray(input.questions)) {
+    return;
+  }
+  const requestId =
+    (typeof part.id === "string" && part.id) ||
+    (typeof part.callID === "string" && part.callID) ||
+    undefined;
+  const failKey = `oc-q-fail-${sessionId}:${requestId ?? "unknown"}`;
+  if (pendingQuestion.has(failKey)) return;
+  pendingQuestion.set(failKey, {
+    requestId: requestId ?? failKey,
+    sessionId,
+    threadId: sessionToThread.get(sessionId) ?? "",
+    payload: { kind: "user_question", questions: [] },
+  });
+  if (client && requestId) {
+    await client
+      .rejectQuestion({ requestID: requestId, sessionID: sessionId })
+      .catch(() => undefined);
+  }
+  const threadId = sessionToThread.get(sessionId);
+  if (threadId) {
+    emitDeltas(threadId, [
+      {
+        kind: "provider.warning",
+        category: "general",
+        summary: "Could not show OpenCode question",
+        details: "The ask never became a native picker",
+        vouchedTurn: true,
+      },
+    ]);
+  }
 }
 
 async function rejectPendingQuestions(threadId: string): Promise<void> {
@@ -1441,6 +1586,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       return;
     }
     void (async () => {
+      let answered = false;
       try {
         const active = await ensureClient();
         const options = providerOptions(parsed.data.options);
@@ -1466,6 +1612,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         bindSession(parsed.data.threadId, bound);
         emitDeltas(parsed.data.threadId, [{ kind: "session.reset" }]);
         respondResult(id, { providerThreadId: sessionId });
+        answered = true;
         if (adoptId) {
           await replayHydrate(parsed.data.threadId, sessionId, active);
         }
@@ -1488,11 +1635,23 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           });
         }
       } catch (error) {
-        respondError(
-          id,
-          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
-          error instanceof Error ? error.message : String(error),
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        if (!answered) {
+          respondError(id, BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR, message);
+          return;
+        }
+        const live = liveTurns.get(parsed.data.threadId);
+        if (live && !live.parentBoundaryEmitted) {
+          live.parentBoundaryEmitted = true;
+          liveTurns.delete(parsed.data.threadId);
+          emitDeltas(parsed.data.threadId, [
+            {
+              kind: "turn.boundary",
+              status: "failed",
+              error: { message },
+            },
+          ]);
+        }
       }
     })();
   },
@@ -1658,6 +1817,17 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       input: parsed.data.input,
       options: parsed.data.options,
       clientRequestId: parsed.data.clientRequestId,
+    }).catch((error) => {
+      unknownLogLines.push(`steer-error ${String(error)}`);
+      emitDeltas(parsed.data.threadId, [
+        {
+          kind: "provider.warning",
+          category: "general",
+          summary: "Could not deliver follow-up",
+          details: error instanceof Error ? error.message : String(error),
+          vouchedTurn: true,
+        },
+      ]);
     });
   },
 
@@ -1857,7 +2027,18 @@ async function runSteer(args: {
     requested,
     sessionId: args.sessionId,
   });
-  if (!resolved.ok) return;
+  if (!resolved.ok) {
+    emitDeltas(args.threadId, [
+      {
+        kind: "provider.warning",
+        category: "general",
+        summary: "Could not deliver follow-up",
+        details: resolved.reason,
+        vouchedTurn: true,
+      },
+    ]);
+    return;
+  }
   const built = buildPrompt({
     agent: resolved.agent,
     input: args.input,
@@ -1866,7 +2047,18 @@ async function runSteer(args: {
         ? ((args.options as { model: string }).model as string)
         : undefined,
   });
-  if (!built.ok) return;
+  if (!built.ok) {
+    emitDeltas(args.threadId, [
+      {
+        kind: "provider.warning",
+        category: "general",
+        summary: "Could not deliver follow-up",
+        details: built.reason,
+        vouchedTurn: true,
+      },
+    ]);
+    return;
+  }
   if (args.clientRequestId) {
     emitDeltas(args.threadId, [
       { kind: "input.accepted", clientRequestId: args.clientRequestId },
@@ -1880,8 +2072,20 @@ async function runSteer(args: {
   if (steerDeliveryOf(args.options) === "inject") {
     try {
       await active.promptAsync(args.sessionId, body);
-    } catch {
-      void active.prompt(args.sessionId, body);
+    } catch (error) {
+      try {
+        await active.prompt(args.sessionId, body);
+      } catch {
+        emitDeltas(args.threadId, [
+          {
+            kind: "provider.warning",
+            category: "general",
+            summary: "Could not deliver follow-up",
+            details: error instanceof Error ? error.message : String(error),
+            vouchedTurn: true,
+          },
+        ]);
+      }
     }
     return;
   }

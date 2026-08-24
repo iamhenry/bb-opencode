@@ -15,6 +15,9 @@ type Probe = {
   authError: string | null;
   error: string | null;
   needsConfiguration: boolean;
+  serveCwd: string | null;
+  configSummary: string | null;
+  serveLog: string[];
 };
 
 export function SettingsSection() {
@@ -48,6 +51,14 @@ export function SettingsSection() {
           <dd>{probe.supportedRange}</dd>
           <dt>SDK</dt>
           <dd>{probe.sdkPin}</dd>
+          <dt>Serve cwd</dt>
+          <dd>{probe.serveCwd ?? "-"}</dd>
+          {probe.configSummary ? (
+            <>
+              <dt>Config</dt>
+              <dd>{probe.configSummary}</dd>
+            </>
+          ) : null}
         </dl>
       ) : (
         <p>Probing OpenCode…</p>

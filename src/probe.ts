@@ -8,8 +8,8 @@ import {
 import type { OpenCodeClient } from "./client.js";
 import {
   attachOrSpawn,
-  pidAlive,
   readLock,
+  recentServeLog,
   resolveOpenCodeBinary,
 } from "./process.js";
 
@@ -25,6 +25,31 @@ export interface ProbeResult {
   authError?: string;
   error?: string;
   needsConfiguration: boolean;
+  serveCwd?: string;
+  configSummary?: string;
+  serveLog: string[];
+}
+
+function rangeLabel(): string {
+  return `${SERVER_VERSION_MIN}–<${SERVER_VERSION_MAX_EXCLUSIVE}`;
+}
+
+export function summarizeOpenCodeConfig(config: unknown): string | undefined {
+  if (!config || typeof config !== "object") return undefined;
+  const record = config as Record<string, unknown>;
+  const permission = record.permission ?? record.permissions;
+  const snippet = {
+    ...(typeof record.directory === "string"
+      ? { directory: record.directory }
+      : {}),
+    ...(permission !== undefined ? { permission } : {}),
+    ...(typeof record.model === "string" ? { model: record.model } : {}),
+    ...(typeof record.small_model === "string"
+      ? { small_model: record.small_model }
+      : {}),
+  };
+  const text = JSON.stringify(snippet);
+  return text === "{}" ? undefined : text.slice(0, 500);
 }
 
 export async function probeOpenCode(args: {
@@ -32,7 +57,7 @@ export async function probeOpenCode(args: {
   acquire: (url: string) => OpenCodeClient;
 }): Promise<ProbeResult> {
   const binaryPath = resolveOpenCodeBinary();
-  const range = `${SERVER_VERSION_MIN}–<${SERVER_VERSION_MAX_EXCLUSIVE}`;
+  const range = rangeLabel();
   if (!binaryPath) {
     return {
       binaryPath: undefined,
@@ -45,25 +70,40 @@ export async function probeOpenCode(args: {
       sdkPin: SDK_PIN,
       error: "OpenCode binary not found on PATH",
       needsConfiguration: true,
+      serveLog: recentServeLog(),
     };
   }
 
   try {
-    const attached = await attachOrSpawn({ dataDir: args.dataDir, binary: binaryPath });
+    const attached = await attachOrSpawn({
+      dataDir: args.dataDir,
+      binary: binaryPath,
+      spawn: false,
+    });
     const client = args.acquire(attached.url);
     const health = await client.health();
+    let configSummary: string | undefined;
+    try {
+      configSummary = summarizeOpenCodeConfig(await client.getConfig());
+    } catch {
+      /* config is diagnostic-only */
+    }
+    const lock = readLock(args.dataDir);
     if (!isVersionInWindow(health.version)) {
       return {
         binaryPath,
         serverVersion: health.version,
-        attached: !attached.spawned,
-        spawned: attached.spawned,
+        attached: true,
+        spawned: false,
         port: attached.port,
         pid: attached.pid,
         supportedRange: range,
         sdkPin: SDK_PIN,
         error: versionSkewMessage(health.version),
         needsConfiguration: true,
+        serveCwd: attached.cwd ?? lock?.cwd,
+        configSummary,
+        serveLog: recentServeLog(),
       };
     }
     let authError: string | undefined;
@@ -75,25 +115,27 @@ export async function probeOpenCode(args: {
     } catch (error) {
       authError = error instanceof Error ? error.message : String(error);
     }
-    const lock = readLock(args.dataDir);
     return {
       binaryPath,
       serverVersion: health.version,
-      attached: !attached.spawned,
-      spawned: attached.spawned,
+      attached: true,
+      spawned: false,
       port: attached.port,
       pid: lock?.pid ?? attached.pid,
       supportedRange: range,
       sdkPin: SDK_PIN,
       authError,
       needsConfiguration: false,
+      serveCwd: attached.cwd ?? lock?.cwd,
+      configSummary,
+      serveLog: recentServeLog(),
     };
   } catch (error) {
     const lock = readLock(args.dataDir);
     return {
       binaryPath,
       serverVersion: undefined,
-      attached: Boolean(lock && pidAlive(lock.pid)),
+      attached: false,
       spawned: false,
       port: lock?.port,
       pid: lock?.pid,
@@ -101,6 +143,8 @@ export async function probeOpenCode(args: {
       sdkPin: SDK_PIN,
       error: error instanceof Error ? error.message : String(error),
       needsConfiguration: true,
+      serveCwd: lock?.cwd,
+      serveLog: recentServeLog(),
     };
   }
 }

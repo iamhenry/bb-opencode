@@ -112,6 +112,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
     composerActions: [],
     experimental_visibility: "always",
+    experimental_strings: {
+      signInHint: "Run `opencode auth` on this machine, then send again.",
+      expiredHint: "OpenCode auth expired. Run `opencode auth` and send again.",
+      installUrl: "https://opencode.ai/docs",
+      brandPrefix: "OpenCode ",
+    },
     experimental_env: { passthrough: ["OPENCODE_BIN"] },
     experimental_deriveProviderOptions(ctx) {
       const stamped = peekAgent(stamps, ctx.threadId);
@@ -175,6 +181,9 @@ export default async function plugin(bb: BbPluginApi) {
           authError: null,
           error: "No enrolled host",
           needsConfiguration: true,
+          serveCwd: null,
+          configSummary: null,
+          serveLog: [],
         };
       }
       const result = await host.call("probe", {}, { hostId });
@@ -592,6 +601,11 @@ export default async function plugin(bb: BbPluginApi) {
               `sdk: ${probe.sdkPin}`,
               probe.authError ? `auth: ${probe.authError}` : "",
               probe.error ? `error: ${probe.error}` : "",
+              `serveCwd: ${probe.serveCwd ?? "-"}`,
+              probe.configSummary ? `config: ${probe.configSummary}` : "",
+              probe.serveLog.length > 0
+                ? `serveLog:\n${probe.serveLog.join("\n")}`
+                : "",
             ]
               .filter(Boolean)
               .join("\n") + "\n",

@@ -46,6 +46,44 @@ export function isQuestionAskEvent(type: string): boolean {
   return type === "question.asked" || type === "question.v2.asked";
 }
 
+export function isQuestionToolName(name: string | undefined): boolean {
+  return name === "question" || name === "Question";
+}
+
+export function questionAskFromToolPart(
+  sessionId: string,
+  part: Record<string, unknown>,
+): OpenCodeQuestionAsk | undefined {
+  const tool =
+    typeof part.tool === "string"
+      ? part.tool
+      : typeof (part as { name?: unknown }).name === "string"
+        ? (part as { name: string }).name
+        : undefined;
+  if (!isQuestionToolName(tool)) return undefined;
+  const state =
+    part.state && typeof part.state === "object"
+      ? (part.state as Record<string, unknown>)
+      : undefined;
+  const input =
+    (state?.input && typeof state.input === "object"
+      ? (state.input as Record<string, unknown>)
+      : undefined) ??
+    (part.input && typeof part.input === "object"
+      ? (part.input as Record<string, unknown>)
+      : undefined);
+  const id =
+    (typeof part.id === "string" && part.id) ||
+    (typeof part.callID === "string" && part.callID) ||
+    undefined;
+  if (!id || !input) return undefined;
+  return unwrapQuestionAsk({
+    id,
+    sessionID: sessionId,
+    questions: input.questions,
+  });
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
     ? (value as Record<string, unknown>)
