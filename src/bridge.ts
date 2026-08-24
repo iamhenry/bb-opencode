@@ -73,6 +73,7 @@ import {
   formatUnknownTally,
   mapPartDelta,
   mapSessionNextEvent,
+  rememberCommandItem,
   tallyUnknown,
   type MapDeltaState,
   type ThreadDelta,
@@ -1686,6 +1687,9 @@ async function handlePermissionAsked(
 
   const requestId = `oc-perm-${mapped.requestId}`;
   debugLog(`ask card ses=${sessionId} id=${mapped.requestId}`);
+  if (live && mapped.subject.kind === "command") {
+    rememberCommandItem(live.mapState, mapped.subject.itemId, mapped.subject.command);
+  }
   pendingPermission.set(requestId, {
     requestId: mapped.requestId,
     sessionId,

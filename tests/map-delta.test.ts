@@ -3,6 +3,7 @@ import {
   createMapDeltaState,
   mapPartDelta,
   mapSessionNextEvent,
+  rememberCommandItem,
 } from "../src/map-delta.js";
 
 describe("map-delta", () => {
@@ -330,6 +331,39 @@ describe("map-delta", () => {
       key: { providerItemId: "call_1" },
       item: { type: "command", command: "echo hi" },
     });
+  });
+
+  it("updates the permission-card command row instead of opening a second one", () => {
+    const state = createMapDeltaState();
+    rememberCommandItem(state, "call_card", "echo hi");
+    const deltas = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "prt_1",
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "completed",
+          input: { command: "echo hi" },
+          metadata: { output: "hi\n" },
+        },
+      },
+    });
+    expect(deltas.some((delta) => delta.kind === "item.open")).toBe(false);
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "command.outputSnapshot",
+        key: { providerItemId: "call_card" },
+        text: "hi\n",
+      }),
+    );
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "item.close",
+        key: { providerItemId: "call_card" },
+      }),
+    );
   });
 
   it("does not reopen a tool already mapped from a poll snapshot", () => {

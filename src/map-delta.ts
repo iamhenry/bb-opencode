@@ -28,6 +28,7 @@ export interface MapDeltaState {
   openedItems: Map<string, "command" | "tool">;
   closedItems: Set<string>;
   lastSnapshots: Map<string, string>;
+  callIdByCommand: Map<string, string>;
 }
 
 export function createMapDeltaState(): MapDeltaState {
@@ -38,7 +39,22 @@ export function createMapDeltaState(): MapDeltaState {
     openedItems: new Map(),
     closedItems: new Set(),
     lastSnapshots: new Map(),
+    callIdByCommand: new Map(),
   };
+}
+
+/** The permission card owns this command row; later bash parts update it. */
+export function rememberCommandItem(
+  state: MapDeltaState,
+  itemId: string,
+  command: string,
+): void {
+  if (!itemId || !command) return;
+  state.callIdByCommand.set(command, itemId);
+  if (!state.openedItems.has(itemId)) state.openedItems.set(itemId, "command");
+  if (!state.itemKeys.has(itemId)) {
+    state.itemKeys.set(itemId, { providerItemId: itemId });
+  }
 }
 
 function nextTextChunk(
@@ -88,6 +104,20 @@ interface PartLike {
     error?: string;
     title?: string;
   };
+}
+
+function commandItemId(
+  part: PartLike,
+  command: string | undefined,
+  state: MapDeltaState,
+  toolName: string,
+): string {
+  return (
+    part.callID ??
+    (command ? state.callIdByCommand.get(command) : undefined) ??
+    part.id ??
+    toolName
+  );
 }
 
 function stringField(
@@ -217,21 +247,20 @@ export function mapPartDelta(args: {
     if (toolName === "question" || toolName === "Question" || isTodoToolName(toolName)) return [];
     const finished =
       part.state?.status === "completed" || part.state?.status === "error";
-    const itemId =
-      isBashToolName(toolName) && part.callID
-        ? part.callID
-        : (part.id ?? part.callID ?? toolName);
+    const command =
+      typeof part.state?.input?.command === "string" &&
+      part.state.input.command.length > 0
+        ? part.state.input.command
+        : undefined;
+    const itemId = isBashToolName(toolName)
+      ? commandItemId(part, command, args.state, toolName)
+      : (part.callID ?? part.id ?? toolName);
     if (args.state.closedItems.has(itemId)) return [];
     const key = deltaKey({ providerItemId: itemId }, parentRef);
     args.state.itemKeys.set(itemId, key);
     const alreadyOpen = args.state.openedItems.has(itemId);
     const kind = isBashToolName(toolName) ? "command" : "tool";
     if (isBashToolName(toolName)) {
-      const command =
-        typeof part.state?.input?.command === "string" &&
-        part.state.input.command.length > 0
-          ? part.state.input.command
-          : undefined;
       if (!command && !finished && !alreadyOpen) return [];
       if (!alreadyOpen) args.state.openedItems.set(itemId, kind);
       const resolvedCommand = command ?? toolName;
