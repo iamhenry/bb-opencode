@@ -1533,6 +1533,46 @@ describe("provider bridge", () => {
     });
   }
 
+  it("opens then fails the first turn if prompt setup dies after identity", async () => {
+    const fake = installFake();
+    fake.client.agents = async () => {
+      throw new Error("agents down");
+    };
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        input: [{ type: "text", text: "write scratch/isc33-probe.txt", mentions: [] }],
+        options: { ...fullOptions, providerOptions: { agent: "build" } },
+      }),
+    });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: expect.objectContaining({ providerThreadId: "ses_1" }),
+        }),
+      ]),
+    );
+    expect(deltaKinds()).toEqual(
+      expect.arrayContaining(["session.reset", "turn.open", "turn.boundary"]),
+    );
+    const failed = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []
+      );
+    }).find((delta) => delta.kind === "turn.boundary");
+    expect(failed).toMatchObject({
+      kind: "turn.boundary",
+      status: "failed",
+      error: { message: "agents down" },
+    });
+    expect(fake.calls.prompt).toBe(0);
+  });
+
   it("routes standalone /compact through session.summarize (ISC-92)", async () => {
     const fake = installFake();
     fake.commands.push({ name: "compact" });

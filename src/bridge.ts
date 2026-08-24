@@ -291,19 +291,28 @@ async function ensureClient(): Promise<OpenCodeClient> {
   return client;
 }
 
-function failLiveTurns(message: string): void {
-  for (const [threadId, live] of liveTurns) {
-    if (live.parentBoundaryEmitted) continue;
-    live.parentBoundaryEmitted = true;
-    emitDeltas(threadId, [
-      {
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message },
-      },
-    ]);
+function failIssuedTurn(threadId: string, message: string): void {
+  const live = liveTurns.get(threadId);
+  if (live?.parentBoundaryEmitted) {
+    liveTurns.delete(threadId);
+    return;
   }
-  liveTurns.clear();
+  if (live) {
+    live.parentBoundaryEmitted = true;
+    liveTurns.delete(threadId);
+  }
+  emitDeltas(threadId, [
+    {
+      kind: "turn.boundary",
+      status: "failed",
+      error: { message },
+    },
+  ]);
+}
+
+function failLiveTurns(message: string): void {
+  const ids = [...liveTurns.keys()];
+  for (const threadId of ids) failIssuedTurn(threadId, message);
 }
 
 function serveLost(message: string): void {
@@ -1671,18 +1680,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           respondError(id, BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR, message);
           return;
         }
-        const live = liveTurns.get(parsed.data.threadId);
-        if (live && !live.parentBoundaryEmitted) {
-          live.parentBoundaryEmitted = true;
-          liveTurns.delete(parsed.data.threadId);
-          emitDeltas(parsed.data.threadId, [
-            {
-              kind: "turn.boundary",
-              status: "failed",
-              error: { message },
-            },
-          ]);
-        }
+        failIssuedTurn(parsed.data.threadId, message);
       }
     })();
   },
@@ -1809,15 +1807,10 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           clientRequestId: parsed.data.clientRequestId,
         });
       } catch (error) {
-        emitDeltas(parsed.data.threadId, [
-          {
-            kind: "turn.boundary",
-            status: "failed",
-            error: {
-              message: error instanceof Error ? error.message : String(error),
-            },
-          },
-        ]);
+        failIssuedTurn(
+          parsed.data.threadId,
+          error instanceof Error ? error.message : String(error),
+        );
       }
     })();
   },
@@ -2291,7 +2284,35 @@ async function runPrompt(args: {
   options: unknown;
   clientRequestId?: string;
 }): Promise<void> {
-  const active = await ensureClient();
+  const existing = liveTurns.get(args.threadId);
+  if (existing?.promptIssued) {
+    return;
+  }
+  if (!existing) {
+    attachObservedTurn(args.threadId, args.sessionId);
+  }
+  const live = liveTurns.get(args.threadId);
+  if (!live) return;
+  live.promptIssued = true;
+  if (args.clientRequestId) {
+    emitDeltas(args.threadId, [
+      {
+        kind: "input.accepted",
+        clientRequestId: args.clientRequestId,
+      },
+    ]);
+  }
+
+  let active: OpenCodeClient;
+  try {
+    active = await ensureClient();
+  } catch (error) {
+    failIssuedTurn(
+      args.threadId,
+      error instanceof Error ? error.message : String(error),
+    );
+    return;
+  }
   const options = providerOptions(args.options);
   const requested =
     typeof options.agent === "string" ? options.agent : undefined;
@@ -2301,13 +2322,7 @@ async function runPrompt(args: {
     sessionId: args.sessionId,
   });
   if (!resolved.ok) {
-    emitDeltas(args.threadId, [
-      {
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message: resolved.reason },
-      },
-    ]);
+    failIssuedTurn(args.threadId, resolved.reason);
     return;
   }
   const bound = sessions.get(args.threadId);
@@ -2317,13 +2332,7 @@ async function runPrompt(args: {
     active,
   );
   if (!model.ok) {
-    emitDeltas(args.threadId, [
-      {
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message: model.reason },
-      },
-    ]);
+    failIssuedTurn(args.threadId, model.reason);
     return;
   }
   const built = buildPrompt({
@@ -2334,41 +2343,10 @@ async function runPrompt(args: {
       bound?.instructions ?? instructionsOf(args.options),
   });
   if (!built.ok) {
-    emitDeltas(args.threadId, [
-      {
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message: built.reason },
-      },
-    ]);
+    failIssuedTurn(args.threadId, built.reason);
     return;
   }
 
-  const existing = liveTurns.get(args.threadId);
-  if (existing?.promptIssued) {
-    return;
-  }
-  const live: LiveTurn = {
-    threadId: args.threadId,
-    sessionId: args.sessionId,
-    promptIssued: true,
-    mapState: createMapDeltaState(),
-    textBuffers: new Map(),
-    parentBoundaryEmitted: false,
-    liveChildIds: new Set(),
-    childWork: new Map(),
-    pendingPrompts: [],
-  };
-  liveTurns.set(args.threadId, live);
-  const deltas: ThreadDelta[] = [];
-  if (args.clientRequestId) {
-    deltas.push({
-      kind: "input.accepted",
-      clientRequestId: args.clientRequestId,
-    });
-  }
-  deltas.push({ kind: "turn.open" });
-  emitDeltas(args.threadId, deltas);
   try {
     const slash = parseLeadingSlash(firstTextPart(args.input));
     if (isCompactRequest(args.input)) {
@@ -2409,22 +2387,15 @@ async function runPrompt(args: {
     });
     await settleIssuedTurn(args.threadId, args.sessionId, active);
   } catch (error) {
-    live.parentBoundaryEmitted = true;
-    liveTurns.delete(args.threadId);
+    failIssuedTurn(
+      args.threadId,
+      error instanceof Error ? error.message : String(error),
+    );
     try {
       await replayHydrate(args.threadId, args.sessionId, active);
     } catch {
       /* restore is best-effort */
     }
-    emitDeltas(args.threadId, [
-      {
-        kind: "turn.boundary",
-        status: "failed",
-        error: {
-          message: error instanceof Error ? error.message : String(error),
-        },
-      },
-    ]);
   }
 }
 

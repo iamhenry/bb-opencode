@@ -28,7 +28,12 @@ export async function handleLogs(limit = 80): Promise<{ lines: string[] }> {
 }
 
 export async function handleListSessions(dataDir: string) {
-  const attached = await attachOrSpawn({ dataDir });
+  let attached;
+  try {
+    attached = await attachOrSpawn({ dataDir, spawn: false });
+  } catch {
+    return { sessions: [] };
+  }
   const client = acquire(attached.url);
   const sessions = await client.listSessions();
   const statuses = new Set<string>();
