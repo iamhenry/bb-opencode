@@ -190,6 +190,58 @@ describe("map-delta", () => {
     ).toEqual([]);
   });
 
+  it("ignores retry and step parts without tallying them as tools", () => {
+    const state = createMapDeltaState();
+    expect(
+      mapPartDelta({
+        state,
+        sessionId: "s",
+        part: { id: "r1", type: "retry", attempt: 1 },
+      }),
+    ).toEqual([]);
+    expect(
+      mapPartDelta({
+        state,
+        sessionId: "s",
+        part: { id: "s1", type: "step-finish" },
+      }),
+    ).toEqual([]);
+    expect(state.unknownTally.size).toBe(0);
+  });
+
+  it("snapshots bash stdout onto the same command item", () => {
+    const state = createMapDeltaState();
+    mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "bash-1",
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "xcodebuild", workdir: "/tmp/app" } },
+      },
+    });
+    const streamed = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "bash-1",
+        type: "tool",
+        tool: "bash",
+        state: {
+          status: "running",
+          input: { command: "xcodebuild", workdir: "/tmp/app" },
+          metadata: { stdout: "Compiling Foo.swift\n" },
+        },
+      },
+    });
+    expect(streamed).toContainEqual({
+      kind: "command.outputSnapshot",
+      key: { providerItemId: "bash-1" },
+      text: "Compiling Foo.swift\n",
+    });
+  });
+
   it("keeps successive bash updates on one item id (ISC-18)", () => {
     const state = createMapDeltaState();
     const first = mapPartDelta({

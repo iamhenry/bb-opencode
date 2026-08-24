@@ -48,6 +48,12 @@ import {
   isRewindStagingThread,
 } from "./file-change.js";
 import {
+  describeSessionError,
+  readSessionStatus,
+  retryFromPart,
+  retryKey,
+} from "./session-status.js";
+import {
   nextUncardedWriteStreak,
   runningFileToolName,
 } from "./uncarded-write.js";
@@ -147,6 +153,7 @@ interface LiveTurn {
   liveChildIds: Set<string>;
   childWork: Map<string, ChildWork>;
   pendingPrompts: Array<Record<string, unknown>>;
+  retryWarned: Set<string>;
 }
 
 interface BoundSession {
@@ -363,6 +370,62 @@ function failIssuedTurn(threadId: string, message: string): void {
 function failLiveTurns(message: string): void {
   const ids = [...liveTurns.keys()];
   for (const threadId of ids) failIssuedTurn(threadId, message);
+}
+
+function emitRetryWarning(args: {
+  threadId: string;
+  sessionId: string;
+  messageId?: string;
+  attempt?: number;
+  message: string;
+}): void {
+  const live = liveTurns.get(args.threadId);
+  if (!live || live.parentBoundaryEmitted) return;
+  const key = retryKey({
+    sessionId: args.sessionId,
+    messageId: args.messageId,
+    attempt: args.attempt,
+  });
+  if (live.retryWarned.has(key)) return;
+  live.retryWarned.add(key);
+  const attempt =
+    typeof args.attempt === "number" ? `attempt ${args.attempt}` : "retry";
+  debugLog(`retry ses=${args.sessionId} ${attempt}`);
+  emitDeltas(args.threadId, [
+    {
+      kind: "provider.warning",
+      category: "general",
+      summary: `OpenCode ${attempt}`,
+      details: args.message,
+      vouchedTurn: true,
+    },
+  ]);
+}
+
+function closeLiveTurn(
+  threadId: string,
+  status: "failed" | "interrupted",
+  message?: string,
+): void {
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted) {
+    liveTurns.delete(threadId);
+    return;
+  }
+  live.parentBoundaryEmitted = true;
+  const flushed: ThreadDelta[] = [];
+  for (const [id, text] of live.textBuffers) {
+    flushed.push(...closeText(id, text));
+  }
+  liveTurns.delete(threadId);
+  emitDeltas(threadId, [
+    ...flushed,
+    {
+      kind: "turn.boundary",
+      status,
+      ...(status === "failed" && message ? { error: { message } } : {}),
+    },
+  ]);
 }
 
 function serveLost(message: string): void {
@@ -779,6 +842,7 @@ function attachObservedTurn(threadId: string, sessionId: string): void {
     liveChildIds: new Set(),
     childWork: new Map(),
     pendingPrompts: [],
+    retryWarned: new Set(),
   });
   emitDeltas(threadId, [{ kind: "turn.open" }]);
 }
@@ -885,6 +949,17 @@ async function onOpenCodeEvent(event: {
   }
   const sessionId = eventSessionId(event);
   if (!sessionId) {
+    if (event.type === "session.error") {
+      const error =
+        event.properties && typeof event.properties === "object"
+          ? (event.properties as { error?: unknown }).error
+          : undefined;
+      const described = describeSessionError(error);
+      for (const threadId of [...liveTurns.keys()]) {
+        closeLiveTurn(threadId, described.status, described.message);
+      }
+      return;
+    }
     if (isQuestionAskEvent(event.type)) {
       const ask = unwrapQuestionAsk(event.properties);
       if (ask) await handleQuestionAsked(event.properties, ask.sessionID);
@@ -976,7 +1051,26 @@ async function onOpenCodeEvent(event: {
     const parentId = eventParentId(event.properties);
     if (parentId === live.sessionId) live.liveChildIds.add(id);
     if (event.type === "session.idle" || event.type === "session.status") {
-      live.liveChildIds.delete(id);
+      const childStatus =
+        event.type === "session.idle"
+          ? { kind: "idle" as const }
+          : readSessionStatus(event.properties);
+      if (childStatus.kind === "retry") {
+        emitRetryWarning({
+          threadId,
+          sessionId: id,
+          attempt: childStatus.attempt,
+          message: childStatus.message || "Retrying",
+        });
+        return;
+      }
+      if (childStatus.kind === "busy") {
+        debugLog(`status busy ses=${id}`);
+        return;
+      }
+      if (childStatus.kind === "idle" || event.type === "session.idle") {
+        live.liveChildIds.delete(id);
+      }
       return;
     }
     if (event.type.startsWith("session.next.")) {
@@ -999,6 +1093,16 @@ async function onOpenCodeEvent(event: {
           : undefined;
       const part = record?.part ?? record;
       if (part && typeof part === "object" && "type" in part) {
+        const retry = retryFromPart(part);
+        if (retry) {
+          emitRetryWarning({
+            threadId,
+            sessionId: id,
+            messageId: retry.messageId,
+            attempt: retry.attempt,
+            message: retry.message,
+          });
+        }
         const nested = projectChildParts(live, id, [
           part as Record<string, unknown>,
         ]);
@@ -1041,6 +1145,16 @@ async function onOpenCodeEvent(event: {
     const part = record?.part ?? record;
     const delta = typeof record?.delta === "string" ? record.delta : undefined;
     if (part && typeof part === "object" && "type" in part) {
+      const retry = retryFromPart(part);
+      if (retry) {
+        emitRetryWarning({
+          threadId,
+          sessionId,
+          messageId: retry.messageId,
+          attempt: retry.attempt,
+          message: retry.message,
+        });
+      }
       rememberTaskChild(live, part as { id?: string; tool?: string; callID?: string; state?: { sessionID?: unknown; sessionId?: unknown; input?: Record<string, unknown>; metadata?: Record<string, unknown> } });
       emitDeltas(
         threadId,
@@ -1063,10 +1177,23 @@ async function onOpenCodeEvent(event: {
 
   if (event.type === "session.idle" || event.type === "session.status") {
     const status =
-      event.properties && typeof event.properties === "object"
-        ? (event.properties as { status?: unknown }).status
-        : undefined;
-    const idle = event.type === "session.idle" || status === "idle";
+      event.type === "session.idle"
+        ? { kind: "idle" as const }
+        : readSessionStatus(event.properties);
+    if (status.kind === "retry") {
+      emitRetryWarning({
+        threadId,
+        sessionId,
+        attempt: status.attempt,
+        message: status.message || "Retrying",
+      });
+      return;
+    }
+    if (status.kind === "busy") {
+      debugLog(`status busy ses=${sessionId}`);
+      return;
+    }
+    const idle = event.type === "session.idle" || status.kind === "idle";
     if (!idle) return;
     if (sessionId !== live.sessionId) {
       live.liveChildIds.delete(sessionId);
@@ -1094,16 +1221,14 @@ async function onOpenCodeEvent(event: {
   }
 
   if (event.type === "session.error") {
-    if (sessionId === live.sessionId && !live.parentBoundaryEmitted) {
-      live.parentBoundaryEmitted = true;
-      emitDeltas(threadId, [
-        {
-          kind: "turn.boundary",
-          status: "failed",
-          error: { message: "OpenCode session error" },
-        },
-      ]);
-      liveTurns.delete(threadId);
+    const error =
+      event.properties && typeof event.properties === "object"
+        ? (event.properties as { error?: unknown }).error
+        : undefined;
+    const described = describeSessionError(error);
+    debugLog(`session error ses=${sessionId} ${described.status}`);
+    if (sessionId === live.sessionId) {
+      closeLiveTurn(threadId, described.status, described.message);
     }
     return;
   }

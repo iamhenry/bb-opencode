@@ -1806,6 +1806,204 @@ describe("provider bridge", () => {
     );
   });
 
+  it("warns once on OpenCode retry and keeps the turn open", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "go", mentions: [] }],
+      }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.status",
+      properties: {
+        sessionID: "ses_1",
+        status: { type: "retry", attempt: 2, message: "rate limited" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          type: "retry",
+          sessionID: "ses_1",
+          attempt: 2,
+          error: { name: "APIError", data: { message: "rate limited" } },
+        },
+      },
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    const warnings = deltas.filter((delta) => delta.kind === "provider.warning");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      summary: "OpenCode attempt 2",
+      details: "rate limited",
+    });
+    expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
+  });
+
+  it("fails a session.error with the real message and flushes text", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "go", mentions: [] }],
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        part: { id: "t1", type: "text", sessionID: "ses_1", text: "partial" },
+      },
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "APIError", data: { message: "provider 503" } },
+      },
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "item.textClose",
+        text: "partial",
+      }),
+    );
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "turn.boundary",
+        status: "failed",
+        error: { message: "provider 503" },
+      }),
+    );
+  });
+
+  it("treats MessageAbortedError as interrupted, not failed", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "go", mentions: [] }],
+      }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "MessageAbortedError", data: { message: "aborted" } },
+      },
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "turn.boundary",
+        status: "interrupted",
+      }),
+    );
+    expect(
+      deltas.some(
+        (delta) => delta.kind === "turn.boundary" && delta.status === "failed",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not retire a child Task on busy status", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "go", mentions: [] }],
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "task-1",
+          type: "tool",
+          tool: "task",
+          sessionID: "ses_1",
+          state: {
+            status: "running",
+            title: "Task",
+            input: { description: "Explore" },
+            metadata: { sessionID: "ses_child" },
+          },
+        },
+      },
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.status",
+      properties: {
+        sessionID: "ses_child",
+        parentID: "ses_1",
+        status: { type: "busy" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        part: {
+          id: "read-1",
+          type: "tool",
+          tool: "read",
+          state: { status: "running", input: { filePath: "README.md" } },
+        },
+      },
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
+    expect(deltas).toContainEqual(
+      expect.objectContaining({
+        kind: "item.open",
+        item: expect.objectContaining({ type: "fileRead", path: "README.md" }),
+      }),
+    );
+  });
+
   it("writes a user rename onto the OpenCode session", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });

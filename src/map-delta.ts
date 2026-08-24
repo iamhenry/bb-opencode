@@ -5,6 +5,7 @@ import {
   fileChangesFromToolInput,
   isFileChangeToolName,
 } from "./file-change.js";
+import { bashCommandCwd, bashCommandOutput } from "./session-status.js";
 import { isTodoToolName } from "./todos.js";
 import {
   isWebFetchToolName,
@@ -78,6 +79,7 @@ interface PartLike {
   tool?: string;
   sessionID?: string;
   callID?: string;
+  attempt?: number;
   state?: {
     status?: string;
     input?: Record<string, unknown>;
@@ -183,6 +185,15 @@ export function mapPartDelta(args: {
       },
     ];
   }
+  if (
+    type === "retry" ||
+    type === "step-start" ||
+    type === "step-finish" ||
+    type === "snapshot" ||
+    type === "patch"
+  ) {
+    return [];
+  }
   if (type === "reasoning" || type === "reasoning-delta") {
     const partId = part.id ?? "anon";
     const chunk = nextTextChunk(
@@ -218,11 +229,8 @@ export function mapPartDelta(args: {
         (typeof part.state?.input?.command === "string" &&
           part.state.input.command) ||
         toolName;
-      const output =
-        (typeof part.state?.metadata?.output === "string" &&
-          part.state.metadata.output) ||
-        part.state?.output ||
-        "";
+      const output = bashCommandOutput(part.state);
+      const cwd = bashCommandCwd(part.state?.input);
       const deltas: ThreadDelta[] = [];
       if (!alreadyOpen) {
         deltas.push({
@@ -231,7 +239,7 @@ export function mapPartDelta(args: {
           item: {
             type: "command",
             command,
-            cwd: "",
+            cwd,
             aggregatedOutput: output,
           },
         });
@@ -253,7 +261,7 @@ export function mapPartDelta(args: {
           item: {
             type: "command",
             command,
-            cwd: "",
+            cwd,
             aggregatedOutput: output,
           },
         });
