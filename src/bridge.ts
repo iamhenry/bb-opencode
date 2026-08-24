@@ -73,7 +73,7 @@ import {
   formatUnknownTally,
   mapPartDelta,
   mapSessionNextEvent,
-  rememberCommandItem,
+  openCommandItem,
   tallyUnknown,
   type MapDeltaState,
   type ThreadDelta,
@@ -155,6 +155,7 @@ interface LiveTurn {
   childWork: Map<string, ChildWork>;
   pendingPrompts: Array<Record<string, unknown>>;
   retryWarned: Set<string>;
+  userMessageIds: Set<string>;
 }
 
 interface BoundSession {
@@ -403,6 +404,16 @@ function emitRetryWarning(args: {
   ]);
 }
 
+function isUserMessageText(
+  live: LiveTurn,
+  part: Record<string, unknown>,
+): boolean {
+  if (part.type !== "text" && part.type !== "text-delta") return false;
+  const messageID =
+    typeof part.messageID === "string" ? part.messageID : undefined;
+  return Boolean(messageID && live.userMessageIds.has(messageID));
+}
+
 function toolPartFromEvent(
   record: { part?: Record<string, unknown>; callID?: unknown } | undefined,
 ): Record<string, unknown> | undefined {
@@ -588,6 +599,11 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
   try {
     const messages = (await client.sessionMessages(sessionId)) as HydrateMessage[];
     const leftovers: ThreadDelta[] = [];
+    for (const message of messages) {
+      if (message.info.role === "user" && typeof message.info.id === "string") {
+        live.userMessageIds.add(message.info.id);
+      }
+    }
     for (const message of assistantsAfterLastUser(messages)) {
       for (const part of message.parts) {
         rememberTaskChild(live, part);
@@ -858,6 +874,7 @@ function attachObservedTurn(threadId: string, sessionId: string): void {
     childWork: new Map(),
     pendingPrompts: [],
     retryWarned: new Set(),
+    userMessageIds: new Set(),
   });
   emitDeltas(threadId, [{ kind: "turn.open" }]);
 }
@@ -1132,6 +1149,11 @@ async function onOpenCodeEvent(event: {
       event.properties && typeof event.properties === "object"
         ? (event.properties as { info?: unknown }).info
         : undefined;
+    const record =
+      info && typeof info === "object" ? (info as { id?: unknown; role?: unknown }) : undefined;
+    if (record?.role === "user" && typeof record.id === "string") {
+      live.userMessageIds.add(record.id);
+    }
     const usage = usageDeltasFromMessages(
       [{ info }],
       modelContextWindows,
@@ -1174,6 +1196,7 @@ async function onOpenCodeEvent(event: {
           message: retry.message,
         });
       }
+      if (isUserMessageText(live, part)) return;
       rememberTaskChild(live, part as { id?: string; tool?: string; callID?: string; state?: { sessionID?: unknown; sessionId?: unknown; input?: Record<string, unknown>; metadata?: Record<string, unknown> } });
       emitDeltas(
         threadId,
@@ -1705,8 +1728,15 @@ async function handlePermissionAsked(
 
   const requestId = `oc-perm-${mapped.requestId}`;
   debugLog(`ask card ses=${sessionId} id=${mapped.requestId}`);
-  if (live && mapped.subject.kind === "command") {
-    rememberCommandItem(live.mapState, mapped.subject.itemId, mapped.subject.command);
+  if (mapped.subject.kind === "command") {
+    emitDeltas(
+      targetThreadId,
+      openCommandItem(live.mapState, {
+        itemId: mapped.subject.itemId,
+        command: mapped.subject.command,
+        cwd: mapped.subject.cwd,
+      }),
+    );
   }
   pendingPermission.set(requestId, {
     requestId: mapped.requestId,
@@ -2312,8 +2342,23 @@ async function settleIssuedTurn(
   }
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
   const leftovers: ThreadDelta[] = [];
+  const streamedText = [...liveAfter.mapState.emittedText.keys()].some(
+    (key) => !key.startsWith("reasoning:"),
+  );
   for (const message of assistantsAfterLastUser(messages)) {
     for (const part of message.parts) {
+      if (part.type === "text" || part.type === "text-delta") {
+        if (streamedText) continue;
+        leftovers.push(
+          ...mapPartDelta({
+            state: liveAfter.mapState,
+            part,
+            sessionId,
+          }),
+        );
+        if (part.text && part.id) leftovers.push(...closeText(part.id, part.text));
+        continue;
+      }
       leftovers.push(
         ...mapPartDelta({
           state: liveAfter.mapState,

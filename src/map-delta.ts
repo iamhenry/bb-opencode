@@ -44,7 +44,7 @@ export function createMapDeltaState(): MapDeltaState {
   };
 }
 
-/** The permission card owns this command row; later bash parts update it. */
+/** Remember which call id the next bash part should join. Does not open a row. */
 export function rememberCommandItem(
   state: MapDeltaState,
   itemId: string,
@@ -53,10 +53,30 @@ export function rememberCommandItem(
   if (!itemId) return;
   state.activeCommandItemId = itemId;
   if (command) state.callIdByCommand.set(command, itemId);
-  if (!state.openedItems.has(itemId)) state.openedItems.set(itemId, "command");
-  if (!state.itemKeys.has(itemId)) {
-    state.itemKeys.set(itemId, { providerItemId: itemId });
-  }
+}
+
+/** Open the command row before the Allow card so BB can attach the card to it. */
+export function openCommandItem(
+  state: MapDeltaState,
+  args: { itemId: string; command: string; cwd?: string | null },
+): ThreadDelta[] {
+  rememberCommandItem(state, args.itemId, args.command);
+  if (!args.itemId || state.closedItems.has(args.itemId)) return [];
+  if (state.openedItems.has(args.itemId)) return [];
+  state.openedItems.set(args.itemId, "command");
+  state.itemKeys.set(args.itemId, { providerItemId: args.itemId });
+  return [
+    {
+      kind: "item.open",
+      key: { providerItemId: args.itemId },
+      item: {
+        type: "command",
+        command: args.command,
+        cwd: args.cwd ?? "",
+        aggregatedOutput: "",
+      },
+    },
+  ];
 }
 
 function nextTextChunk(

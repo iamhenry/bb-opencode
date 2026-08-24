@@ -3,7 +3,7 @@ import {
   createMapDeltaState,
   mapPartDelta,
   mapSessionNextEvent,
-  rememberCommandItem,
+  openCommandItem,
 } from "../src/map-delta.js";
 
 describe("map-delta", () => {
@@ -356,7 +356,12 @@ describe("map-delta", () => {
 
   it("updates the permission-card command row instead of opening a second one", () => {
     const state = createMapDeltaState();
-    rememberCommandItem(state, "call_card", "echo hi");
+    expect(
+      openCommandItem(state, { itemId: "call_card", command: "echo hi" })[0],
+    ).toMatchObject({
+      kind: "item.open",
+      key: { providerItemId: "call_card" },
+    });
     const deltas = mapPartDelta({
       state,
       sessionId: "s",

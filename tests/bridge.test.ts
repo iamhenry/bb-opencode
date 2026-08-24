@@ -1050,6 +1050,107 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
+  it("opens the bash row before the Allow card and keeps later output on it", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          permissionMode: "accept-edits",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        ...turnParams({
+          options: {
+            permissionMode: "accept-edits",
+            permissionScope: "full",
+            approvalReviewer: null,
+            permissionEscalation: null,
+            providerOptions: { agent: "build" },
+          },
+        }),
+      },
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.updated",
+      properties: {
+        id: "p-row",
+        sessionID: "ses_1",
+        type: "bash",
+        callID: "call_row",
+        metadata: { command: "echo hi" },
+      },
+    });
+    const deltasOf = (message: Record<string, unknown>) =>
+      ((message.params as { deltas?: Array<Record<string, unknown>> } | undefined)
+        ?.deltas ?? []);
+    const openIndex = messages.findIndex(
+      (message) =>
+        message.method === "thread/delta" &&
+        deltasOf(message).some(
+          (delta) =>
+            delta.kind === "item.open" &&
+            (delta.key as { providerItemId?: string } | undefined)
+              ?.providerItemId === "call_row",
+        ),
+    );
+    const cardIndex = messages.findIndex(
+      (message) => message.method === "interaction/request",
+    );
+    expect(openIndex).toBeGreaterThanOrEqual(0);
+    expect(cardIndex).toBeGreaterThan(openIndex);
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "prt_row",
+          sessionID: "ses_1",
+          type: "tool",
+          tool: "bash",
+          callID: "call_row",
+          state: {
+            status: "completed",
+            input: { command: "echo hi" },
+            metadata: { output: "hi\n" },
+          },
+        },
+      },
+    });
+    const commandOpens = messages.flatMap((message) =>
+      message.method === "thread/delta"
+        ? deltasOf(message).filter(
+            (delta) =>
+              delta.kind === "item.open" &&
+              (delta.item as { type?: string } | undefined)?.type === "command",
+          )
+        : [],
+    );
+    expect(commandOpens).toHaveLength(1);
+    expect(
+      messages.some(
+        (message) =>
+          message.method === "thread/delta" &&
+          deltasOf(message).some(
+            (delta) =>
+              delta.kind === "item.close" &&
+              (delta.key as { providerItemId?: string } | undefined)
+                ?.providerItemId === "call_row",
+          ),
+      ),
+    ).toBe(true);
+  });
+
   it("surfaces a 1.18 permission.v2.asked edit as a card", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
