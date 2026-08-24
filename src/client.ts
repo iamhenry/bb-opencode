@@ -1,5 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { listAuthenticatedProviders } from "./catalog.js";
+import { debugLog } from "./debug-log.js";
 import { isAbortTimeout } from "./process.js";
 
 export interface OpenCodeHealth {
@@ -40,8 +41,16 @@ export interface OpenCodeClient {
   sessionMessages(id: string): Promise<
     Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
   >;
-  prompt(id: string, body: Record<string, unknown>): Promise<unknown>;
-  promptAsync(id: string, body: Record<string, unknown>): Promise<void>;
+  prompt(
+    id: string,
+    body: Record<string, unknown>,
+    directory?: string,
+  ): Promise<unknown>;
+  promptAsync(
+    id: string,
+    body: Record<string, unknown>,
+    directory?: string,
+  ): Promise<void>;
   abort(id: string): Promise<void>;
   revert(id: string, body: Record<string, unknown>): Promise<unknown>;
   unrevert(id: string): Promise<unknown>;
@@ -61,14 +70,19 @@ export interface OpenCodeClient {
       model?: string;
       variant?: string;
     },
+    directory?: string,
   ): Promise<unknown>;
-  getConfig(): Promise<unknown>;
+  getConfig(directory?: string): Promise<unknown>;
   replyPermission(args: {
     requestID: string;
     sessionID: string;
     reply: "once" | "always" | "reject";
+    directory?: string;
   }): Promise<void>;
-  listPendingPermissions(sessionID?: string): Promise<unknown[]>;
+  listPendingPermissions(
+    sessionID?: string,
+    directory?: string,
+  ): Promise<unknown[]>;
   replyQuestion(args: {
     requestID: string;
     sessionID: string;
@@ -87,7 +101,13 @@ export interface OpenCodeClient {
   ): Promise<boolean>;
   subscribe(
     handler: (event: { type: string; properties?: unknown }) => void,
+    directory?: string,
   ): Promise<{ unsubscribe(): void }>;
+}
+
+export function directoryQuery(directory?: string): string {
+  if (!directory) return "";
+  return `?directory=${encodeURIComponent(directory)}`;
 }
 
 type SdkClient = ReturnType<typeof createOpencodeClient>;
@@ -237,9 +257,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
         >(result) ?? []
       );
     },
-    async prompt(id, body) {
+    async prompt(id, body, directory) {
+      const query = directoryQuery(directory);
+      debugLog(`prompt ses=${id} dir=${directory || "-"}`);
       const send = (payload: Record<string, unknown>) =>
-        fetch(`${url}/session/${id}/message`, {
+        fetch(`${url}/session/${id}/message${query}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload),
@@ -254,10 +276,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       }
       return response.json();
     },
-    async promptAsync(id, body) {
+    async promptAsync(id, body, directory) {
+      const query = directoryQuery(directory);
+      debugLog(`prompt_async ses=${id} dir=${directory || "-"}`);
       const send = (payload: Record<string, unknown>) =>
         fetchTimed(
-          `${url}/session/${id}/prompt_async`,
+          `${url}/session/${id}/prompt_async${query}`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -267,7 +291,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
         );
       let response = await send(body);
       if (response.status === 404) {
-        void fetch(`${url}/session/${id}/message`, {
+        void fetch(`${url}/session/${id}/message${query}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
@@ -309,7 +333,18 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const result = await sdk.app.agents();
       return unwrap<OpenCodeAgentInfo[]>(result) ?? [];
     },
-    async getConfig() {
+    async getConfig(directory) {
+      if (directory) {
+        const response = await fetchTimed(
+          `${url}/config${directoryQuery(directory)}`,
+          {},
+          OPENCODE_SETUP_MS,
+        );
+        if (!response.ok) {
+          throw new Error(`config.get failed: ${response.status}`);
+        }
+        return response.json();
+      }
       const result = await withTimeout(
         sdk.config.get(),
         OPENCODE_SETUP_MS,
@@ -322,9 +357,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       return { providers: listAuthenticatedProviders(result) };
     },
     async listCommands(directory) {
-      const query = directory
-        ? `?directory=${encodeURIComponent(directory)}`
-        : "";
+      const query = directoryQuery(directory);
       const response = await fetchTimed(
         `${url}/command${query}`,
         {},
@@ -336,29 +369,33 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const body = (await response.json()) as unknown;
       return Array.isArray(body) ? (body as Array<{ name: string; description?: string }>) : [];
     },
-    async sessionCommand(id, body) {
-      const response = await fetch(`${url}/session/${id}/command`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+    async sessionCommand(id, body, directory) {
+      const response = await fetch(
+        `${url}/session/${id}/command${directoryQuery(directory)}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       if (!response.ok) {
         throw new Error(`session.command failed: ${response.status} ${await response.text()}`);
       }
       return response.json();
     },
-    async replyPermission({ requestID, sessionID, reply }) {
+    async replyPermission({ requestID, sessionID, reply, directory }) {
+      const query = directoryQuery(directory);
       const attempts: Array<{ path: string; body: unknown }> = [
         {
-          path: `/api/session/${sessionID}/permission/${requestID}/reply`,
+          path: `/permission/${requestID}/reply${query}`,
           body: { reply },
         },
         {
-          path: `/session/${sessionID}/permissions/${requestID}`,
+          path: `/session/${sessionID}/permissions/${requestID}${query}`,
           body: { response: reply },
         },
         {
-          path: `/permission/${requestID}/reply`,
+          path: `/api/session/${sessionID}/permission/${requestID}/reply`,
           body: { reply },
         },
       ];
@@ -373,7 +410,10 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
           },
           OPENCODE_REPLY_MS,
         );
-        if (response.ok) return;
+        if (response.ok) {
+          debugLog(`perm reply ${reply} ${attempt.path}`);
+          return;
+        }
         lastStatus = response.status;
         if (response.status !== 404) {
           throw new Error(`permission.reply failed: ${response.status}`);
@@ -381,9 +421,29 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       }
       throw new Error(`permission.reply failed: ${lastStatus || 404}`);
     },
-    async listPendingPermissions(sessionID) {
+    async listPendingPermissions(sessionID, directory) {
       const asks: unknown[] = [];
-      if (sessionID) {
+      const scoped = await fetchTimed(
+        `${url}/permission${directoryQuery(directory)}`,
+        {},
+        OPENCODE_SETUP_MS,
+      );
+      if (scoped.ok) {
+        const body = (await scoped.json()) as unknown;
+        if (Array.isArray(body)) asks.push(...body);
+      }
+      if (asks.length === 0) {
+        const unscoped = await fetchTimed(
+          `${url}/permission`,
+          {},
+          OPENCODE_SETUP_MS,
+        );
+        if (unscoped.ok) {
+          const body = (await unscoped.json()) as unknown;
+          if (Array.isArray(body)) asks.push(...body);
+        }
+      }
+      if (asks.length === 0 && sessionID) {
         const v2 = await fetchTimed(
           `${url}/api/session/${sessionID}/permission`,
           {},
@@ -399,10 +459,8 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
           asks.push(...rows);
         }
       }
-      const v1 = await fetchTimed(`${url}/permission`, {}, OPENCODE_SETUP_MS);
-      if (v1.ok) {
-        const body = (await v1.json()) as unknown;
-        if (Array.isArray(body)) asks.push(...body);
+      if (asks.length > 0) {
+        debugLog(`perm n=${asks.length} dir=${directory || "-"}`);
       }
       return asks;
     },
@@ -484,11 +542,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       });
       return Boolean(unwrap<boolean>(result));
     },
-    async subscribe(handler) {
+    async subscribe(handler, directory) {
       const controller = new AbortController();
       void (async () => {
         try {
-          const response = await fetch(`${url}/event`, {
+          const response = await fetch(`${url}/event${directoryQuery(directory)}`, {
             headers: { accept: "text/event-stream" },
             signal: controller.signal,
           });

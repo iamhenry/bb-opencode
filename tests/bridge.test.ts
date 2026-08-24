@@ -1763,6 +1763,49 @@ describe("provider bridge", () => {
     });
   });
 
+  it("subscribes to the bound project directory", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(fake.lastSubscribeDirectory).toBe("/tmp/a");
+  });
+
+  it("aborts a running write with no permission card after a short poll", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams(),
+    });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { role: "user", id: "u1" },
+        parts: [{ type: "text", text: "write" }],
+      },
+      {
+        info: { role: "assistant", id: "a1" },
+        parts: [
+          {
+            type: "tool",
+            tool: "apply_patch",
+            state: { status: "running" },
+          },
+        ],
+      },
+    ]);
+    await syncLiveTurnParts("ses_1");
+    await syncLiveTurnParts("ses_1");
+    await syncLiveTurnParts("ses_1");
+    expect(fake.calls.abort).toBe(1);
+    expect(JSON.stringify(messages)).toContain(
+      "OpenCode write is waiting without a permission card",
+    );
+  });
+
   it("answers provider/usage without inventing a quota", async () => {
     installFake();
     send({ id: "usage", method: "provider/usage", params: {} });

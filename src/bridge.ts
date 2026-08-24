@@ -19,6 +19,7 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
+import { debugLog, recentDebugLog, resetDebugLogForTests } from "./debug-log.js";
 import {
   fallbackSessionTitle,
   firstVisibleUserText,
@@ -45,6 +46,10 @@ import {
   firstMessageAfterCheckpoint,
   isRewindStagingThread,
 } from "./file-change.js";
+import {
+  nextUncardedWriteStreak,
+  runningFileToolName,
+} from "./uncarded-write.js";
 import {
   assistantsAfterLastUser,
   completedTurnBoundary,
@@ -173,12 +178,14 @@ const pendingQuestion = new Map<
 
 let dataDir = "";
 let client: OpenCodeClient | undefined;
-let subscribed = false;
+const subscriptions = new Map<string, { unsubscribe(): void }>();
 let createCount = 0;
 let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 let titleWatchEpoch = 0;
 const pollInFlight = new Set<string>();
+const emptyAskStreak = new Map<string, number>();
+const lastPermissionCount = new Map<string, number>();
 const lastTitles = new Map<string, string>();
 const lastRevertCursors = new Map<string, string | null>();
 const lastTodos = new Map<string, string>();
@@ -218,7 +225,10 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   compactIssued.clear();
   compactInFlight.clear();
   pollInFlight.clear();
+  emptyAskStreak.clear();
+  lastPermissionCount.clear();
   rewindRestores.clear();
+  resetDebugLogForTests();
   modelContextWindows.clear();
   lastPromptedModels.clear();
   lastPromptedModel = undefined;
@@ -228,7 +238,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
     titleTimer = undefined;
   }
   client = undefined;
-  subscribed = false;
+  subscriptions.clear();
   createCount = 0;
   unknownLogLines = [];
   dataDir = "/tmp/bb-oc-bridge-test";
@@ -251,7 +261,7 @@ export async function ingestOpenCodeEvent(event: {
 }
 
 export function recentUnknownLogLines(): string[] {
-  return [...unknownLogLines];
+  return [...unknownLogLines, ...recentDebugLog()].slice(-80);
 }
 
 function respondResult(id: JsonRpcId, result: unknown): void {
@@ -300,15 +310,36 @@ async function ensureClient(): Promise<OpenCodeClient> {
     client = undefined;
     throw new Error(publicErrorMessage(error));
   }
-  void ensureSubscribed(client).catch((error) => {
+  void resubscribeBoundDirectories(client).catch((error) => {
     unknownLogLines.push(`subscribe-error ${String(error)}`);
-    void onStreamClosed("OpenCode event stream failed to start");
+    debugLog(`sse subscribe failed ${String(error)}`);
   });
   return client;
 }
 
+function boundDirectory(sessionId: string): string | undefined {
+  const threadId = sessionToThread.get(sessionId);
+  const cwd = threadId ? sessions.get(threadId)?.cwd : undefined;
+  return cwd && cwd.length > 0 ? cwd : undefined;
+}
+
+function dropSubscriptions(): void {
+  for (const sub of subscriptions.values()) {
+    try {
+      sub.unsubscribe();
+    } catch {
+      /* already closed */
+    }
+  }
+  subscriptions.clear();
+}
+
 function failIssuedTurn(threadId: string, message: string): void {
   const live = liveTurns.get(threadId);
+  if (live) {
+    emptyAskStreak.delete(live.sessionId);
+    lastPermissionCount.delete(live.sessionId);
+  }
   if (live?.parentBoundaryEmitted) {
     liveTurns.delete(threadId);
     return;
@@ -332,8 +363,8 @@ function failLiveTurns(message: string): void {
 }
 
 function serveLost(message: string): void {
-  const had = Boolean(client || subscribed);
-  subscribed = false;
+  const had = Boolean(client || subscriptions.size > 0);
+  dropSubscriptions();
   client = undefined;
   failLiveTurns(message);
   if (!had) return;
@@ -344,8 +375,13 @@ function serveLost(message: string): void {
   });
 }
 
-async function onStreamClosed(message: string): Promise<void> {
-  subscribed = false;
+async function onStreamClosed(
+  message: string,
+  directory?: string,
+): Promise<void> {
+  const key = directory?.trim() ?? "";
+  subscriptions.delete(key);
+  debugLog(`sse off dir=${key || "-"}`);
   if (reconnecting) return;
   reconnecting = true;
   try {
@@ -353,10 +389,11 @@ async function onStreamClosed(message: string): Promise<void> {
     if (active) {
       try {
         const health = await active.health();
-        if (health.healthy) {
-          await ensureSubscribed(active);
+        if (health.healthy && key) {
+          await ensureSubscribed(active, key);
           return;
         }
+        if (health.healthy) return;
       } catch {
         /* serve is gone */
       }
@@ -367,18 +404,46 @@ async function onStreamClosed(message: string): Promise<void> {
   }
 }
 
-async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
-  if (subscribed) return;
-  subscribed = true;
-  await active.subscribe((event) => {
-    if (event.type === "server.disconnected") {
-      void onStreamClosed("OpenCode event stream closed");
-      return;
-    }
-    void onOpenCodeEvent(event).catch((error) => {
-      unknownLogLines.push(`event-handler-error ${String(error)}`);
-    });
+async function ensureSubscribed(
+  active: OpenCodeClient,
+  directory?: string,
+): Promise<void> {
+  const key = directory?.trim() ?? "";
+  if (!key || subscriptions.has(key)) return;
+  subscriptions.set(key, {
+    unsubscribe() {
+      /* pending */
+    },
   });
+  try {
+    const sub = await active.subscribe((event) => {
+      if (event.type === "server.disconnected") {
+        void onStreamClosed("OpenCode event stream closed", key);
+        return;
+      }
+      void onOpenCodeEvent(event).catch((error) => {
+        unknownLogLines.push(`event-handler-error ${String(error)}`);
+      });
+    }, key);
+    subscriptions.set(key, sub);
+    debugLog(`sse on dir=${key}`);
+  } catch (error) {
+    subscriptions.delete(key);
+    throw error;
+  }
+}
+
+async function resubscribeBoundDirectories(
+  active: OpenCodeClient,
+): Promise<void> {
+  const dirs = new Set(
+    [...sessions.values()]
+      .map((session) => session.cwd.trim())
+      .filter(Boolean),
+  );
+  for (const directory of dirs) {
+    await ensureSubscribed(active, directory);
+  }
 }
 
 function requireSessionId(sessionId: string | undefined, action: string): string {
@@ -400,6 +465,12 @@ function bindSession(threadId: string, session: BoundSession): void {
   startTitlePoller();
   void syncSessionTitle(session.sessionId);
   watchEnsureTitle(session.sessionId);
+  if (client && session.cwd) {
+    void ensureSubscribed(client, session.cwd).catch((error) => {
+      unknownLogLines.push(`subscribe-error ${String(error)}`);
+      debugLog(`sse subscribe failed ${String(error)}`);
+    });
+  }
 }
 
 function startTitlePoller(): void {
@@ -482,6 +553,7 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     } catch {
       /* children are best-effort; parent leftovers still apply */
     }
+    await maybeFailUncardedWrite(sessionId, messages);
     if (leftovers.length === 0) return false;
     emitDeltas(threadId, leftovers);
     return true;
@@ -532,13 +604,51 @@ async function syncPendingPermissions(sessionId: string): Promise<void> {
   const live = liveTurns.get(threadId);
   if (!live || live.parentBoundaryEmitted) return;
   try {
-    const pending = await client.listPendingPermissions(sessionId);
+    const pending = await client.listPendingPermissions(
+      sessionId,
+      boundDirectory(sessionId),
+    );
+    lastPermissionCount.set(sessionId, pending.length);
     for (const ask of pending) {
       await handlePermissionAsked(ask, sessionId);
     }
   } catch {
     /* list is best-effort; SSE remains the primary path */
   }
+}
+
+async function maybeFailUncardedWrite(
+  sessionId: string,
+  messages: Array<{ parts?: Array<Record<string, unknown>> }>,
+): Promise<void> {
+  if (!client) return;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return;
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted) return;
+  const runningTool = runningFileToolName(messages);
+  const hasCard = [...pendingPermission.values()].some(
+    (pending) => pending.sessionId === sessionId,
+  );
+  const next = nextUncardedWriteStreak({
+    runningTool,
+    pendingAskCount: lastPermissionCount.get(sessionId) ?? 0,
+    hasCard,
+    streak: emptyAskStreak.get(sessionId) ?? 0,
+  });
+  if (next.streak === 0) emptyAskStreak.delete(sessionId);
+  else emptyAskStreak.set(sessionId, next.streak);
+  if (!next.giveUp || !runningTool) return;
+  debugLog(`ask timeout ses=${sessionId} tool=${runningTool} abort`);
+  try {
+    await client.abort(sessionId);
+  } catch {
+    /* still fail the BB turn */
+  }
+  failIssuedTurn(
+    threadId,
+    "OpenCode write is waiting without a permission card",
+  );
 }
 
 async function syncPendingQuestions(sessionId: string): Promise<void> {
@@ -1122,6 +1232,7 @@ async function denyPermissionAsk(args: {
         requestID: args.requestId,
         sessionID: args.sessionId,
         reply: "reject",
+        directory: boundDirectory(args.sessionId),
       });
     } catch {
       /* already settled */
@@ -1293,6 +1404,7 @@ async function rejectPendingPermissions(threadId: string): Promise<void> {
         requestID: pending.requestId,
         sessionID: pending.sessionId,
         reply: "reject",
+        directory: boundDirectory(pending.sessionId),
       });
     } catch {
       /* already settled */
@@ -1336,6 +1448,7 @@ async function handlePermissionAsked(
           requestID: mapped.requestId,
           sessionID: sessionId,
           reply: "reject",
+          directory: boundDirectory(sessionId),
         });
       } catch {
         /* already settled */
@@ -1391,6 +1504,7 @@ async function handlePermissionAsked(
       requestID: mapped.requestId,
       sessionID: sessionId,
       reply: "once",
+      directory: boundDirectory(sessionId),
     });
     return;
   }
@@ -1408,6 +1522,7 @@ async function handlePermissionAsked(
   }
 
   const requestId = `oc-perm-${mapped.requestId}`;
+  debugLog(`ask card ses=${sessionId} id=${mapped.requestId}`);
   pendingPermission.set(requestId, {
     requestId: mapped.requestId,
     sessionId,
@@ -1954,7 +2069,7 @@ async function settleIssuedTurn(
   const queued = liveAfter.pendingPrompts.shift();
   if (queued) {
     try {
-      await active.prompt(sessionId, queued);
+      await active.prompt(sessionId, queued, boundDirectory(sessionId));
       await settleIssuedTurn(threadId, sessionId, active);
     } catch (error) {
       liveAfter.parentBoundaryEmitted = true;
@@ -2112,10 +2227,18 @@ async function runSteer(args: {
   };
   if (steerDeliveryOf(args.options) === "inject") {
     try {
-      await active.promptAsync(args.sessionId, body);
+      await active.promptAsync(
+        args.sessionId,
+        body,
+        boundDirectory(args.sessionId),
+      );
     } catch (error) {
       try {
-        await active.prompt(args.sessionId, body);
+        await active.prompt(
+          args.sessionId,
+          body,
+          boundDirectory(args.sessionId),
+        );
       } catch {
         emitDeltas(args.threadId, [
           {
@@ -2397,12 +2520,16 @@ async function runPrompt(args: {
       const matched = matchListedCommand(slash.name, listed);
       if (matched && !isOpenCodeCompactCommand(matched.name)) {
         const variant = openCodeVariantFor(reasoningLevelOf(args.options));
-        await active.sessionCommand(args.sessionId, {
-          command: matched.name,
-          arguments: slash.arguments,
-          agent: built.prompt.agent,
-          ...(variant ? { variant } : {}),
-        });
+        await active.sessionCommand(
+          args.sessionId,
+          {
+            command: matched.name,
+            arguments: slash.arguments,
+            agent: built.prompt.agent,
+            ...(variant ? { variant } : {}),
+          },
+          cwd,
+        );
         await settleIssuedTurn(args.threadId, args.sessionId, active);
         return;
       }
@@ -2413,10 +2540,14 @@ async function runPrompt(args: {
       ? { ...built.prompt, system }
       : built.prompt;
     const variant = openCodeVariantFor(reasoningLevelOf(args.options));
-    await active.prompt(args.sessionId, {
-      ...prompt,
-      ...(variant ? { variant } : {}),
-    });
+    await active.prompt(
+      args.sessionId,
+      {
+        ...prompt,
+        ...(variant ? { variant } : {}),
+      },
+      sessions.get(args.threadId)?.cwd,
+    );
     await settleIssuedTurn(args.threadId, args.sessionId, active);
   } catch (error) {
     failIssuedTurn(
@@ -2492,6 +2623,7 @@ export function handleLine(line: string): void {
               requestID: pending.requestId,
               sessionID: pending.sessionId,
               reply,
+              directory: boundDirectory(pending.sessionId),
             })
             .catch(() => {
               /* fail closed */
