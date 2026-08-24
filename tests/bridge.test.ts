@@ -691,6 +691,41 @@ describe("provider bridge", () => {
     expect(await syncLiveTurnParts("ses_1")).toBe(false);
   });
 
+  it("recovers a title when OpenCode ensureTitle never lands", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { role: "user", agent: "build" },
+        parts: [{ type: "text", text: "What's good" }],
+      },
+    ]);
+    messages.length = 0;
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "What's good", mentions: [] }],
+      }),
+    });
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(fake.sessions.get("ses_1")?.title).toBe("Casual greeting");
+    expect(fake.calls.update.some((call) => call.title === "Casual greeting")).toBe(
+      true,
+    );
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string; name?: string }> })
+          ?.deltas;
+        return deltas?.some(
+          (delta) => delta.kind === "thread.name" && delta.name === "Casual greeting",
+        );
+      }),
+    ).toBe(true);
+  });
+
   it("does not stamp OpenCode placeholder titles onto BB", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -1151,8 +1186,9 @@ describe("provider bridge", () => {
     await flush();
     const texts = (fake.lastPrompt?.body.parts as Array<{ text?: string }>) ?? [];
     expect(texts.some((part) => part.text?.includes("bb-cli: Use bb"))).toBe(
-      true,
+      false,
     );
+    expect(String(fake.lastPrompt?.body.system ?? "")).toContain("bb-cli: Use bb");
   });
 
   it("forwards @subagent text unchanged (ISC-77)", async () => {

@@ -19,7 +19,11 @@ import {
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
-import { shouldPublishOpenCodeTitle } from "./session-title.js";
+import {
+  fallbackSessionTitle,
+  firstVisibleUserText,
+  shouldPublishOpenCodeTitle,
+} from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
 import { configDefaultModelId } from "./catalog.js";
 import {
@@ -167,6 +171,7 @@ let subscribed = false;
 let createCount = 0;
 let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
+let titleWatchEpoch = 0;
 const lastTitles = new Map<string, string>();
 const lastRevertCursors = new Map<string, string | null>();
 const lastTodos = new Map<string, string>();
@@ -197,6 +202,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   pendingQuestion.clear();
   configuredSkillRoots = [];
   lastTitles.clear();
+  titleWatchEpoch += 1;
   lastRevertCursors.clear();
   lastTodos.clear();
   compactIssued.clear();
@@ -322,6 +328,7 @@ function bindSession(threadId: string, session: BoundSession): void {
   });
   startTitlePoller();
   void syncSessionTitle(session.sessionId);
+  watchEnsureTitle(session.sessionId);
 }
 
 function startTitlePoller(): void {
@@ -1779,6 +1786,54 @@ async function settleIssuedTurn(
   ]);
   // Native ensureTitle forks on the first prompt step and may finish after idle.
   await syncSessionTitle(sessionId);
+  watchEnsureTitle(sessionId);
+}
+
+function publishedOpenCodeTitle(sessionId: string): boolean {
+  const title = lastTitles.get(sessionId);
+  return Boolean(title && shouldPublishOpenCodeTitle(title));
+}
+
+const TITLE_WATCH_MS = process.env.VITEST ? [1, 1, 1] : [800, 2000, 4000];
+
+/** ensureTitle is `forkIn` and often dies when `small_model` 503s. */
+function watchEnsureTitle(sessionId: string): void {
+  if (publishedOpenCodeTitle(sessionId)) return;
+  const epoch = titleWatchEpoch;
+  void (async () => {
+    for (const delay of TITLE_WATCH_MS) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      if (epoch !== titleWatchEpoch) return;
+      if (publishedOpenCodeTitle(sessionId)) return;
+      if (await syncSessionTitle(sessionId)) return;
+    }
+    if (epoch !== titleWatchEpoch) return;
+    await recoverEnsureTitle(sessionId);
+  })();
+}
+
+async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
+  if (!client || publishedOpenCodeTitle(sessionId)) return false;
+  const threadId = sessionToThread.get(sessionId);
+  if (!threadId) return false;
+  try {
+    const session = await client.getSession(sessionId);
+    if (session.parentID) return false;
+    if (session.title && shouldPublishOpenCodeTitle(session.title)) {
+      return syncSessionTitle(sessionId);
+    }
+    const messages = await client.sessionMessages(sessionId);
+    const title = fallbackSessionTitle(firstVisibleUserText(messages));
+    if (!title) return false;
+    const updated = await client.updateSession(sessionId, { title });
+    const next = updated.title ?? title;
+    lastTitles.set(sessionId, next);
+    if (!shouldPublishOpenCodeTitle(next)) return false;
+    emitDeltas(threadId, [{ kind: "thread.name", name: next }]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runSteer(args: {
@@ -2057,14 +2112,9 @@ async function runPrompt(args: {
       }
     }
     const appendix = formatSkillAppendix(configuredSkillRoots);
-    const prompt = appendix
-      ? {
-          ...built.prompt,
-          parts: [
-            ...built.prompt.parts,
-            { type: "text" as const, text: appendix },
-          ],
-        }
+    const system = [built.prompt.system, appendix].filter(Boolean).join("\n\n");
+    const prompt = system
+      ? { ...built.prompt, system }
       : built.prompt;
     const variant = openCodeVariantFor(reasoningLevelOf(args.options));
     await active.prompt(args.sessionId, {

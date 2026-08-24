@@ -10,6 +10,8 @@ export interface BuiltPrompt {
   agent: string;
   parts: PromptPart[];
   model?: { providerID: string; modelID: string };
+  /** OpenCode user-message `system`. Not a user text part — keep it out of ensureTitle. */
+  system?: string;
 }
 
 export type AttachmentMapResult =
@@ -73,19 +75,16 @@ export function buildPrompt(args: {
     return { ok: false, reason: "agent is required" };
   }
   const parts: PromptPart[] = [];
-  const instructions = args.instructions?.trim();
-  if (instructions) {
-    parts.push({
-      type: "text",
-      text: `[BB project instructions]\n${instructions}`,
-    });
-  }
   for (const item of args.input) {
     const mapped = mapAttachment(item);
     if (!mapped.ok) return mapped;
     parts.push(mapped.part);
   }
   const prompt: BuiltPrompt = { agent: args.agent, parts };
+  const instructions = args.instructions?.trim();
+  if (instructions) {
+    prompt.system = `[BB project instructions]\n${instructions}`;
+  }
   if (args.model) {
     const split = args.model.split("/");
     if (split.length >= 2) {

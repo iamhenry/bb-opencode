@@ -14,6 +14,7 @@ export interface FakeOpenCode {
     questionReject: string[];
     command: Array<{ id: string; body: Record<string, unknown> }>;
     get: number;
+    update: Array<{ id: string; title: string }>;
     messages: number;
     fork: Array<{ id: string; body: Record<string, unknown> }>;
     summarize: Array<{ id: string; body: Record<string, unknown> }>;
@@ -53,6 +54,7 @@ export function createFakeOpenCode(): FakeOpenCode {
       questionReject: [],
       command: [],
       get: 0,
+      update: [],
       messages: 0,
       fork: [],
       summarize: [],
@@ -96,6 +98,13 @@ export function createFakeOpenCode(): FakeOpenCode {
         fake.calls.get += 1;
         const session = fake.sessions.get(id);
         if (!session) throw new Error(`missing session ${id}`);
+        return session;
+      },
+      async updateSession(id, body) {
+        fake.calls.update.push({ id, title: body.title });
+        const session = fake.sessions.get(id);
+        if (!session) throw new Error(`missing session ${id}`);
+        session.title = body.title;
         return session;
       },
       async listSessions() {

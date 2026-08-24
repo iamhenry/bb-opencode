@@ -77,6 +77,11 @@ describe("shipped import rules", () => {
     expect(picker).not.toContain("sessionCommand");
   });
 
+  it("does not put Task chrome in the thread header", () => {
+    expect(read("app.tsx")).not.toContain("experimental_threadHeaderAction");
+    expect(read("app.tsx")).not.toContain("Open Task");
+  });
+
   it("does not issue RPC from picker onChange (ISC-29.2)", () => {
     const picker = read("src/app/composer-agent.tsx");
     expect(picker).toContain("setAgent(option.name)");

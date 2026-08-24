@@ -28,7 +28,7 @@ describe("prompt builder", () => {
     }
   });
 
-  it("prepends BB project instructions", () => {
+  it("puts BB project instructions on system, not a user part", () => {
     const built = buildPrompt({
       agent: "build",
       instructions: "use bun",
@@ -36,8 +36,9 @@ describe("prompt builder", () => {
     });
     expect(built.ok).toBe(true);
     if (built.ok) {
-      expect(built.prompt.parts[0]?.text).toContain("[BB project instructions]");
-      expect(built.prompt.parts[0]?.text).toContain("use bun");
+      expect(built.prompt.parts).toEqual([{ type: "text", text: "hello" }]);
+      expect(built.prompt.system).toContain("[BB project instructions]");
+      expect(built.prompt.system).toContain("use bun");
     }
   });
 

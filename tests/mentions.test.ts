@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  listAgentMentions,
   listSubagentMentions,
   mentionResolveContext,
 } from "../src/mentions.js";
@@ -20,5 +21,25 @@ describe("OpenCode mentions", () => {
     ]);
     expect(mentionResolveContext("explore").context).toContain("@explore");
     expect(mentionResolveContext("explore").context).toContain("Task");
+  });
+
+  it("matches @orchestrator on new-compose queries", () => {
+    expect(
+      listAgentMentions(
+        [
+          { name: "build", mode: "primary" },
+          { name: "orchestrator", mode: "primary", description: "Orchestrator primary" },
+          { name: "explore", mode: "subagent" },
+          { name: "title", mode: "primary", hidden: true },
+        ],
+        "orchestra",
+      ),
+    ).toEqual([
+      {
+        id: "orchestrator",
+        title: "@orchestrator",
+        subtitle: "Orchestrator primary",
+      },
+    ]);
   });
 });

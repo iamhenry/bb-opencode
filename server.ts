@@ -29,7 +29,8 @@ import {
   type PendingAdoptRecord,
 } from "./src/pending-adopt.js";
 import { classifyImportRow } from "./src/import-row.js";
-import { listSubagentMentions, mentionResolveContext } from "./src/mentions.js";
+import { listAgentMentions, mentionResolveContext } from "./src/mentions.js";
+import { persistPublishedOpenCodeTitle } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
   shouldAutoBindTaskChild,
@@ -47,6 +48,8 @@ const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
 const seenThreadIds = new Set<string>();
 let steerActiveThreadOnEnter = false;
+const taskPollTimers = ((globalThis as { __ocTaskPollTimers?: Set<ReturnType<typeof setInterval>> })
+  .__ocTaskPollTimers ??= new Set());
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
@@ -141,9 +144,11 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.events.on("thread.idle", ({ thread }) => {
     settleTurn(stamps, thread.id);
+    schedulePublishedTitlePersist(bb, thread);
   });
   bb.events.on("thread.failed", ({ thread }) => {
     settleTurn(stamps, thread.id);
+    schedulePublishedTitlePersist(bb, thread);
   });
 
   bb.rpc.register(rpcContract, {
@@ -474,17 +479,35 @@ export default async function plugin(bb: BbPluginApi) {
     id: "opencode-subagent",
     label: "OpenCode agents",
     triggers: ["@"],
-    async search({ query, threadId }) {
+    async search({ query, threadId, projectId }) {
       try {
-        if (!threadId) return [];
-        const thread = threadFields(await bb.sdk.threads.get({ threadId }));
-        if (thread.providerId !== PROVIDER_ID) return [];
+        if (threadId) {
+          const thread = threadFields(await bb.sdk.threads.get({ threadId }));
+          if (thread.providerId !== PROVIDER_ID) {
+            bb.log.info(
+              `mention skip thread=${threadId} provider=${thread.providerId ?? "none"}`,
+            );
+            return [];
+          }
+        }
         const hostId = await firstHostId(bb);
-        if (!hostId) return [];
-        const agents = await loadAgents(host, hostId);
-        return listSubagentMentions(agents, query);
-      } catch {
-        return [];
+        const agents = hostId
+          ? await loadAgents(host, hostId).catch((error) => {
+              bb.log.warn(`mention loadAgents failed: ${String(error)}`);
+              return fallbackSelectableAgents();
+            })
+          : fallbackSelectableAgents();
+        if (!hostId) {
+          bb.log.warn("mention: no enrolled host; using fallback agents");
+        }
+        const items = listAgentMentions(agents, query);
+        bb.log.info(
+          `mention q=${JSON.stringify(query)} thread=${threadId ?? "new"} project=${projectId ?? "none"} agents=${agents.length} hits=${items.length}`,
+        );
+        return items;
+      } catch (error) {
+        bb.log.warn(`mention search failed: ${String(error)}`);
+        return listAgentMentions(fallbackSelectableAgents(), query);
       }
     },
     resolve(itemId) {
@@ -516,8 +539,11 @@ export default async function plugin(bb: BbPluginApi) {
       bb.log.warn(`OpenCode task-child bind failed: ${String(error)}`);
     });
   };
+  for (const timer of taskPollTimers) clearInterval(timer);
+  taskPollTimers.clear();
+  const timer = setInterval(pollTaskChildren, 1500);
+  taskPollTimers.add(timer);
   setTimeout(pollTaskChildren, 1500);
-  setInterval(pollTaskChildren, 1500);
 
   bb.cli.register({
     name: "opencode",
@@ -605,6 +631,42 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+}
+
+const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000];
+
+function schedulePublishedTitlePersist(
+  bb: BbPluginApi,
+  thread: { id: string; providerId?: string | null; title?: string | null },
+): void {
+  if (thread.providerId !== PROVIDER_ID || thread.title) return;
+  void (async () => {
+    for (const delay of TITLE_PERSIST_MS) {
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      try {
+        const latest = await bb.sdk.threads.get({ threadId: thread.id });
+        const applied = await persistPublishedOpenCodeTitle({
+          providerId: latest.providerId ?? null,
+          title: latest.title ?? null,
+          listEvents: () =>
+            bb.sdk.threads.events.list({
+              threadId: thread.id,
+              types: ["thread/name/updated"],
+              order: "desc",
+              limit: "20",
+            }),
+          updateTitle: async (title) => {
+            await bb.sdk.threads.update({ threadId: thread.id, title });
+          },
+        });
+        if (applied || latest.title) return;
+      } catch {
+        return;
+      }
+    }
+  })();
 }
 
 async function firstHostId(bb: BbPluginApi): Promise<string | undefined> {

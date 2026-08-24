@@ -33,6 +33,7 @@ export interface OpenCodeClient {
     parentID?: string;
   }): Promise<OpenCodeSession>;
   getSession(id: string): Promise<OpenCodeSession>;
+  updateSession(id: string, body: { title: string }): Promise<OpenCodeSession>;
   listSessions(): Promise<OpenCodeSession[]>;
   sessionChildren(id: string): Promise<OpenCodeSession[]>;
   sessionMessages(id: string): Promise<
@@ -150,6 +151,13 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
     },
     async getSession(id) {
       const result = await sdk.session.get({ path: { id } });
+      return unwrap<OpenCodeSession>(result);
+    },
+    async updateSession(id, body) {
+      const result = await sdk.session.update({
+        path: { id },
+        body,
+      });
       return unwrap<OpenCodeSession>(result);
     },
     async listSessions() {
