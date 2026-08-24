@@ -3,6 +3,7 @@ import { hostContract } from "./contract.js";
 import {
   handleListAgents,
   handleListCommands,
+  handleListMessageMeta,
   handleListSessions,
   handleLogs,
   handleProbe,
@@ -75,6 +76,12 @@ export default experimental_defineHostEntry({
         context.experimental_paths.dataDir,
         input.sessionId,
         input.model,
+      );
+    },
+    async listMessageMeta(input, context) {
+      return handleListMessageMeta(
+        context.experimental_paths.dataDir,
+        input.sessionId,
       );
     },
   },

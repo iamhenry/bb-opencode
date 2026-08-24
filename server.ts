@@ -36,6 +36,14 @@ import {
 } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
+  assignRunChips,
+  collectChipTargets,
+  flattenChipTargetPages,
+  reasoningByTurnFromEvents,
+  type RunChipMessage,
+  type RunChipRow,
+} from "./src/run-chip.js";
+import {
   taskChildBindInput,
   taskChildThreadTitle,
 } from "./src/task-thread.js";
@@ -456,6 +464,9 @@ export default async function plugin(bb: BbPluginApi) {
       if (!hostId) return { commands: [] };
       return host.call("listCommands", { directory }, { hostId });
     },
+    async messageRunChips({ threadIds }) {
+      return { rows: await loadMessageRunChips(bb, host, threadIds) };
+    },
     async undo({ threadId, messageID, role, text }) {
       return revertThread(bb, host, threadId, "revert", {
         messageID,
@@ -723,6 +734,100 @@ function schedulePublishedTitlePersist(
       }
     }
   })();
+}
+
+const MAX_CHIP_TIMELINE_PAGES = 2;
+const CHIP_CACHE_MS = 4000;
+const chipCache = new Map<string, { at: number; rows: RunChipRow[] }>();
+
+async function loadMessageRunChips(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+  threadIds: readonly string[],
+): Promise<RunChipRow[]> {
+  const rows: RunChipRow[] = [];
+  const now = Date.now();
+  for (const threadId of threadIds) {
+    const cached = chipCache.get(threadId);
+    if (cached && now - cached.at < CHIP_CACHE_MS) {
+      rows.push(...cached.rows);
+      continue;
+    }
+    try {
+      const thread = fullThreadFields(await bb.sdk.threads.get({ threadId }));
+      if (thread.providerId !== PROVIDER_ID) {
+        chipCache.set(threadId, { at: now, rows: [] });
+        continue;
+      }
+      const hostId = await resolveHostId(bb, thread.environmentId);
+      const sessionId = await resolveSessionId(
+        bb,
+        threadId,
+        thread.providerThreadId,
+      );
+      if (!hostId || !sessionId) {
+        chipCache.set(threadId, { at: now, rows: [] });
+        continue;
+      }
+
+      const [targets, reasoningByTurn, listed] = await Promise.all([
+        collectThreadChipTargets(bb, threadId),
+        collectThreadReasoning(bb, threadId),
+        host.call("listMessageMeta", { sessionId }, { hostId }) as Promise<{
+          messages: RunChipMessage[];
+        }>,
+      ]);
+
+      const painted = assignRunChips({
+        targets,
+        messages: listed.messages,
+        reasoningByTurn,
+      });
+      chipCache.set(threadId, { at: now, rows: painted });
+      rows.push(...painted);
+    } catch {
+      chipCache.set(threadId, { at: now, rows: [] });
+    }
+  }
+  return rows;
+}
+
+async function collectThreadChipTargets(
+  bb: BbPluginApi,
+  threadId: string,
+) {
+  const pages = [];
+  let beforeAnchorSeq: string | undefined;
+  let beforeAnchorId: string | undefined;
+  for (let page = 0; page < MAX_CHIP_TIMELINE_PAGES; page += 1) {
+    const timeline = await bb.sdk.threads.timeline({
+      threadId,
+      includeNestedRows: "true",
+      ...(beforeAnchorSeq && beforeAnchorId
+        ? { beforeAnchorSeq, beforeAnchorId }
+        : {}),
+    });
+    pages.push(collectChipTargets(timeline.rows));
+    const older = timeline.timelinePage?.olderCursor;
+    if (!timeline.timelinePage?.hasOlderRows || !older) break;
+    beforeAnchorSeq = String(older.anchorSeq);
+    beforeAnchorId = older.anchorId;
+  }
+  return flattenChipTargetPages(pages);
+}
+
+async function collectThreadReasoning(bb: BbPluginApi, threadId: string) {
+  try {
+    const events = await bb.sdk.threads.events.list({
+      threadId,
+      types: ["client/turn/requested"],
+      order: "asc",
+      limit: "200",
+    });
+    return reasoningByTurnFromEvents(events);
+  } catch {
+    return new Map<string, string>();
+  }
 }
 
 async function firstHostId(bb: BbPluginApi): Promise<string | undefined> {

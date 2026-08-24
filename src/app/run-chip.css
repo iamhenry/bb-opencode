@@ -1,0 +1,47 @@
+/* Same paint trick as bb-plugin-message-timestamps: attributes + pseudos, no nodes. */
+
+.group\/message > .mt-1.flex.justify-end[data-oc-run]::after,
+.group\/message[data-oc-run]::after {
+  color: var(--muted-foreground);
+  content: attr(data-oc-run);
+  font-size: 0.6875rem;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* User bubble: top-right, beside the timestamp when it is present. */
+.group\/message[data-oc-align="end"][data-oc-run] {
+  position: relative;
+}
+
+.group\/message[data-oc-align="end"][data-oc-run]::after {
+  display: block;
+  line-height: 1.2;
+  position: absolute;
+  right: 0;
+  text-align: right;
+  top: -1.35em;
+}
+
+.group\/message[data-bb-sent-at][data-oc-align="end"][data-oc-run]::after {
+  padding-right: var(--oc-time-gutter, 5.5rem);
+  top: 0;
+}
+
+.group\/message > .mt-1.flex.justify-end[data-oc-align="end"][data-oc-run]::after {
+  display: inline;
+  line-height: 1.75rem;
+  margin-right: 0.25rem;
+  position: static;
+  top: auto;
+}
+
+/* LLM message: bottom-left, under the prose. */
+.group\/message[data-oc-align="start"][data-oc-run]::after {
+  display: block;
+  line-height: 1.2;
+  margin-top: 0.45rem;
+  text-align: left;
+}

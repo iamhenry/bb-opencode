@@ -119,6 +119,24 @@ export const hostContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
+  listMessageMeta: {
+    input: z.object({ sessionId: z.string().min(1) }).strict(),
+    output: z
+      .object({
+        messages: z.array(
+          z
+            .object({
+              role: z.enum(["user", "assistant"]),
+              agent: z.string(),
+              providerId: z.string(),
+              modelId: z.string(),
+              reasoning: z.string().optional(),
+            })
+            .strict(),
+        ),
+      })
+      .strict(),
+  },
 });
 
 export const rpcContract = defineRpcContract({
@@ -283,6 +301,26 @@ export const rpcContract = defineRpcContract({
         threadId: z.string().nullable(),
         created: z.boolean(),
         error: z.string().nullable(),
+      })
+      .strict(),
+  },
+  messageRunChips: {
+    input: z
+      .object({
+        threadIds: z.array(z.string().min(1)).min(1).max(8),
+      })
+      .strict(),
+    output: z
+      .object({
+        rows: z.array(
+          z
+            .object({
+              id: z.string(),
+              label: z.string(),
+              title: z.string(),
+            })
+            .strict(),
+        ),
       })
       .strict(),
   },

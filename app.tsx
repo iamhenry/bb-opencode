@@ -5,11 +5,19 @@ import {
 } from "./src/app/composer-agent.js";
 import { ComposerSlashSuggest } from "./src/app/composer-command.js";
 import { OpenCodeProviderIcon } from "./src/app/provider-icon.js";
+import { mountRunChips } from "./src/app/run-chip.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 import { PROVIDER_ID } from "./src/identity.js";
 import "./src/app/composer-agent.css";
+import "./src/app/run-chip.css";
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "opencode-run-chip",
+    mount({ pluginId, signal }) {
+      return mountRunChips({ pluginId, signal });
+    },
+  });
   app.slots.experimental_providerIcon({
     providerId: PROVIDER_ID,
     icon: OpenCodeProviderIcon,

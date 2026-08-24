@@ -1,6 +1,7 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
 import { configDefaultModelId } from "./catalog.js";
 import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
+import { messageMetaFromInfo } from "./run-chip.js";
 import { attachOrSpawn, readLock, recentServeLog } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
@@ -179,6 +180,23 @@ export async function handleUnrevert(dataDir: string, sessionId: string) {
   const client = acquire(attached.url);
   await client.unrevert(sessionId);
   return { ok: true, error: null };
+}
+
+export async function handleListMessageMeta(dataDir: string, sessionId: string) {
+  let attached;
+  try {
+    attached = await attachOrSpawn({ dataDir, spawn: false });
+  } catch {
+    return { messages: [] };
+  }
+  const client = acquire(attached.url);
+  const messages = await client.sessionMessages(sessionId);
+  return {
+    messages: messages.flatMap((message) => {
+      const meta = messageMetaFromInfo(message.info);
+      return meta ? [meta] : [];
+    }),
+  };
 }
 
 export async function handleSummarize(
