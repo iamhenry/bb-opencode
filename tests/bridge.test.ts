@@ -1806,6 +1806,29 @@ describe("provider bridge", () => {
     );
   });
 
+  it("writes a user rename onto the OpenCode session", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "rename",
+      method: "thread/name/set",
+      params: {
+        threadId: "thr_1",
+        providerThreadId: "ses_1",
+        title: "My probe",
+      },
+    });
+    await flush();
+    expect(messages.find((message) => message.id === "rename")).toMatchObject({
+      result: {},
+    });
+    expect(fake.calls.update).toContainEqual({ id: "ses_1", title: "My probe" });
+    fake.sessions.get("ses_1")!.title = "Create scratch/isc33-probe.txt";
+    expect(await syncSessionTitle("ses_1")).toBe(false);
+    expect(fake.sessions.get("ses_1")?.title).toBe("Create scratch/isc33-probe.txt");
+  });
+
   it("answers provider/usage without inventing a quota", async () => {
     installFake();
     send({ id: "usage", method: "provider/usage", params: {} });

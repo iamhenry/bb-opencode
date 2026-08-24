@@ -9,6 +9,7 @@ export const BRIDGE_REQUEST_METHODS = {
   threadResume: "thread/resume",
   threadFork: "thread/fork",
   threadStop: "thread/stop",
+  threadNameSet: "thread/name/set",
   turnStart: "turn/start",
   turnSteer: "turn/steer",
   skillsConfigure: "skills/configure",
@@ -65,6 +66,13 @@ export const threadStopParamsSchema = z
     threadId: z.string(),
     providerThreadId: z.string(),
     intent: z.enum(["interrupt", "release"]),
+  })
+  .passthrough();
+export const threadNameSetParamsSchema = z
+  .object({
+    threadId: z.string(),
+    providerThreadId: z.string(),
+    title: z.string(),
   })
   .passthrough();
 export const turnStartParamsSchema = z

@@ -13,6 +13,7 @@ import {
   threadForkParamsSchema,
   threadResumeParamsSchema,
   threadStartParamsSchema,
+  threadNameSetParamsSchema,
   threadStopParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
@@ -187,6 +188,7 @@ const pollInFlight = new Set<string>();
 const emptyAskStreak = new Map<string, number>();
 const lastPermissionCount = new Map<string, number>();
 const lastTitles = new Map<string, string>();
+const userPinnedTitles = new Set<string>();
 const lastRevertCursors = new Map<string, string | null>();
 const lastTodos = new Map<string, string>();
 const compactIssued = new Set<string>();
@@ -219,6 +221,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   pendingQuestion.clear();
   configuredSkillRoots = [];
   lastTitles.clear();
+  userPinnedTitles.clear();
   titleWatchEpoch += 1;
   lastRevertCursors.clear();
   lastTodos.clear();
@@ -580,6 +583,7 @@ export async function syncSessionRevert(sessionId: string): Promise<boolean> {
 
 export async function syncSessionTitle(sessionId: string): Promise<boolean> {
   if (!client) return false;
+  if (userPinnedTitles.has(sessionId)) return false;
   const threadId = sessionToThread.get(sessionId);
   if (!threadId) return false;
   try {
@@ -943,6 +947,10 @@ async function onOpenCodeEvent(event: {
 
   if (event.type === "session.updated" || event.type === "session.diff") {
     if (childId) return;
+    if (userPinnedTitles.has(sessionId)) {
+      void syncSessionRevert(sessionId);
+      return;
+    }
     const title = sessionTitle(event.properties);
     if (title && threadId) {
       lastTitles.set(sessionId, title);
@@ -1616,6 +1624,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
       capabilities: {
         sessionRestore: true,
+        threadRename: true,
         fork: "checkpoint",
         approvalEnforcedBy: "provider",
         steerMode: "queue",
@@ -2002,6 +2011,45 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     respondResult(id, { ok: true });
   },
 
+  [BRIDGE_REQUEST_METHODS.threadNameSet]: (id, params) => {
+    const parsed = threadNameSetParamsSchema.safeParse(params);
+    if (!parsed.success) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+        "Invalid params for thread/name/set",
+        parsed.error.issues,
+      );
+      return;
+    }
+    void (async () => {
+      try {
+        const sessionId = parsed.data.providerThreadId;
+        const title = parsed.data.title.trim();
+        if (!title) {
+          respondError(
+            id,
+            BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+            "Thread title is empty",
+          );
+          return;
+        }
+        const active = await ensureClient();
+        lastTitles.set(sessionId, title);
+        userPinnedTitles.add(sessionId);
+        await active.updateSession(sessionId, { title });
+        debugLog(`title set ses=${sessionId} ${title}`);
+        respondResult(id, {});
+      } catch (error) {
+        respondError(
+          id,
+          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  },
+
   [BRIDGE_REQUEST_METHODS.threadStop]: (id, params) => {
     const parsed = threadStopParamsSchema.safeParse(params);
     if (!parsed.success) {
@@ -2142,6 +2190,7 @@ function watchEnsureTitle(sessionId: string): void {
 
 async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
   if (!client || publishedOpenCodeTitle(sessionId)) return false;
+  if (userPinnedTitles.has(sessionId)) return false;
   const threadId = sessionToThread.get(sessionId);
   if (!threadId) return false;
   try {

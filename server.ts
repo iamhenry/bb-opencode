@@ -110,7 +110,7 @@ export default async function plugin(bb: BbPluginApi) {
       fork: "checkpoint",
       supportsManualCompaction: true,
       supportsThreadArchive: false,
-      supportsThreadRename: false,
+      supportsThreadRename: true,
       permissionModes: ["accept-edits", "auto", "full"],
       reasoningLevels: ["low", "medium", "high"],
     },
