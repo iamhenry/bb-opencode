@@ -71,6 +71,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: { status: "running", input: { command: "ls" } },
@@ -217,6 +218,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: { status: "running", input: { command: "xcodebuild", workdir: "/tmp/app" } },
@@ -227,6 +229,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: {
@@ -250,6 +253,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: { status: "running", input: { command: "ls" } },
@@ -260,6 +264,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: {
@@ -280,6 +285,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: {
         id: "bash-1",
+        callID: "bash-1",
         type: "tool",
         tool: "bash",
         state: {
@@ -331,6 +337,21 @@ describe("map-delta", () => {
       key: { providerItemId: "call_1" },
       item: { type: "command", command: "echo hi" },
     });
+  });
+
+  it("does not open a running bash row without a call id", () => {
+    expect(
+      mapPartDelta({
+        state: createMapDeltaState(),
+        sessionId: "s",
+        part: {
+          id: "prt_1",
+          type: "tool",
+          tool: "bash",
+          state: { status: "running", input: { command: "echo hi" } },
+        },
+      }),
+    ).toEqual([]);
   });
 
   it("updates the permission-card command row instead of opening a second one", () => {

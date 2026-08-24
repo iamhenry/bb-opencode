@@ -403,6 +403,20 @@ function emitRetryWarning(args: {
   ]);
 }
 
+function toolPartFromEvent(
+  record: { part?: Record<string, unknown>; callID?: unknown } | undefined,
+): Record<string, unknown> | undefined {
+  const part = record?.part ?? record;
+  if (!part || typeof part !== "object" || !("type" in part)) return undefined;
+  const callID =
+    typeof part.callID === "string"
+      ? part.callID
+      : typeof record?.callID === "string"
+        ? record.callID
+        : undefined;
+  return callID && part.callID !== callID ? { ...part, callID } : part;
+}
+
 function closeLiveTurn(
   threadId: string,
   status: "failed" | "interrupted",
@@ -1090,10 +1104,10 @@ async function onOpenCodeEvent(event: {
     if (event.type === "message.part.delta" || event.type === "message.part.updated") {
       const record =
         event.properties && typeof event.properties === "object"
-          ? (event.properties as { part?: Record<string, unknown> })
+          ? (event.properties as { part?: Record<string, unknown>; callID?: unknown })
           : undefined;
-      const part = record?.part ?? record;
-      if (part && typeof part === "object" && "type" in part) {
+      const part = toolPartFromEvent(record);
+      if (part) {
         const retry = retryFromPart(part);
         if (retry) {
           emitRetryWarning({
@@ -1141,11 +1155,15 @@ async function onOpenCodeEvent(event: {
   if (event.type === "message.part.delta" || event.type === "message.part.updated") {
     const record =
       event.properties && typeof event.properties === "object"
-        ? (event.properties as { part?: Record<string, unknown>; delta?: unknown })
+        ? (event.properties as {
+            part?: Record<string, unknown>;
+            delta?: unknown;
+            callID?: unknown;
+          })
         : undefined;
-    const part = record?.part ?? record;
+    const part = toolPartFromEvent(record);
     const delta = typeof record?.delta === "string" ? record.delta : undefined;
-    if (part && typeof part === "object" && "type" in part) {
+    if (part) {
       const retry = retryFromPart(part);
       if (retry) {
         emitRetryWarning({
@@ -2303,10 +2321,10 @@ async function settleIssuedTurn(
           sessionId,
         }),
       );
-      if (part.type === "text" && part.text && part.id) {
-        leftovers.push(...closeText(part.id, part.text));
-      }
     }
+  }
+  for (const [id, text] of liveAfter.textBuffers) {
+    leftovers.push(...closeText(id, text));
   }
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;

@@ -29,6 +29,7 @@ export interface MapDeltaState {
   closedItems: Set<string>;
   lastSnapshots: Map<string, string>;
   callIdByCommand: Map<string, string>;
+  activeCommandItemId?: string;
 }
 
 export function createMapDeltaState(): MapDeltaState {
@@ -47,10 +48,11 @@ export function createMapDeltaState(): MapDeltaState {
 export function rememberCommandItem(
   state: MapDeltaState,
   itemId: string,
-  command: string,
+  command?: string,
 ): void {
-  if (!itemId || !command) return;
-  state.callIdByCommand.set(command, itemId);
+  if (!itemId) return;
+  state.activeCommandItemId = itemId;
+  if (command) state.callIdByCommand.set(command, itemId);
   if (!state.openedItems.has(itemId)) state.openedItems.set(itemId, "command");
   if (!state.itemKeys.has(itemId)) {
     state.itemKeys.set(itemId, { providerItemId: itemId });
@@ -111,12 +113,16 @@ function commandItemId(
   command: string | undefined,
   state: MapDeltaState,
   toolName: string,
-): string {
+): string | undefined {
+  const nested =
+    part.state?.metadata && typeof part.state.metadata.callID === "string"
+      ? part.state.metadata.callID
+      : undefined;
   return (
     part.callID ??
+    nested ??
     (command ? state.callIdByCommand.get(command) : undefined) ??
-    part.id ??
-    toolName
+    state.activeCommandItemId
   );
 }
 
@@ -252,9 +258,17 @@ export function mapPartDelta(args: {
       part.state.input.command.length > 0
         ? part.state.input.command
         : undefined;
-    const itemId = isBashToolName(toolName)
+    const knownCommandId = isBashToolName(toolName)
       ? commandItemId(part, command, args.state, toolName)
-      : (part.callID ?? part.id ?? toolName);
+      : undefined;
+    if (isBashToolName(toolName) && !knownCommandId && !finished) {
+      return [];
+    }
+    const itemId =
+      knownCommandId ??
+      part.callID ??
+      part.id ??
+      toolName;
     if (args.state.closedItems.has(itemId)) return [];
     const key = deltaKey({ providerItemId: itemId }, parentRef);
     args.state.itemKeys.set(itemId, key);
