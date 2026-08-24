@@ -3,6 +3,7 @@ import {
   assistantsAfterLastUser,
   filterMessagesByRevertPoint,
   hydrateDeltas,
+  lastAssistantSettled,
   lastUserAgent,
   lastUserMessageId,
   retainThroughMessageId,
@@ -34,6 +35,27 @@ describe("hydrate", () => {
     expect(
       deltas.filter((delta) => delta.kind === "input.provider"),
     ).toHaveLength(1);
+    const skipped = hydrateDeltas({
+      sessionId: "s",
+      skipUserInput: true,
+      messages: [
+        {
+          info: { role: "user" },
+          parts: [{ type: "text", text: "hi" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [{ id: "a", type: "text", text: "yo" }],
+        },
+      ],
+    });
+    expect(skipped.filter((delta) => delta.kind === "input.provider")).toEqual([]);
+    expect(skipped).toEqual(
+      expect.arrayContaining([
+        { kind: "session.reset" },
+        { kind: "turn.open" },
+      ]),
+    );
     expect(
       assistantsAfterLastUser([
         {
@@ -83,6 +105,15 @@ describe("hydrate", () => {
       "a1",
       "a2",
     ]);
+    expect(
+      lastAssistantSettled([
+        { info: { role: "user" }, parts: [{ type: "text", text: "hi" }] },
+        {
+          info: { role: "assistant" },
+          parts: [{ type: "text", text: "yo", state: { status: "completed" } }],
+        },
+      ]),
+    ).toBe(true);
     expect(lastUserAgent([
       { info: { role: "user", agent: "plan" }, parts: [] },
       { info: { role: "assistant" }, parts: [] },

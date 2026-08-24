@@ -1742,7 +1742,8 @@ describe("provider bridge", () => {
         (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
       ).map((delta) => delta.kind);
     });
-    expect(kinds).toContain("turn.boundary");
+    expect(kinds).toContain("turn.open");
+    expect(fake.calls.prompt).toBe(0);
   });
 
   it("bind-only running child stays open until idle", async () => {

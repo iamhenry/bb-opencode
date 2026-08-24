@@ -38,6 +38,7 @@ describe("task-live", () => {
         parentSessionId: "ses_parent",
         childSessionId: "ses_child",
         title: "Find package name",
+        prompt: null,
         running: true,
         updatedAt: 1_000,
       },

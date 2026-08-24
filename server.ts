@@ -907,6 +907,7 @@ async function ensureRunningTaskChildThreads(
         environmentId: parent.environmentId,
         sessionId: live.childSessionId,
         title: live.title,
+        prompt: live.prompt ?? live.title ?? undefined,
         bindOnly: true,
       });
       rememberBoundTaskChild(live.childSessionId, childThreadId);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { sharedLockDir } from "./process.js";
 
@@ -10,9 +10,16 @@ export interface LiveTaskChild {
   parentSessionId: string;
   childSessionId: string;
   title: string | null;
+  prompt: string | null;
   running: boolean;
   boundThreadId?: string;
   updatedAt: number;
+}
+
+function writeAtomic(path: string, body: string): void {
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, body);
+  renameSync(tmp, path);
 }
 
 function livePath(): string {
@@ -55,7 +62,7 @@ export function rememberBoundTaskChild(
 ): void {
   const next = readBound();
   next[childSessionId] = boundThreadId;
-  writeFileSync(boundPath(), `${JSON.stringify(next)}\n`);
+  writeAtomic(boundPath(), `${JSON.stringify(next)}\n`);
   const rows = readAll().map((row) =>
     row.childSessionId === childSessionId ? { ...row, boundThreadId } : row,
   );
@@ -74,7 +81,7 @@ function readAll(): LiveTaskChild[] {
 }
 
 function writeAll(rows: LiveTaskChild[]): void {
-  writeFileSync(livePath(), `${JSON.stringify(rows)}\n`);
+  writeAtomic(livePath(), `${JSON.stringify(rows)}\n`);
 }
 
 export function noteLiveTaskChild(row: {
@@ -82,6 +89,7 @@ export function noteLiveTaskChild(row: {
   parentSessionId: string;
   childSessionId: string;
   title?: string | null;
+  prompt?: string | null;
   running: boolean;
   now?: number;
 }): LiveTaskChild[] {
@@ -92,11 +100,18 @@ export function noteLiveTaskChild(row: {
       item.childSessionId !== row.childSessionId &&
       now - item.updatedAt < STALE_MS,
   );
+  const incoming = row.prompt?.trim() || null;
+  const previousPrompt = previous?.prompt ?? null;
+  const prompt =
+    incoming && (!previousPrompt || incoming.length >= previousPrompt.length)
+      ? incoming
+      : previousPrompt;
   next.push({
-    parentThreadId: row.parentThreadId,
+    parentThreadId: row.parentThreadId ?? previous?.parentThreadId,
     parentSessionId: row.parentSessionId,
     childSessionId: row.childSessionId,
-    title: row.title ?? null,
+    title: row.title ?? previous?.title ?? null,
+    prompt,
     running: row.running,
     boundThreadId: previous?.boundThreadId ?? boundThreadForTaskChild(row.childSessionId) ?? undefined,
     updatedAt: now,

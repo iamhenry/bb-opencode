@@ -28,6 +28,21 @@ export function taskChildSessionId(part: {
   return undefined;
 }
 
+export function taskChildPrompt(part: {
+  state?: {
+    input?: Record<string, unknown>;
+  };
+}): string | undefined {
+  const input = part.state?.input ?? {};
+  for (const key of ["prompt", "description", "task", "query", "message"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
 export function taskDelegationLabel(part: {
   state?: {
     title?: string;

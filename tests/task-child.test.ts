@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  taskChildPrompt,
   taskChildSessionId,
   taskDelegationLabel,
   taskResultSummary,
@@ -14,6 +15,14 @@ describe("task child", () => {
       }),
     ).toBe("ses_child");
     expect(taskChildSessionId({ tool: "read", state: {} })).toBeUndefined();
+  });
+
+  it("reads the Task prompt for the child thread seed", () => {
+    expect(
+      taskChildPrompt({
+        state: { input: { prompt: "Find the package name", description: "pkg" } },
+      }),
+    ).toBe("Find the package name");
   });
 
   it("prefers description over the generic Task title", () => {

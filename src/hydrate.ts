@@ -78,6 +78,17 @@ export function lastUserAgent(messages: readonly HydrateMessage[]): string | und
   return undefined;
 }
 
+export function lastAssistantSettled(
+  messages: readonly HydrateMessage[],
+): boolean {
+  const last = messages.at(-1);
+  if (!last || last.info.role !== "assistant") return false;
+  return last.parts.every((part) => {
+    const status = part.state?.status;
+    return !status || status === "completed" || status === "error";
+  });
+}
+
 export function assistantsAfterLastUser(
   messages: readonly HydrateMessage[],
 ): HydrateMessage[] {
@@ -115,6 +126,7 @@ function userText(message: HydrateMessage): string {
 export function hydrateDeltas(args: {
   sessionId: string;
   messages: readonly HydrateMessage[];
+  skipUserInput?: boolean;
 }): ThreadDelta[] {
   const state = createMapDeltaState();
   const deltas: ThreadDelta[] = [{ kind: "session.reset" }];
@@ -129,6 +141,7 @@ export function hydrateDeltas(args: {
     if (!message) continue;
     if (message.info.role === "user") {
       closeTurn(i - 1);
+      if (args.skipUserInput) continue;
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
       const text = userText(message);

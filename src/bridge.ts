@@ -26,7 +26,7 @@ import {
   greetingSessionTitle,
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
-import { taskChildSessionId } from "./task-child.js";
+import { taskChildPrompt, taskChildSessionId } from "./task-child.js";
 import { noteLiveTaskChild } from "./task-live.js";
 import {
   coerceModelRef,
@@ -63,6 +63,7 @@ import {
   completedTurnBoundary,
   filterMessagesByRevertPoint,
   hydrateDeltas,
+  lastAssistantSettled,
   lastUserAgent,
   revertMessageIdOf,
   type HydrateMessage,
@@ -157,6 +158,7 @@ interface LiveTurn {
   pendingPrompts: Array<Record<string, unknown>>;
   retryWarned: Set<string>;
   userMessageIds: Set<string>;
+  bindOnly?: boolean;
 }
 
 interface BoundSession {
@@ -605,7 +607,10 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
         live.userMessageIds.add(message.info.id);
       }
     }
-    for (const message of assistantsAfterLastUser(messages)) {
+    const assistantMessages = live.bindOnly
+      ? messages.filter((message) => message.info.role === "assistant")
+      : assistantsAfterLastUser(messages);
+    for (const message of assistantMessages) {
       for (const part of message.parts) {
         rememberTaskChild(live, part);
         leftovers.push(
@@ -652,9 +657,9 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
       /* children are best-effort; parent leftovers still apply */
     }
     await maybeFailUncardedWrite(sessionId, messages);
-    if (leftovers.length === 0) return false;
-    emitDeltas(threadId, leftovers);
-    return true;
+    if (leftovers.length > 0) emitDeltas(threadId, leftovers);
+    completeBindOnlyIfSettled(threadId, messages);
+    return leftovers.length > 0;
   } catch {
     return false;
   }
@@ -840,6 +845,7 @@ async function replayHydrate(
   threadId: string,
   sessionId: string,
   active: OpenCodeClient,
+  options?: { skipUserInput?: boolean },
 ): Promise<void> {
   const session = await active.getSession(sessionId);
   const cursor = revertMessageIdOf(session) ?? null;
@@ -850,7 +856,11 @@ async function replayHydrate(
   );
   await rememberCatalogWindows(active);
   emitDeltas(threadId, [
-    ...hydrateDeltas({ sessionId, messages }),
+    ...hydrateDeltas({
+      sessionId,
+      messages,
+      skipUserInput: options?.skipUserInput,
+    }),
     ...usageDeltasFromMessages(messages, modelContextWindows),
   ]);
   try {
@@ -888,20 +898,30 @@ async function joinRunningSession(
   await syncLiveTurnParts(sessionId);
 }
 
+function completeBindOnlyIfSettled(
+  threadId: string,
+  messages: readonly HydrateMessage[],
+): boolean {
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted || live.promptIssued || !live.bindOnly) {
+    return false;
+  }
+  if (!lastAssistantSettled(messages)) return false;
+  live.parentBoundaryEmitted = true;
+  liveTurns.delete(threadId);
+  emitDeltas(threadId, [completedTurnBoundary(messages)]);
+  return true;
+}
+
 async function finishBindOnlyStart(args: {
   threadId: string;
   sessionId: string;
   active: OpenCodeClient;
 }): Promise<void> {
-  const running = await args.active.sessionIsRunning(args.sessionId);
-  if (running) {
-    await joinRunningSession(args.threadId, args.sessionId);
-    return;
-  }
-  emitDeltas(args.threadId, [
-    { kind: "turn.open" },
-    completedTurnBoundary(),
-  ]);
+  await joinRunningSession(args.threadId, args.sessionId);
+  const live = liveTurns.get(args.threadId);
+  if (live) live.bindOnly = true;
+  await syncLiveTurnParts(args.sessionId);
 }
 
 async function rememberCatalogWindows(active: OpenCodeClient): Promise<void> {
@@ -1102,6 +1122,16 @@ async function onOpenCodeEvent(event: {
     const id = childId ?? sessionId;
     const parentId = eventParentId(event.properties);
     if (parentId === live.sessionId) live.liveChildIds.add(id);
+    const childPrompt = userPromptFromEvent(event);
+    if (childPrompt) {
+      noteLiveTaskChild({
+        parentThreadId: live.threadId,
+        parentSessionId: live.sessionId,
+        childSessionId: id,
+        prompt: childPrompt,
+        running: true,
+      });
+    }
     if (event.type === "session.idle" || event.type === "session.status") {
       const childStatus =
         event.type === "session.idle"
@@ -1347,6 +1377,32 @@ function eventParentId(properties: unknown): string | undefined {
   return undefined;
 }
 
+function userPromptFromEvent(event: {
+  type: string;
+  properties?: unknown;
+}): string | undefined {
+  if (!event.properties || typeof event.properties !== "object") return undefined;
+  const record = event.properties as Record<string, unknown>;
+  const info =
+    record.info && typeof record.info === "object"
+      ? (record.info as { role?: unknown; parts?: unknown })
+      : undefined;
+  if (info?.role && info.role !== "user") return undefined;
+  const blobs: unknown[] = [];
+  if (Array.isArray(record.parts)) blobs.push(...record.parts);
+  if (Array.isArray(info?.parts)) blobs.push(...info.parts);
+  if (record.part) blobs.push(record.part);
+  const texts: string[] = [];
+  for (const blob of blobs) {
+    if (!blob || typeof blob !== "object") continue;
+    const part = blob as { type?: unknown; text?: unknown };
+    if (part.type && part.type !== "text") continue;
+    if (typeof part.text === "string" && part.text.trim()) texts.push(part.text.trim());
+  }
+  if (typeof record.text === "string" && record.text.trim()) texts.push(record.text.trim());
+  return texts.length > 0 ? texts.join("\n") : undefined;
+}
+
 function rememberTaskChild(
   live: LiveTurn,
   part: {
@@ -1369,6 +1425,7 @@ function rememberTaskChild(
     parentThreadId: live.threadId,
     parentSessionId: live.sessionId,
     childSessionId: childId,
+    prompt: taskChildPrompt(part),
     running: true,
   });
   const existing = live.childWork.get(childId);
@@ -2033,7 +2090,9 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         respondResult(id, { providerThreadId: sessionId });
         answered = true;
         if (adoptId) {
-          await replayHydrate(parsed.data.threadId, sessionId, active);
+          await replayHydrate(parsed.data.threadId, sessionId, active, {
+            skipUserInput: options.bindOnly === true,
+          });
         }
         if (options.bindOnly === true) {
           await finishBindOnlyStart({
