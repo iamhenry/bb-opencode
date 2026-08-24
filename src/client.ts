@@ -110,6 +110,33 @@ export function directoryQuery(directory?: string): string {
   return `?directory=${encodeURIComponent(directory)}`;
 }
 
+function isJsonContentType(response: Response): boolean {
+  const ct = response.headers.get("content-type") ?? "";
+  return ct.includes("application/json") || ct.includes("text/plain") || ct === "";
+}
+
+function isJsonSuccess(response: Response): boolean {
+  return response.ok && isJsonContentType(response);
+}
+
+async function readJsonArray(response: Response): Promise<unknown[]> {
+  if (!isJsonSuccess(response)) return [];
+  const body = (await response.json()) as unknown;
+  if (Array.isArray(body)) return body;
+  if (body && typeof body === "object" && Array.isArray((body as { data?: unknown }).data)) {
+    return (body as { data: unknown[] }).data;
+  }
+  return [];
+}
+
+function askSessionId(ask: unknown): string | undefined {
+  if (!ask || typeof ask !== "object") return undefined;
+  const record = ask as Record<string, unknown>;
+  if (typeof record.sessionID === "string") return record.sessionID;
+  if (typeof record.sessionId === "string") return record.sessionId;
+  return undefined;
+}
+
 type SdkClient = ReturnType<typeof createOpencodeClient>;
 
 export const OPENCODE_SETUP_MS = 8_000;
@@ -387,12 +414,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const query = directoryQuery(directory);
       const attempts: Array<{ path: string; body: unknown }> = [
         {
-          path: `/permission/${requestID}/reply${query}`,
-          body: { reply },
-        },
-        {
           path: `/session/${sessionID}/permissions/${requestID}${query}`,
           body: { response: reply },
+        },
+        {
+          path: `/permission/${requestID}/reply${query}`,
+          body: { reply },
         },
         {
           path: `/api/session/${sessionID}/permission/${requestID}/reply`,
@@ -410,11 +437,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
           },
           OPENCODE_REPLY_MS,
         );
-        if (response.ok) {
+        if (isJsonSuccess(response)) {
           debugLog(`perm reply ${reply} ${attempt.path}`);
           return;
         }
         lastStatus = response.status;
+        if (response.ok) continue;
         if (response.status !== 404) {
           throw new Error(`permission.reply failed: ${response.status}`);
         }
@@ -428,41 +456,25 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
         {},
         OPENCODE_SETUP_MS,
       );
-      if (scoped.ok) {
-        const body = (await scoped.json()) as unknown;
-        if (Array.isArray(body)) asks.push(...body);
-      }
-      if (asks.length === 0) {
-        const unscoped = await fetchTimed(
-          `${url}/permission`,
-          {},
-          OPENCODE_SETUP_MS,
-        );
-        if (unscoped.ok) {
-          const body = (await unscoped.json()) as unknown;
-          if (Array.isArray(body)) asks.push(...body);
-        }
-      }
+      asks.push(...(await readJsonArray(scoped)));
       if (asks.length === 0 && sessionID) {
         const v2 = await fetchTimed(
           `${url}/api/session/${sessionID}/permission`,
           {},
           OPENCODE_SETUP_MS,
         );
-        if (v2.ok) {
-          const body = (await v2.json()) as { data?: unknown } | unknown[];
-          const rows = Array.isArray(body)
-            ? body
-            : Array.isArray(body.data)
-              ? body.data
-              : [];
-          asks.push(...rows);
-        }
+        asks.push(...(await readJsonArray(v2)));
       }
-      if (asks.length > 0) {
-        debugLog(`perm n=${asks.length} dir=${directory || "-"}`);
+      const scopedAsks = sessionID
+        ? asks.filter((ask) => {
+            const sid = askSessionId(ask);
+            return !sid || sid === sessionID;
+          })
+        : asks;
+      if (scopedAsks.length > 0) {
+        debugLog(`perm n=${scopedAsks.length} dir=${directory || "-"}`);
       }
-      return asks;
+      return scopedAsks;
     },
     async replyQuestion({ requestID, sessionID, answers }) {
       if (!answers) {

@@ -215,20 +215,26 @@ export function mapPartDelta(args: {
   if (type === "tool") {
     const toolName = part.tool ?? "tool";
     if (toolName === "question" || toolName === "Question" || isTodoToolName(toolName)) return [];
-    const itemId = part.id ?? part.callID ?? toolName;
+    const finished =
+      part.state?.status === "completed" || part.state?.status === "error";
+    const itemId =
+      isBashToolName(toolName) && part.callID
+        ? part.callID
+        : (part.id ?? part.callID ?? toolName);
     if (args.state.closedItems.has(itemId)) return [];
     const key = deltaKey({ providerItemId: itemId }, parentRef);
     args.state.itemKeys.set(itemId, key);
     const alreadyOpen = args.state.openedItems.has(itemId);
     const kind = isBashToolName(toolName) ? "command" : "tool";
-    if (!alreadyOpen) args.state.openedItems.set(itemId, kind);
-    const finished =
-      part.state?.status === "completed" || part.state?.status === "error";
     if (isBashToolName(toolName)) {
       const command =
-        (typeof part.state?.input?.command === "string" &&
-          part.state.input.command) ||
-        toolName;
+        typeof part.state?.input?.command === "string" &&
+        part.state.input.command.length > 0
+          ? part.state.input.command
+          : undefined;
+      if (!command && !finished && !alreadyOpen) return [];
+      if (!alreadyOpen) args.state.openedItems.set(itemId, kind);
+      const resolvedCommand = command ?? toolName;
       const output = bashCommandOutput(part.state);
       const cwd = bashCommandCwd(part.state?.input);
       const deltas: ThreadDelta[] = [];
@@ -238,7 +244,7 @@ export function mapPartDelta(args: {
           key,
           item: {
             type: "command",
-            command,
+            command: resolvedCommand,
             cwd,
             aggregatedOutput: output,
           },
@@ -260,7 +266,7 @@ export function mapPartDelta(args: {
           status: part.state?.status === "error" ? "failed" : "completed",
           item: {
             type: "command",
-            command,
+            command: resolvedCommand,
             cwd,
             aggregatedOutput: output,
           },
@@ -268,6 +274,7 @@ export function mapPartDelta(args: {
       }
       return deltas;
     }
+    if (!alreadyOpen) args.state.openedItems.set(itemId, kind);
     const isTask = toolName === "task" || toolName === "Task";
     const presentation = isFileChangeToolName(toolName)
       ? fileChangePresentation(toolName)
@@ -378,6 +385,12 @@ export function mapSessionNextEvent(args: {
       record.input && typeof record.input === "object"
         ? (record.input as Record<string, unknown>)
         : undefined;
+    if (
+      isBashToolName(tool) &&
+      typeof input?.command !== "string"
+    ) {
+      return [];
+    }
     return mapPartDelta({
       state: args.state,
       sessionId: args.sessionId,

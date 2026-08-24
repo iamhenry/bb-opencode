@@ -1199,9 +1199,16 @@ async function onOpenCodeEvent(event: {
       live.liveChildIds.delete(sessionId);
       return;
     }
-    if (live.promptIssued && !live.parentBoundaryEmitted) {
-      /* POST /message is still the source of truth; idle must not
-         close the turn before settle can flush tool/text leftovers. */
+    if (
+      [...pendingPermission.values()].some(
+        (pending) => pending.threadId === threadId,
+      )
+    ) {
+      debugLog(`idle wait card ses=${sessionId}`);
+      return;
+    }
+    if (client) {
+      void settleIssuedTurn(threadId, sessionId, client);
       return;
     }
     if (!live.parentBoundaryEmitted) {
@@ -1575,18 +1582,7 @@ async function handlePermissionAsked(
     parentInFlight: Boolean(parentLive && !parentLive.parentBoundaryEmitted),
   });
   if (attach.action === "drop") {
-    if (typeof mapped.requestId === "string") {
-      try {
-        await active.replyPermission({
-          requestID: mapped.requestId,
-          sessionID: sessionId,
-          reply: "reject",
-          directory: boundDirectory(sessionId),
-        });
-      } catch {
-        /* already settled */
-      }
-    }
+    debugLog(`ask drop ses=${sessionId} ${attach.reason}`);
     return;
   }
   const targetThreadId = attach.threadId;
@@ -2246,8 +2242,7 @@ async function settleIssuedTurn(
   const queued = liveAfter.pendingPrompts.shift();
   if (queued) {
     try {
-      await active.prompt(sessionId, queued, boundDirectory(sessionId));
-      await settleIssuedTurn(threadId, sessionId, active);
+      await active.promptAsync(sessionId, queued, boundDirectory(sessionId));
     } catch (error) {
       liveAfter.parentBoundaryEmitted = true;
       liveTurns.delete(threadId);
@@ -2721,7 +2716,7 @@ async function runPrompt(args: {
       ? { ...built.prompt, system }
       : built.prompt;
     const variant = openCodeVariantFor(reasoningLevelOf(args.options));
-    await active.prompt(
+    await active.promptAsync(
       args.sessionId,
       {
         ...prompt,
@@ -2729,7 +2724,6 @@ async function runPrompt(args: {
       },
       sessions.get(args.threadId)?.cwd,
     );
-    await settleIssuedTurn(args.threadId, args.sessionId, active);
   } catch (error) {
     failIssuedTurn(
       args.threadId,

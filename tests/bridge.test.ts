@@ -80,6 +80,7 @@ describe("provider bridge", () => {
     });
     await flush();
     const prompts = fake.calls.prompt;
+    const asyncPrompts = fake.calls.promptAsync;
     messages.length = 0;
     send({
       id: "steer",
@@ -107,7 +108,7 @@ describe("provider bridge", () => {
     });
     expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
     expect(fake.calls.prompt).toBe(prompts);
-    expect(fake.calls.promptAsync).toBe(1);
+    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
     expect(fake.lastPrompt?.body).toMatchObject({
       agent: "build",
       parts: [{ type: "text", text: "use the v2 API" }],
@@ -140,11 +141,12 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
-    expect(fake.calls.promptAsync).toBe(0);
+    expect(fake.calls.promptAsync).toBe(1);
     expect(fake.calls.prompt).toBe(prompts);
     release?.();
+    fake.promptImpl = undefined;
     await flush();
-    expect(fake.calls.prompt).toBe(prompts + 1);
+    expect(fake.calls.promptAsync).toBe(2);
     expect(fake.lastPrompt?.body).toMatchObject({
       agent: "build",
       parts: [{ type: "text", text: "after this, update the README" }],
@@ -313,7 +315,8 @@ describe("provider bridge", () => {
       params: turnParams(),
     });
     await flush();
-    expect(fake.calls.prompt).toBe(1);
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.promptAsync).toBe(1);
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
   });
 
@@ -632,7 +635,7 @@ describe("provider bridge", () => {
       params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
     await flush();
-    expect(fake.calls.prompt).toBe(prompts + 1);
+    expect(fake.calls.promptAsync).toBe(prompts + 1);
     expect(fake.calls.messages).toBeGreaterThan(0);
   });
 
@@ -1278,7 +1281,7 @@ describe("provider bridge", () => {
     });
     await flush();
     expect(fake.calls.command).toEqual([]);
-    expect(fake.calls.prompt).toBe(1);
+    expect(fake.calls.promptAsync).toBe(1);
   });
 
   it("forwards an unknown slash as a prompt (ISC-82)", async () => {
@@ -1474,6 +1477,71 @@ describe("provider bridge", () => {
     expect(
       messages.some((message) => message.method === "interaction/request"),
     ).toBe(true);
+  });
+
+  it("does not reject a dropped foreign permission ask", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: {
+        id: "p-foreign",
+        sessionID: "ses_other",
+        permission: "bash",
+        metadata: { command: "ls" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([]);
+  });
+
+  it("does not settle a live turn while a permission card is open", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    const accept = {
+      permissionMode: "accept-edits",
+      permissionScope: "full",
+      approvalReviewer: null,
+      permissionEscalation: null,
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams({ options: accept }) });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: { ...accept, providerOptions: { agent: "build" } },
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: {
+        id: "p-card",
+        sessionID: "ses_1",
+        permission: "bash",
+        metadata: { command: "echo SMOKE" },
+      },
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string }> })?.deltas;
+        return deltas?.some((delta) => delta.kind === "turn.boundary");
+      }),
+    ).toBe(false);
   });
 
   it("forwards BB reasoningLevel as OpenCode variant", async () => {

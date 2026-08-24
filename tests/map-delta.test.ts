@@ -291,6 +291,47 @@ describe("map-delta", () => {
     expect(done.map((delta) => delta.kind)).toEqual(["item.close"]);
   });
 
+  it("does not open a bash row until the command is known", () => {
+    const state = createMapDeltaState();
+    expect(
+      mapPartDelta({
+        state,
+        sessionId: "s",
+        part: {
+          id: "prt_1",
+          callID: "call_1",
+          type: "tool",
+          tool: "bash",
+          state: { status: "running" },
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      mapSessionNextEvent({
+        type: "session.next.tool.called",
+        state,
+        sessionId: "s",
+        properties: { callID: "call_1", tool: "bash" },
+      }),
+    ).toEqual([]);
+    const opened = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: {
+        id: "prt_1",
+        callID: "call_1",
+        type: "tool",
+        tool: "bash",
+        state: { status: "running", input: { command: "echo hi" } },
+      },
+    });
+    expect(opened[0]).toMatchObject({
+      kind: "item.open",
+      key: { providerItemId: "call_1" },
+      item: { type: "command", command: "echo hi" },
+    });
+  });
+
   it("does not reopen a tool already mapped from a poll snapshot", () => {
     const state = createMapDeltaState();
     const first = mapPartDelta({

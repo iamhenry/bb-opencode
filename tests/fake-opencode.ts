@@ -124,7 +124,10 @@ export function createFakeOpenCode(): FakeOpenCode {
       async promptAsync(id, body) {
         fake.calls.promptAsync += 1;
         fake.lastPrompt = { id, body };
-        return;
+        if (fake.promptImpl) await fake.promptImpl(id, body);
+        queueMicrotask(() => {
+          fake.emit({ type: "session.idle", properties: { sessionID: id } });
+        });
       },
       async prompt(id, body) {
         fake.calls.prompt += 1;
