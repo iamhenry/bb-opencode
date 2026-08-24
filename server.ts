@@ -30,7 +30,10 @@ import {
 } from "./src/pending-adopt.js";
 import { classifyImportRow } from "./src/import-row.js";
 import { listAgentMentions, mentionResolveContext } from "./src/mentions.js";
-import { persistPublishedOpenCodeTitle } from "./src/session-title.js";
+import {
+  isPromptDerivedTitle,
+  persistPublishedOpenCodeTitle,
+} from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
   shouldAutoBindTaskChild,
@@ -662,9 +665,23 @@ const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000];
 
 function schedulePublishedTitlePersist(
   bb: BbPluginApi,
-  thread: { id: string; providerId?: string | null; title?: string | null },
+  thread: {
+    id: string;
+    providerId?: string | null;
+    title?: string | null;
+    titleFallback?: string | null;
+  },
 ): void {
-  if (thread.providerId !== PROVIDER_ID || thread.title) return;
+  if (thread.providerId !== PROVIDER_ID) return;
+  if (
+    thread.title &&
+    !isPromptDerivedTitle({
+      title: thread.title,
+      titleFallback: thread.titleFallback,
+    })
+  ) {
+    return;
+  }
   void (async () => {
     for (const delay of TITLE_PERSIST_MS) {
       if (delay > 0) {
@@ -675,6 +692,7 @@ function schedulePublishedTitlePersist(
         const applied = await persistPublishedOpenCodeTitle({
           providerId: latest.providerId ?? null,
           title: latest.title ?? null,
+          titleFallback: latest.titleFallback ?? null,
           listEvents: () =>
             bb.sdk.threads.events.list({
               threadId: thread.id,
@@ -686,7 +704,16 @@ function schedulePublishedTitlePersist(
             await bb.sdk.threads.update({ threadId: thread.id, title });
           },
         });
-        if (applied || latest.title) return;
+        if (applied) return;
+        if (
+          latest.title &&
+          !isPromptDerivedTitle({
+            title: latest.title,
+            titleFallback: latest.titleFallback,
+          })
+        ) {
+          return;
+        }
       } catch {
         return;
       }

@@ -21,8 +21,8 @@ import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
 import { debugLog, recentDebugLog, resetDebugLogForTests } from "./debug-log.js";
 import {
-  fallbackSessionTitle,
   firstVisibleUserText,
+  greetingSessionTitle,
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
@@ -2120,7 +2120,9 @@ function publishedOpenCodeTitle(sessionId: string): boolean {
   return Boolean(title && shouldPublishOpenCodeTitle(title));
 }
 
-const TITLE_WATCH_MS = process.env.VITEST ? [1, 1, 1] : [800, 2000, 4000];
+const TITLE_WATCH_MS = process.env.VITEST
+  ? [1, 1, 1]
+  : [800, 2000, 4000, 8000, 15000];
 
 /** ensureTitle is `forkIn` and often dies when `small_model` 503s. */
 function watchEnsureTitle(sessionId: string): void {
@@ -2149,8 +2151,9 @@ async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
       return syncSessionTitle(sessionId);
     }
     const messages = await client.sessionMessages(sessionId);
-    const title = fallbackSessionTitle(firstVisibleUserText(messages));
+    const title = greetingSessionTitle(firstVisibleUserText(messages));
     if (!title) return false;
+    debugLog(`title recover ses=${sessionId} ${title}`);
     const updated = await client.updateSession(sessionId, { title });
     const next = updated.title ?? title;
     lastTitles.set(sessionId, next);

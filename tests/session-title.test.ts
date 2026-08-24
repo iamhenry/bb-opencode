@@ -3,6 +3,8 @@ import {
   fallbackSessionTitle,
   firstVisibleUserText,
   isDefaultOpenCodeTitle,
+  greetingSessionTitle,
+  isPromptDerivedTitle,
   persistPublishedOpenCodeTitle,
   publishedTitleFromThreadEvents,
   shouldPublishOpenCodeTitle,
@@ -86,12 +88,13 @@ describe("OpenCode default titles", () => {
     expect(updated).toBe("Morning greeting");
   });
 
-  it("does not overwrite an existing BB title", async () => {
+  it("does not overwrite a user-set BB title", async () => {
     let updated: string | null = null;
     await expect(
       persistPublishedOpenCodeTitle({
         providerId: "opencode",
         title: "User title",
+        titleFallback: "Create the file scratch/isc33-probe.txt with exactly this content",
         listEvents: async () => {
           throw new Error("should not list");
         },
@@ -101,5 +104,45 @@ describe("OpenCode default titles", () => {
       }),
     ).resolves.toBe(false);
     expect(updated).toBeNull();
+  });
+
+  it("overwrites a prompt-derived BB title with the OpenCode name", async () => {
+    let updated: string | null = null;
+    await expect(
+      persistPublishedOpenCodeTitle({
+        providerId: "opencode",
+        title: "Create the file scratch/isc33-probe.txt with exactly this content and nothing...",
+        titleFallback:
+          "Create the file scratch/isc33-probe.txt with exactly this content and nothing...",
+        listEvents: async () => [
+          {
+            type: "thread/name/updated",
+            data: { threadName: "Create scratch/isc33-probe.txt" },
+          },
+        ],
+        updateTitle: async (title) => {
+          updated = title;
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(updated).toBe("Create scratch/isc33-probe.txt");
+  });
+
+  it("treats first-message fallbacks as prompt-derived", () => {
+    expect(
+      isPromptDerivedTitle({
+        title: "Create the file scratch/isc33-probe.txt with",
+        titleFallback:
+          "Create the file scratch/isc33-probe.txt with exactly this content",
+      }),
+    ).toBe(true);
+    expect(
+      isPromptDerivedTitle({
+        title: "Morning greeting",
+        titleFallback: "Good morning",
+      }),
+    ).toBe(false);
+    expect(greetingSessionTitle("Sup")).toBe("Casual greeting");
+    expect(greetingSessionTitle("Create a file")).toBeNull();
   });
 });

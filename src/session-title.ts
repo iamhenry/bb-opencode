@@ -36,11 +36,18 @@ export function firstVisibleUserText(
   return "";
 }
 
-/** When OpenCode `ensureTitle` fails, still publish a short name instead of the ISO placeholder. */
-export function fallbackSessionTitle(userText: string): string | null {
+export function greetingSessionTitle(userText: string): string | null {
   const text = userText.trim().replace(/\s+/g, " ");
   if (!text) return null;
-  if (GREETING.test(text)) return "Casual greeting";
+  return GREETING.test(text) ? "Casual greeting" : null;
+}
+
+/** Clip used only to recognize BB/plugin prompt-derived titles. Do not write this onto OpenCode. */
+export function fallbackSessionTitle(userText: string): string | null {
+  const greeting = greetingSessionTitle(userText);
+  if (greeting) return greeting;
+  const text = userText.trim().replace(/\s+/g, " ");
+  if (!text) return null;
   const words = text
     .replace(/[.?!]+$/g, "")
     .split(" ")
@@ -49,6 +56,20 @@ export function fallbackSessionTitle(userText: string): string | null {
   const title = words.join(" ");
   if (title.length < 2 || isDefaultOpenCodeTitle(title)) return null;
   return title.length > 80 ? `${title.slice(0, 77)}...` : title;
+}
+
+/** BB already filled the row from the first prompt. Safe to replace with OpenCode's name. */
+export function isPromptDerivedTitle(args: {
+  title?: string | null;
+  titleFallback?: string | null;
+}): boolean {
+  const title = args.title?.trim() ?? "";
+  if (!title) return true;
+  const fallback = (args.titleFallback ?? "").trim().replace(/\s+/g, " ");
+  if (!fallback) return false;
+  if (title === fallback || fallback.startsWith(title)) return true;
+  const clipped = fallbackSessionTitle(fallback);
+  return Boolean(clipped && title === clipped);
 }
 
 export function publishedTitleFromThreadEvents(events: unknown): string | null {
@@ -76,13 +97,23 @@ export function publishedTitleFromThreadEvents(events: unknown): string | null {
 export async function persistPublishedOpenCodeTitle(args: {
   providerId: string | null | undefined;
   title: string | null | undefined;
+  titleFallback?: string | null;
   listEvents: () => Promise<unknown>;
   updateTitle: (title: string) => Promise<void>;
 }): Promise<boolean> {
   if (args.providerId !== "opencode") return false;
-  if (args.title && args.title.trim().length > 0) return false;
+  const current = args.title?.trim() ?? "";
+  if (
+    current &&
+    !isPromptDerivedTitle({
+      title: current,
+      titleFallback: args.titleFallback,
+    })
+  ) {
+    return false;
+  }
   const name = publishedTitleFromThreadEvents(await args.listEvents());
-  if (!name) return false;
+  if (!name || name === current) return false;
   await args.updateTitle(name);
   return true;
 }
