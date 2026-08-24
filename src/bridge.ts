@@ -1165,6 +1165,9 @@ async function onOpenCodeEvent(event: {
           delta,
         }),
       );
+      if (toolPartWasRejected(part)) {
+        forgetPendingPermissions(threadId);
+      }
       const typed = part as { id?: string; type?: string; text?: string };
       if (typed.type === "text" && typed.id) {
         const latest =
@@ -1204,6 +1207,27 @@ async function onOpenCodeEvent(event: {
         (pending) => pending.threadId === threadId,
       )
     ) {
+      if (client) {
+        void (async () => {
+          let stillWaiting = false;
+          try {
+            const asks = await client.listPendingPermissions(
+              sessionId,
+              boundDirectory(sessionId),
+            );
+            stillWaiting = asks.length > 0;
+          } catch {
+            stillWaiting = true;
+          }
+          if (stillWaiting) {
+            debugLog(`idle wait card ses=${sessionId}`);
+            return;
+          }
+          forgetPendingPermissions(threadId);
+          await settleIssuedTurn(threadId, sessionId, client);
+        })();
+        return;
+      }
       debugLog(`idle wait card ses=${sessionId}`);
       return;
     }
@@ -1357,6 +1381,20 @@ function sessionTitle(properties: unknown): string | undefined {
     if (typeof title === "string" && title.length > 0) return title;
   }
   return undefined;
+}
+
+function forgetPendingPermissions(threadId: string): void {
+  for (const [key, pending] of pendingPermission) {
+    if (pending.threadId === threadId) pendingPermission.delete(key);
+  }
+}
+
+function toolPartWasRejected(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const state = (part as { state?: { status?: unknown; error?: unknown } })
+    .state;
+  if (!state || state.status !== "error") return false;
+  return String(state.error ?? "").includes("rejected permission");
 }
 
 async function denyPermissionAsk(args: {
@@ -1602,13 +1640,9 @@ async function handlePermissionAsked(
     return;
   }
   if (mapped.tag === "unknown" || !mapped.requestId || !mapped.subject) {
-    await denyPermissionAsk({
-      active,
-      requestId: mapped.requestId,
-      sessionId,
-      threadId: targetThreadId,
-      reason: mapped.reason ?? "unmappable permission ask",
-    });
+    debugLog(
+      `ask ignore ses=${sessionId} ${mapped.reason ?? "unmappable permission ask"}`,
+    );
     return;
   }
   const blocked = sessions.get(targetThreadId)?.disallowedTools ?? [];
@@ -1642,15 +1676,11 @@ async function handlePermissionAsked(
     return;
   }
   if (!shouldShowCard({ tag: mapped.tag, permissionMode }) || !live) {
-    await denyPermissionAsk({
-      active,
-      requestId: mapped.requestId,
-      sessionId,
-      threadId: targetThreadId,
-      reason: !live
-        ? "permission ask arrived with no live turn"
-        : "permission ask not shown",
-    });
+    debugLog(
+      `ask ignore ses=${sessionId} ${
+        !live ? "no live turn" : "permission ask not shown"
+      }`,
+    );
     return;
   }
 

@@ -39,6 +39,7 @@ export interface FakeOpenCode {
   lastRevert?: { id: string; body: Record<string, unknown> };
   lastPermissionDirectory?: string;
   lastSubscribeDirectory?: string;
+  pendingPermissions: unknown[];
   healthy: boolean;
 }
 
@@ -79,6 +80,7 @@ export function createFakeOpenCode(): FakeOpenCode {
       handler?.(event);
     },
     lastPrompt: undefined,
+    pendingPermissions: [],
     healthy: true,
     client: {
       url: "http://127.0.0.1:9",
@@ -201,10 +203,14 @@ export function createFakeOpenCode(): FakeOpenCode {
       async replyPermission({ requestID, reply, directory }) {
         fake.calls.reply.push({ requestID, reply });
         fake.lastPermissionDirectory = directory;
+        fake.pendingPermissions = fake.pendingPermissions.filter((ask) => {
+          if (!ask || typeof ask !== "object") return true;
+          return (ask as { id?: unknown }).id !== requestID;
+        });
       },
       async listPendingPermissions(_sessionID, directory) {
         fake.lastPermissionDirectory = directory;
-        return [];
+        return fake.pendingPermissions;
       },
       async sessionTodos(id) {
         return fake.todos.get(id) ?? [];

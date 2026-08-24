@@ -1411,7 +1411,7 @@ describe("provider bridge", () => {
     expect(fake.calls.reply).toEqual([]);
   });
 
-  it("rejects an unmappable ask that still has an id", async () => {
+  it("does not reject an unmappable ask that still has an id", async () => {
     const fake = installFake();
     send({
       id: "start",
@@ -1429,7 +1429,7 @@ describe("provider bridge", () => {
       type: "permission.asked",
       properties: { id: "p-bad", sessionID: "ses_1" },
     });
-    expect(fake.calls.reply).toEqual([{ requestID: "p-bad", reply: "reject" }]);
+    expect(fake.calls.reply).toEqual([]);
   });
 
   it("waits for the bash command instead of rejecting an empty ask", async () => {
@@ -1521,10 +1521,54 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
+    const ask = {
+      id: "p-card",
+      sessionID: "ses_1",
+      permission: "bash",
+      metadata: { command: "echo SMOKE" },
+    };
+    fake.pendingPermissions = [ask];
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: ask,
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string }> })?.deltas;
+        return deltas?.some((delta) => delta.kind === "turn.boundary");
+      }),
+    ).toBe(false);
+  });
+
+  it("settles when OpenCode idles after a ghost permission card", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    const accept = {
+      permissionMode: "accept-edits",
+      permissionScope: "full",
+      approvalReviewer: null,
+      permissionEscalation: null,
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams({ options: accept }) });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: { ...accept, providerOptions: { agent: "build" } },
+      }),
+    });
+    await flush();
     await ingestOpenCodeEvent({
       type: "permission.asked",
       properties: {
-        id: "p-card",
+        id: "p-ghost",
         sessionID: "ses_1",
         permission: "bash",
         metadata: { command: "echo SMOKE" },
@@ -1541,7 +1585,8 @@ describe("provider bridge", () => {
         const deltas = (message.params as { deltas?: Array<{ kind: string }> })?.deltas;
         return deltas?.some((delta) => delta.kind === "turn.boundary");
       }),
-    ).toBe(false);
+    ).toBe(true);
+    expect(fake.calls.reply).toEqual([]);
   });
 
   it("forwards BB reasoningLevel as OpenCode variant", async () => {
