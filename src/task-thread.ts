@@ -15,6 +15,21 @@ export function shouldAutoBindTaskChild(args: {
   return args.parentBound && args.running && !args.alreadyImported;
 }
 
+/** BB thread list often omits providerThreadId; resolve it from identity events. */
+export function isOpenCodeParentThread(thread: {
+  providerId?: string | null;
+  id?: string | null;
+  projectId?: string | null;
+  parentThreadId?: string | null;
+}): boolean {
+  return (
+    thread.providerId === "opencode" &&
+    Boolean(thread.id) &&
+    Boolean(thread.projectId) &&
+    !thread.parentThreadId
+  );
+}
+
 export function taskChildBindInput(): Array<{
   type: "text";
   text: string;

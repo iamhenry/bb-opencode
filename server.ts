@@ -36,10 +36,14 @@ import {
 } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
-  shouldAutoBindTaskChild,
   taskChildBindInput,
   taskChildThreadTitle,
 } from "./src/task-thread.js";
+import {
+  boundThreadForTaskChild,
+  listLiveTaskChildren,
+  rememberBoundTaskChild,
+} from "./src/task-live.js";
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
@@ -561,7 +565,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
   for (const previous of taskPollTimers) clearInterval(previous);
   taskPollTimers.clear();
-  const timer = setInterval(pollTaskChildren, 1500);
+  const timer = setInterval(pollTaskChildren, 750);
   taskPollTimers.add(timer);
   bb.onDispose(() => {
     clearInterval(timer);
@@ -878,64 +882,44 @@ async function ensureRunningTaskChildThreads(
   if (!hostId) return;
   const threads = await listProjectThreads(bb);
   const imported = importedSessionIds(threads);
-  const parents = threads
-    .map((thread) => fullThreadFields(thread))
-    .filter(
-      (thread) =>
-        thread.providerId === PROVIDER_ID &&
-        thread.providerThreadId &&
-        thread.id &&
-        thread.projectId &&
-        !thread.parentThreadId,
-    );
-  const listedById = new Map<string, ListedSessions["sessions"][number]>();
-  for (const parent of parents) {
-    const listed = (await host.call(
-      "listSessions",
-      { parentSessionId: parent.providerThreadId },
-      { hostId },
-    )) as ListedSessions;
-    for (const session of listed.sessions) {
-      listedById.set(session.id, {
-        ...session,
-        parentID: session.parentID ?? parent.providerThreadId,
-      });
-    }
-  }
-  for (const session of listedById.values()) {
-    if (!session.parentID) continue;
-    const parent = parents.find((row) => row.providerThreadId === session.parentID);
-    const parentActive =
-      parent?.status === "active" || parent?.status === "running";
+  for (const live of listLiveTaskChildren().filter((row) => row.running)) {
+    if (!live.parentThreadId) continue;
     if (
-      !shouldAutoBindTaskChild({
-        parentBound: Boolean(parent?.id && parent.projectId),
-        alreadyImported: imported.has(session.id),
-        running: session.running || Boolean(parentActive),
-      })
+      imported.has(live.childSessionId) ||
+      spawningTaskChildren.has(live.childSessionId) ||
+      boundThreadForTaskChild(live.childSessionId) ||
+      live.boundThreadId
     ) {
       continue;
     }
     const now = Date.now();
-    if ((skippedTaskChildrenUntil.get(session.id) ?? 0) > now) continue;
-    if (spawningTaskChildren.has(session.id) || !parent?.id || !parent.projectId) {
-      continue;
-    }
-    spawningTaskChildren.add(session.id);
+    if ((skippedTaskChildrenUntil.get(live.childSessionId) ?? 0) > now) continue;
+    const parent = fullThreadFields(
+      await bb.sdk.threads.get({ threadId: live.parentThreadId }),
+    );
+    if (parent.providerId !== PROVIDER_ID || !parent.id || !parent.projectId) continue;
+    spawningTaskChildren.add(live.childSessionId);
     try {
-      await spawnBoundTaskChild(bb, {
+      const childThreadId = await spawnBoundTaskChild(bb, {
         projectId: parent.projectId,
         hostId,
         parentThreadId: parent.id,
         environmentId: parent.environmentId,
-        sessionId: session.id,
-        title: session.title,
+        sessionId: live.childSessionId,
+        title: live.title,
         bindOnly: true,
       });
-    } catch {
-      skippedTaskChildrenUntil.set(session.id, now + 30_000);
+      rememberBoundTaskChild(live.childSessionId, childThreadId);
+      bb.log.info(
+        `OpenCode bound Task child ${live.childSessionId} -> ${childThreadId} parent=${parent.id}`,
+      );
+    } catch (error) {
+      skippedTaskChildrenUntil.set(live.childSessionId, now + 30_000);
+      bb.log.warn(
+        `OpenCode Task child bind failed ${live.childSessionId}: ${String(error)}`,
+      );
     } finally {
-      spawningTaskChildren.delete(session.id);
+      spawningTaskChildren.delete(live.childSessionId);
     }
   }
 }

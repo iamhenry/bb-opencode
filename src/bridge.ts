@@ -27,6 +27,7 @@ import {
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
+import { noteLiveTaskChild } from "./task-live.js";
 import {
   coerceModelRef,
   configDefaultModelId,
@@ -961,8 +962,10 @@ function eventSessionId(event: { type: string; properties?: unknown }): string |
     return (unwrapped as { sessionID: string }).sessionID;
   }
   const info = record.info;
-  if (info && typeof info === "object" && typeof (info as { sessionID?: unknown }).sessionID === "string") {
-    return (info as { sessionID: string }).sessionID;
+  if (info && typeof info === "object") {
+    const rec = info as { sessionID?: unknown; id?: unknown };
+    if (typeof rec.sessionID === "string") return rec.sessionID;
+    if (typeof rec.id === "string") return rec.id;
   }
   const part = record.part;
   if (part && typeof part === "object" && typeof (part as { sessionID?: unknown }).sessionID === "string") {
@@ -1052,6 +1055,23 @@ async function onOpenCodeEvent(event: {
     return;
   }
 
+  if (event.type === "session.created") {
+    const parentId = eventParentId(event.properties);
+    const parentThreadId = parentId ? sessionToThread.get(parentId) : undefined;
+    const parentLive = parentThreadId ? liveTurns.get(parentThreadId) : undefined;
+    if (parentLive) {
+      parentLive.liveChildIds.add(sessionId);
+      noteLiveTaskChild({
+        parentThreadId: parentLive.threadId,
+        parentSessionId: parentLive.sessionId,
+        childSessionId: sessionId,
+        title: sessionTitle(event.properties),
+        running: true,
+      });
+    }
+    return;
+  }
+
   if (event.type === "session.updated" || event.type === "session.diff") {
     if (childId) return;
     if (userPinnedTitles.has(sessionId)) {
@@ -1102,6 +1122,12 @@ async function onOpenCodeEvent(event: {
       }
       if (childStatus.kind === "idle" || event.type === "session.idle") {
         live.liveChildIds.delete(id);
+        noteLiveTaskChild({
+          parentThreadId: live.threadId,
+          parentSessionId: live.sessionId,
+          childSessionId: id,
+          running: false,
+        });
       }
       return;
     }
@@ -1339,6 +1365,12 @@ function rememberTaskChild(
   const parentItemId = part.id ?? part.callID;
   if (!childId || !parentItemId) return undefined;
   live.liveChildIds.add(childId);
+  noteLiveTaskChild({
+    parentThreadId: live.threadId,
+    parentSessionId: live.sessionId,
+    childSessionId: childId,
+    running: true,
+  });
   const existing = live.childWork.get(childId);
   if (existing) return existing;
   const work: ChildWork = {

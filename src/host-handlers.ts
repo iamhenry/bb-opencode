@@ -6,6 +6,7 @@ import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
 import { splitModelRef } from "./task-thread.js";
+import { listLiveTaskChildren } from "./task-live.js";
 
 const clients = new Map<string, OpenCodeClient>();
 
@@ -77,15 +78,30 @@ export async function handleListSessions(
   } catch {
     /* status is best-effort */
   }
-  return {
-    sessions: sessions.map((session) => ({
-      id: session.id,
-      title: session.title ?? null,
-      directory: session.directory ?? null,
-      parentID: session.parentID ?? null,
-      running: statuses.has(session.id),
-    })),
-  };
+  const mapped = sessions.map((session) => ({
+    id: session.id,
+    title: session.title ?? null,
+    directory: session.directory ?? null,
+    parentID: session.parentID ?? null,
+    running: statuses.has(session.id),
+  }));
+  const byId = new Map(mapped.map((session) => [session.id, session]));
+  for (const live of listLiveTaskChildren(parentSessionId)) {
+    const existing = byId.get(live.childSessionId);
+    if (existing) {
+      existing.running = existing.running || live.running;
+      if (!existing.title && live.title) existing.title = live.title;
+      continue;
+    }
+    byId.set(live.childSessionId, {
+      id: live.childSessionId,
+      title: live.title,
+      directory: null,
+      parentID: live.parentSessionId,
+      running: live.running,
+    });
+  }
+  return { sessions: [...byId.values()] };
 }
 
 export async function handleListCommands(

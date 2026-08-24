@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
+  isOpenCodeParentThread,
   shouldAutoBindTaskChild,
   splitModelRef,
   taskChildThreadTitle,
 } from "../src/task-thread.js";
 
 describe("task child threads", () => {
+  it("treats OpenCode roots as bind parents even without providerThreadId", () => {
+    expect(
+      isOpenCodeParentThread({
+        providerId: "opencode",
+        id: "thr_1",
+        projectId: "proj_1",
+        parentThreadId: null,
+      }),
+    ).toBe(true);
+    expect(
+      isOpenCodeParentThread({
+        providerId: "opencode",
+        id: "thr_1",
+        projectId: "proj_1",
+        parentThreadId: "thr_parent",
+      }),
+    ).toBe(false);
+  });
+
   it("auto-binds only a running child of a bound parent", () => {
     expect(
       shouldAutoBindTaskChild({
