@@ -92,26 +92,45 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
-export async function portListening(port: number): Promise<boolean> {
+export function isAbortTimeout(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = (error as { name?: unknown }).name;
+  const message = (error as { message?: unknown }).message;
+  return (
+    name === "TimeoutError" ||
+    name === "AbortError" ||
+    (typeof message === "string" && /aborted due to timeout/i.test(message))
+  );
+}
+
+async function probePort(port: number): Promise<"ok" | "slow" | "dead"> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
       signal: AbortSignal.timeout(800),
     });
-    return response.ok;
-  } catch {
-    return false;
+    return response.ok ? "ok" : "dead";
+  } catch (error) {
+    return isAbortTimeout(error) ? "slow" : "dead";
   }
+}
+
+export async function portListening(port: number): Promise<boolean> {
+  return (await probePort(port)) === "ok";
 }
 
 export function isLockStale(lock: OpenCodeLock): boolean {
   return !pidAlive(lock.pid);
 }
 
-/** Drop the lock only when the recorded port is not healthy. Keep a healthy leftover. */
+/** Drop the lock only when the port is dead. A slow answer is not a missing serve. */
 export async function reclaimIfStale(dataDir: string): Promise<boolean> {
   const lock = readLock(dataDir);
   if (!lock) return false;
-  if (await portListening(lock.port)) return false;
+  for (let i = 0; i < 3; i += 1) {
+    const probe = await probePort(lock.port);
+    if (probe === "ok" || probe === "slow") return false;
+    if (i < 2) await delay(150);
+  }
   removeLock(dataDir);
   return true;
 }
@@ -213,6 +232,13 @@ export async function attachOrSpawn(args: {
   await reclaimIfStale(args.dataDir);
   const existing = await attachIfHealthy(args.dataDir);
   if (existing) return existing;
+
+  const leftoverLock = readLock(args.dataDir);
+  if (leftoverLock) {
+    throw new Error(
+      `OpenCode serve on :${leftoverLock.port} did not answer in time. Not spawning another.`,
+    );
+  }
 
   if (args.spawn === false) {
     throw new Error(

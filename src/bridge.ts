@@ -86,7 +86,7 @@ import {
   unwrapQuestionAsk,
   type BbUserQuestionPayload,
 } from "./questions.js";
-import { attachOrSpawn } from "./process.js";
+import { attachOrSpawn, isAbortTimeout } from "./process.js";
 import { buildPrompt } from "./prompt-builder.js";
 import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
 import {
@@ -279,14 +279,26 @@ function emitDeltas(threadId: string, deltas: ThreadDelta[]): void {
   notify(THREAD_DELTA_NOTIFICATION_METHOD, { threadId, deltas });
 }
 
+function publicErrorMessage(error: unknown): string {
+  if (isAbortTimeout(error)) {
+    return "OpenCode serve did not answer in time";
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function ensureClient(): Promise<OpenCodeClient> {
   if (client) return client;
   if (!dataDir) throw new Error("bridge dataDir is not set");
-  const attached = await deps.attach(dataDir);
-  client = deps.acquire(attached.url);
-  const health = await client.health();
-  if (!isVersionInWindow(health.version)) {
-    throw new Error(versionSkewMessage(health.version));
+  try {
+    const attached = await deps.attach(dataDir);
+    client = deps.acquire(attached.url);
+    const health = await client.health();
+    if (!isVersionInWindow(health.version)) {
+      throw new Error(versionSkewMessage(health.version));
+    }
+  } catch (error) {
+    client = undefined;
+    throw new Error(publicErrorMessage(error));
   }
   void ensureSubscribed(client).catch((error) => {
     unknownLogLines.push(`subscribe-error ${String(error)}`);

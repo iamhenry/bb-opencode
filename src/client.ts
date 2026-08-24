@@ -1,5 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { listAuthenticatedProviders } from "./catalog.js";
+import { isAbortTimeout } from "./process.js";
 
 export interface OpenCodeHealth {
   healthy: boolean;
@@ -167,13 +168,29 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
   return {
     url,
     async health() {
-      const response = await fetch(`${url}/global/health`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (!response.ok) {
-        throw new Error(`OpenCode health failed: ${response.status}`);
+      let last: unknown;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const response = await fetch(`${url}/global/health`, {
+            signal: AbortSignal.timeout(800),
+          });
+          if (!response.ok) {
+            throw new Error(`OpenCode health failed: ${response.status}`);
+          }
+          return (await response.json()) as OpenCodeHealth;
+        } catch (error) {
+          last = error;
+          if (attempt < 2) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
       }
-      return (await response.json()) as OpenCodeHealth;
+      const detail = isAbortTimeout(last)
+        ? "timed out"
+        : last instanceof Error
+          ? last.message
+          : String(last);
+      throw new Error(`OpenCode serve did not answer health (${detail})`);
     },
     async createSession(args) {
       const result = await withTimeout(

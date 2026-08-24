@@ -17,12 +17,12 @@ import {
   writeLock,
 } from "../src/process.js";
 
-function withHome<T>(fn: (home: string) => T): T {
+async function withHome<T>(fn: (home: string) => Promise<T> | T): Promise<T> {
   const home = mkdtempSync(join(tmpdir(), "bb-oc-home-"));
   const previous = process.env.HOME;
   process.env.HOME = home;
   try {
-    return fn(home);
+    return await fn(home);
   } finally {
     if (previous === undefined) delete process.env.HOME;
     else process.env.HOME = previous;
@@ -41,6 +41,25 @@ describe("lock reclaim", () => {
     expect(isLockStale({ pid: 99999999, port: 1, startedAt: new Date().toISOString() })).toBe(
       true,
     );
+  });
+
+  it("keeps a lock when health is slow instead of spawning another serve", async () => {
+    await withHome(async (home) => {
+      const dir = join(home, "data");
+      writeLock(dir, { pid: process.pid, port: 4242, startedAt: new Date().toISOString() });
+      globalThis.fetch = (async () => {
+        const error = new Error("The operation was aborted due to timeout");
+        error.name = "TimeoutError";
+        throw error;
+      }) as typeof fetch;
+      expect(await reclaimIfStale(dir)).toBe(false);
+      expect(readLock(dir)?.port).toBe(4242);
+      spawnMock.mockClear();
+      await expect(
+        attachOrSpawn({ dataDir: dir, binary: "opencode" }),
+      ).rejects.toThrow(/did not answer in time|Not spawning another/i);
+      expect(spawnMock).not.toHaveBeenCalled();
+    });
   });
 
   it("removes a lock only when the port is not healthy", async () => {
