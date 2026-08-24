@@ -67,3 +67,45 @@ function modelRefFromUnknown(raw: unknown): string | undefined {
   }
   return undefined;
 }
+
+function modelIdsOf(provider: CatalogProvider): string[] {
+  if (!provider.models || typeof provider.models !== "object") return [];
+  return Object.keys(provider.models as Record<string, unknown>);
+}
+
+/** BB `options.model` is often the catalog `model` field (bare id), not `provider/model`. */
+export function coerceModelRef(
+  raw: string | undefined,
+  args: {
+    providers?: readonly CatalogProvider[];
+    lastPrompted?: string;
+    configured?: string;
+  } = {},
+): string | undefined {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed.includes("/")) return trimmed;
+  const hinted = [args.lastPrompted, args.configured].filter(
+    (value): value is string => typeof value === "string" && value.includes("/"),
+  );
+  if (trimmed) {
+    for (const hint of hinted) {
+      const slash = hint.indexOf("/");
+      if (hint.slice(slash + 1) === trimmed) return hint;
+    }
+    const matches: string[] = [];
+    for (const provider of args.providers ?? []) {
+      if (modelIdsOf(provider).includes(trimmed)) {
+        matches.push(`${provider.id}/${trimmed}`);
+      }
+    }
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      for (const prefix of ["openai", "anthropic", "opencode"]) {
+        const hit = matches.find((id) => id.startsWith(`${prefix}/`));
+        if (hit) return hit;
+      }
+      return matches[0];
+    }
+  }
+  return hinted[0];
+}

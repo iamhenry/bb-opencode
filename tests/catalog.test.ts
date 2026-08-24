@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  coerceModelRef,
   configDefaultModelId,
   lastModelIdFromMessages,
   listAuthenticatedProviders,
@@ -47,6 +48,24 @@ describe("authenticated OpenCode catalog", () => {
         model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
       }),
     ).toBe("anthropic/claude-sonnet-4");
+  });
+
+  it("coerces BB bare model ids onto provider/model", () => {
+    expect(coerceModelRef("openai/gpt-5.6-luna")).toBe("openai/gpt-5.6-luna");
+    expect(
+      coerceModelRef("gpt-5.6-luna", {
+        lastPrompted: "openai/gpt-5.6-luna",
+      }),
+    ).toBe("openai/gpt-5.6-luna");
+    expect(
+      coerceModelRef("gpt-5.6-luna", {
+        providers: [
+          { id: "anthropic", models: { "claude-sonnet-4": {} } },
+          { id: "openai", models: { "gpt-5.6-luna": {}, "gpt-5.6-sol": {} } },
+        ],
+      }),
+    ).toBe("openai/gpt-5.6-luna");
+    expect(coerceModelRef("gpt-5.6-luna")).toBeUndefined();
   });
 
   it("reads the last prompted model from session messages", () => {

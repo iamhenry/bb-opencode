@@ -25,7 +25,11 @@ import {
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
-import { configDefaultModelId, lastModelIdFromMessages } from "./catalog.js";
+import {
+  coerceModelRef,
+  configDefaultModelId,
+  lastModelIdFromMessages,
+} from "./catalog.js";
 import {
   isCompactRequest,
   isCompactionSkipError,
@@ -2127,19 +2131,35 @@ async function resolvePromptModel(
   options: unknown,
   active: OpenCodeClient,
 ): Promise<{ ok: true; id?: string } | { ok: false; reason: string }> {
-  const raw = (options as { model?: unknown })?.model;
-  if (typeof raw === "string" && raw.trim().length > 0) {
-    if (!splitModelRef(raw)) {
-      return {
-        ok: false,
-        reason: `OpenCode model must be provider/model, got ${raw}`,
-      };
-    }
-    rememberPromptedModel(sessionId, raw);
-    return { ok: true, id: raw };
-  }
+  const raw =
+    typeof (options as { model?: unknown })?.model === "string"
+      ? ((options as { model: string }).model as string).trim()
+      : undefined;
   const remembered = lastPromptedModels.get(sessionId) ?? lastPromptedModel;
-  if (remembered) return { ok: true, id: remembered };
+  let providers: Array<{ id: string; models?: unknown }> = [];
+  let configured: string | undefined;
+  if (raw && !raw.includes("/")) {
+    try {
+      const catalog = await active.providers();
+      providers = catalog.providers ?? [];
+    } catch {
+      /* catalog is best-effort */
+    }
+    try {
+      configured = configDefaultModelId(await active.getConfig());
+    } catch {
+      configured = undefined;
+    }
+  }
+  const coerced = coerceModelRef(raw, {
+    providers,
+    lastPrompted: remembered,
+    configured,
+  });
+  if (coerced) {
+    rememberPromptedModel(sessionId, coerced);
+    return { ok: true, id: coerced };
+  }
   try {
     const fromHistory = lastModelIdFromMessages(
       await active.sessionMessages(sessionId),

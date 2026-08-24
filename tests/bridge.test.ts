@@ -1573,6 +1573,40 @@ describe("provider bridge", () => {
     expect(fake.calls.prompt).toBe(0);
   });
 
+  it("pins BB bare model ids as provider/model on the first prompt", async () => {
+    const fake = installFake();
+    fake.client.providers = async () => ({
+      providers: [{ id: "openai", models: { "gpt-5.6-luna": {} } }],
+    });
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        input: [{ type: "text", text: "write scratch/isc33-probe.txt", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "gpt-5.6-luna",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "build",
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+    });
+    const failed = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []
+      );
+    }).find(
+      (delta) => delta.kind === "turn.boundary" && delta.status === "failed",
+    );
+    expect(failed).toBeUndefined();
+  });
+
   it("routes standalone /compact through session.summarize (ISC-92)", async () => {
     const fake = installFake();
     fake.commands.push({ name: "compact" });
