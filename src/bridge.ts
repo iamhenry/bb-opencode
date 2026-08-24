@@ -25,7 +25,7 @@ import {
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
 import { taskChildSessionId } from "./task-child.js";
-import { configDefaultModelId } from "./catalog.js";
+import { configDefaultModelId, lastModelIdFromMessages } from "./catalog.js";
 import {
   isCompactRequest,
   isCompactionSkipError,
@@ -185,6 +185,9 @@ const rewindRestores = new Map<
   { sourceId: string; checkpointId: string }
 >();
 const modelContextWindows = new Map<string, number>();
+const lastPromptedModels = new Map<string, string>();
+let lastPromptedModel: string | undefined;
+let reconnecting = false;
 let deps: BridgeDeps = {
   acquire: createSdkClient,
   attach: async (dir) => attachOrSpawn({ dataDir: dir }),
@@ -213,6 +216,9 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   pollInFlight.clear();
   rewindRestores.clear();
   modelContextWindows.clear();
+  lastPromptedModels.clear();
+  lastPromptedModel = undefined;
+  reconnecting = false;
   if (titleTimer) {
     clearInterval(titleTimer);
     titleTimer = undefined;
@@ -280,7 +286,7 @@ async function ensureClient(): Promise<OpenCodeClient> {
   }
   void ensureSubscribed(client).catch((error) => {
     unknownLogLines.push(`subscribe-error ${String(error)}`);
-    dropConnection("OpenCode event stream failed to start");
+    void onStreamClosed("OpenCode event stream failed to start");
   });
   return client;
 }
@@ -300,7 +306,7 @@ function failLiveTurns(message: string): void {
   liveTurns.clear();
 }
 
-function dropConnection(message: string): void {
+function serveLost(message: string): void {
   const had = Boolean(client || subscribed);
   subscribed = false;
   client = undefined;
@@ -313,24 +319,40 @@ function dropConnection(message: string): void {
   });
 }
 
+async function onStreamClosed(message: string): Promise<void> {
+  subscribed = false;
+  if (reconnecting) return;
+  reconnecting = true;
+  try {
+    const active = client;
+    if (active) {
+      try {
+        const health = await active.health();
+        if (health.healthy) {
+          await ensureSubscribed(active);
+          return;
+        }
+      } catch {
+        /* serve is gone */
+      }
+    }
+    serveLost(message);
+  } finally {
+    reconnecting = false;
+  }
+}
+
 async function ensureSubscribed(active: OpenCodeClient): Promise<void> {
   if (subscribed) return;
   subscribed = true;
-  const sub = await active.subscribe((event) => {
+  await active.subscribe((event) => {
     if (event.type === "server.disconnected") {
-      dropConnection("OpenCode event stream closed");
+      void onStreamClosed("OpenCode event stream closed");
       return;
     }
     void onOpenCodeEvent(event).catch((error) => {
       unknownLogLines.push(`event-handler-error ${String(error)}`);
     });
-  });
-  void Promise.resolve(sub).then((handle) => {
-    const original = handle.unsubscribe;
-    handle.unsubscribe = () => {
-      original.call(handle);
-      dropConnection("OpenCode event stream closed");
-    };
   });
 }
 
@@ -622,6 +644,14 @@ function attachObservedTurn(threadId: string, sessionId: string): void {
   emitDeltas(threadId, [{ kind: "turn.open" }]);
 }
 
+async function joinRunningSession(
+  threadId: string,
+  sessionId: string,
+): Promise<void> {
+  attachObservedTurn(threadId, sessionId);
+  await syncLiveTurnParts(sessionId);
+}
+
 async function finishBindOnlyStart(args: {
   threadId: string;
   sessionId: string;
@@ -629,7 +659,7 @@ async function finishBindOnlyStart(args: {
 }): Promise<void> {
   const running = await args.active.sessionIsRunning(args.sessionId);
   if (running) {
-    attachObservedTurn(args.threadId, args.sessionId);
+    await joinRunningSession(args.threadId, args.sessionId);
     return;
   }
   emitDeltas(args.threadId, [
@@ -711,7 +741,7 @@ async function onOpenCodeEvent(event: {
   properties?: unknown;
 }): Promise<void> {
   if (event.type === "server.disconnected") {
-    dropConnection("OpenCode event stream closed");
+    await onStreamClosed("OpenCode event stream closed");
     return;
   }
   const sessionId = eventSessionId(event);
@@ -1559,6 +1589,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           configured = undefined;
         }
         const preferred =
+          models.find((model) => model.id === lastPromptedModel) ??
           models.find((model) => model.id === configured) ??
           models.find((model) => /openai|anthropic|opencode/i.test(model.id)) ??
           models[0];
@@ -1679,11 +1710,12 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           ...sessionPolicy(parsed.data),
         });
         respondResult(id, { providerThreadId: parsed.data.providerThreadId });
-        await replayHydrate(
-          parsed.data.threadId,
-          parsed.data.providerThreadId,
-          active,
-        );
+        if (await active.sessionIsRunning(parsed.data.providerThreadId)) {
+          await joinRunningSession(
+            parsed.data.threadId,
+            parsed.data.providerThreadId,
+          );
+        }
       } catch (error) {
         respondError(
           id,
@@ -2092,6 +2124,43 @@ async function runSteer(args: {
   live.pendingPrompts.push(body);
 }
 
+function rememberPromptedModel(sessionId: string, model: string): void {
+  lastPromptedModels.set(sessionId, model);
+  lastPromptedModel = model;
+}
+
+async function resolvePromptModel(
+  sessionId: string,
+  options: unknown,
+  active: OpenCodeClient,
+): Promise<{ ok: true; id?: string } | { ok: false; reason: string }> {
+  const raw = (options as { model?: unknown })?.model;
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    if (!splitModelRef(raw)) {
+      return {
+        ok: false,
+        reason: `OpenCode model must be provider/model, got ${raw}`,
+      };
+    }
+    rememberPromptedModel(sessionId, raw);
+    return { ok: true, id: raw };
+  }
+  const remembered = lastPromptedModels.get(sessionId) ?? lastPromptedModel;
+  if (remembered) return { ok: true, id: remembered };
+  try {
+    const fromHistory = lastModelIdFromMessages(
+      await active.sessionMessages(sessionId),
+    );
+    if (fromHistory) {
+      rememberPromptedModel(sessionId, fromHistory);
+      return { ok: true, id: fromHistory };
+    }
+  } catch {
+    /* history is best-effort */
+  }
+  return { ok: true };
+}
+
 async function resolveCompactModel(
   active: OpenCodeClient,
   options: unknown,
@@ -2242,12 +2311,25 @@ async function runPrompt(args: {
     return;
   }
   const bound = sessions.get(args.threadId);
+  const model = await resolvePromptModel(
+    args.sessionId,
+    args.options,
+    active,
+  );
+  if (!model.ok) {
+    emitDeltas(args.threadId, [
+      {
+        kind: "turn.boundary",
+        status: "failed",
+        error: { message: model.reason },
+      },
+    ]);
+    return;
+  }
   const built = buildPrompt({
     agent: resolved.agent,
     input: args.input,
-    model: typeof (args.options as { model?: unknown })?.model === "string"
-      ? ((args.options as { model: string }).model as string)
-      : undefined,
+    model: model.id,
     instructions:
       bound?.instructions ?? instructionsOf(args.options),
   });

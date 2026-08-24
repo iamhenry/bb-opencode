@@ -37,6 +37,7 @@ export interface FakeOpenCode {
   promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
   lastPrompt?: { id: string; body: Record<string, unknown> };
   lastRevert?: { id: string; body: Record<string, unknown> };
+  healthy: boolean;
 }
 
 export function createFakeOpenCode(): FakeOpenCode {
@@ -76,10 +77,11 @@ export function createFakeOpenCode(): FakeOpenCode {
       handler?.(event);
     },
     lastPrompt: undefined,
+    healthy: true,
     client: {
       url: "http://127.0.0.1:9",
       async health() {
-        return { healthy: true, version: "1.18.21" };
+        return { healthy: fake.healthy, version: "1.18.21" };
       },
       async createSession(args) {
         fake.calls.create += 1;

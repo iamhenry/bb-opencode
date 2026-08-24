@@ -176,6 +176,7 @@ describe("provider bridge", () => {
     expect(identity?.params).toMatchObject({ providerThreadId: "ses_1" });
 
     const createAfterStart = fake.calls.create;
+    messages.length = 0;
     send({
       id: "resume",
       method: "thread/resume",
@@ -185,15 +186,60 @@ describe("provider bridge", () => {
     expect(fake.calls.create).toBe(createAfterStart);
     expect(fake.calls.get).toBeGreaterThan(0);
     const resumeDeltas = messages.filter(
-      (message) => message.method === "thread/delta",
+      (message) =>
+        message.method === "thread/delta" &&
+        (message.params as { threadId?: string }).threadId === "thr_1",
     );
-    expect(
-      resumeDeltas.some((message) => {
-        const deltas = (message.params as { deltas?: Array<{ kind: string }> })
-          ?.deltas;
-        return deltas?.some((delta) => delta.kind === "session.reset");
+    const kinds = resumeDeltas.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<{ kind: string }> }).deltas ?? []).map(
+          (delta) => delta.kind,
+        ),
+    );
+    expect(kinds).not.toContain("session.reset");
+    expect(kinds).not.toContain("turn.open");
+  });
+
+  it("joins a running session on resume without replaying history", async () => {
+    const fake = installFake();
+    fake.sessions.set("ses_1", { id: "ses_1" });
+    fake.runningIds.add("ses_1");
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "keep going" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "t1", type: "text", text: "working" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: { ...fullOptions, providerOptions: { adoptSessionId: "ses_1" } },
       }),
-    ).toBe(true);
+    });
+    await flush();
+    messages.length = 0;
+    send({
+      id: "resume",
+      method: "thread/resume",
+      params: sessionParams({ providerThreadId: "ses_1" }),
+    });
+    await flush();
+    const kinds = messages
+      .filter((message) => message.method === "thread/delta")
+      .flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<{ kind: string }> }).deltas ?? []).map(
+            (delta) => delta.kind,
+          ),
+      );
+    expect(kinds).not.toContain("session.reset");
+    expect(kinds).toContain("turn.open");
+    expect(kinds).not.toContain("turn.boundary");
   });
 
   it("errors when session.create has no id instead of returning empty identity", async () => {
@@ -269,6 +315,28 @@ describe("provider bridge", () => {
     await flush();
     expect(fake.calls.prompt).toBe(1);
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
+  });
+
+  it("pins the composer model on every session.prompt", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "build",
+      model: { providerID: "xai", modelID: "grok-4.6" },
+    });
   });
 
   it("stamps providerCheckpointId on a completed turn", async () => {
@@ -865,8 +933,33 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
-  it("errors live turns when the event stream dies (ISC-26)", async () => {
+  it("keeps live turns when the event stream drops but serve is healthy", async () => {
     const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({ type: "server.disconnected" });
+    expect(
+      messages.some((message) => {
+        const deltas = (message.params as { deltas?: Array<{ kind: string; status?: string }> })
+          ?.deltas;
+        return deltas?.some(
+          (delta) => delta.kind === "turn.boundary" && delta.status === "failed",
+        );
+      }),
+    ).toBe(false);
+  });
+
+  it("errors live turns when the event stream dies and serve is gone (ISC-26)", async () => {
+    const fake = installFake();
+    fake.healthy = false;
     fake.promptImpl = () => new Promise(() => undefined);
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();

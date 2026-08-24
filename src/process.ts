@@ -14,6 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 export const LOCK_FILE_NAME = "opencode.lock.json";
 export const CLAIM_FILE_NAME = "opencode.lock.claim";
 const CLAIM_STALE_MS = 5_000;
+const CLAIM_WAIT_ATTEMPTS = 80;
 const SERVE_LOG_LIMIT = 40;
 
 export interface OpenCodeLock {
@@ -150,7 +151,7 @@ export function reclaimStaleClaim(now = Date.now()): boolean {
     }
     const mtime = statSync(path).mtimeMs;
     const age = now - (startedAt ?? mtime);
-    if ((pid !== undefined && pidAlive(pid)) && age < CLAIM_STALE_MS) {
+    if (pid !== undefined && pidAlive(pid) && age < CLAIM_STALE_MS) {
       return false;
     }
     unlinkSync(path);
@@ -222,6 +223,8 @@ export async function attachOrSpawn(args: {
   const claim = claimPath();
   reclaimStaleClaim();
   let claimed = false;
+  let child: ReturnType<typeof spawn> | undefined;
+  let lockPublished = false;
   try {
     writeFileSync(
       claim,
@@ -230,7 +233,7 @@ export async function attachOrSpawn(args: {
     );
     claimed = true;
   } catch {
-    for (let i = 0; i < 40; i += 1) {
+    for (let i = 0; i < CLAIM_WAIT_ATTEMPTS; i += 1) {
       await delay(100);
       reclaimStaleClaim();
       const attached = await attachIfHealthy(args.dataDir);
@@ -253,7 +256,7 @@ export async function attachOrSpawn(args: {
     const binary = args.binary ?? resolveOpenCodeBinary();
     if (!binary) throw new Error("OpenCode binary not found");
     const port = await allocatePort();
-    const child = spawn(
+    child = spawn(
       binary,
       ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
       {
@@ -292,6 +295,7 @@ export async function attachOrSpawn(args: {
       startedAt: new Date().toISOString(),
       cwd: args.dataDir,
     });
+    lockPublished = true;
     return {
       url: `http://127.0.0.1:${port}`,
       pid: child.pid,
@@ -300,6 +304,13 @@ export async function attachOrSpawn(args: {
       cwd: args.dataDir,
     };
   } finally {
+    if (child && !lockPublished) {
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+    }
     if (claimed) {
       try {
         unlinkSync(claim);

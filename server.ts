@@ -48,8 +48,9 @@ const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
 const seenThreadIds = new Set<string>();
 let steerActiveThreadOnEnter = false;
-const taskPollTimers = ((globalThis as { __ocTaskPollTimers?: Set<ReturnType<typeof setInterval>> })
-  .__ocTaskPollTimers ??= new Set());
+const taskPollTimers = ((globalThis as {
+  __ocTaskPollTimers?: Set<ReturnType<typeof setInterval>>;
+}).__ocTaskPollTimers ??= new Set());
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
@@ -543,16 +544,26 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }, 0);
 
+  let taskPollInFlight = false;
   const pollTaskChildren = () => {
-    void ensureRunningTaskChildThreads(bb, host).catch((error) => {
-      bb.log.warn(`OpenCode task-child bind failed: ${String(error)}`);
-    });
+    if (taskPollInFlight) return;
+    taskPollInFlight = true;
+    void ensureRunningTaskChildThreads(bb, host)
+      .catch((error) => {
+        bb.log.warn(`OpenCode task-child bind failed: ${String(error)}`);
+      })
+      .finally(() => {
+        taskPollInFlight = false;
+      });
   };
-  for (const timer of taskPollTimers) clearInterval(timer);
+  for (const previous of taskPollTimers) clearInterval(previous);
   taskPollTimers.clear();
   const timer = setInterval(pollTaskChildren, 1500);
   taskPollTimers.add(timer);
-  setTimeout(pollTaskChildren, 1500);
+  bb.onDispose(() => {
+    clearInterval(timer);
+    taskPollTimers.delete(timer);
+  });
 
   bb.cli.register({
     name: "opencode",

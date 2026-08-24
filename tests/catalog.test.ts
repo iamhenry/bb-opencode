@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   configDefaultModelId,
+  lastModelIdFromMessages,
   listAuthenticatedProviders,
 } from "../src/catalog.js";
 
@@ -46,5 +47,25 @@ describe("authenticated OpenCode catalog", () => {
         model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
       }),
     ).toBe("anthropic/claude-sonnet-4");
+  });
+
+  it("reads the last prompted model from session messages", () => {
+    expect(
+      lastModelIdFromMessages([
+        {
+          info: {
+            role: "user",
+            model: { providerID: "xai", modelID: "grok-4.6" },
+          },
+        },
+        {
+          info: {
+            role: "assistant",
+            providerID: "openai",
+            modelID: "gpt-5.6-sol",
+          },
+        },
+      ]),
+    ).toBe("openai/gpt-5.6-sol");
   });
 });

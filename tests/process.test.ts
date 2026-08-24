@@ -1,7 +1,10 @@
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const spawnMock = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import {
   attachOrSpawn,
   claimPath,
@@ -31,6 +34,7 @@ describe("lock reclaim", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    spawnMock.mockReset();
   });
 
   it("treats a dead pid as stale (ISC-50.1)", () => {
@@ -65,6 +69,54 @@ describe("lock reclaim", () => {
       expect(reclaimStaleClaim()).toBe(true);
       expect(existsSync(claimPath())).toBe(false);
     });
+  });
+
+  it("keeps a fresh claim while its owner pid is alive", () => {
+    withHome(() => {
+      writeFileSync(
+        claimPath(),
+        `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+      );
+      expect(reclaimStaleClaim()).toBe(false);
+      expect(existsSync(claimPath())).toBe(true);
+    });
+  });
+
+  it("reclaims a live-pid claim after the 5s TTL", () => {
+    withHome(() => {
+      writeFileSync(
+        claimPath(),
+        `${JSON.stringify({ pid: process.pid, startedAt: "2000-01-01T00:00:00.000Z" })}\n`,
+      );
+      expect(reclaimStaleClaim()).toBe(true);
+      expect(existsSync(claimPath())).toBe(false);
+    });
+  });
+
+  it("kills a spawned serve that exits during startup", async () => {
+    const home = mkdtempSync(join(tmpdir(), "bb-oc-home-"));
+    const previous = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const child = {
+        pid: 12345,
+        exitCode: 1,
+        kill: vi.fn(),
+        unref: vi.fn(),
+        stderr: { on: vi.fn() },
+        stdout: { on: vi.fn() },
+      };
+      spawnMock.mockReturnValue(child);
+      globalThis.fetch = (async () => ({ ok: false })) as unknown as typeof fetch;
+
+      await expect(
+        attachOrSpawn({ dataDir: join(home, "data"), binary: "opencode" }),
+      ).rejects.toThrow(/exited during startup|exited with/i);
+      expect(child.kill).toHaveBeenCalledOnce();
+    } finally {
+      if (previous === undefined) delete process.env.HOME;
+      else process.env.HOME = previous;
+    }
   });
 
   it("refuses to spawn when attach-only and no healthy serve", async () => {

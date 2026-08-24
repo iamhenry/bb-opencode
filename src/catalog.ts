@@ -37,15 +37,33 @@ export function listAuthenticatedProviders(raw: unknown): CatalogProvider[] {
 
 /** OpenCode `GET /config` model → BB `provider/model` id. */
 export function configDefaultModelId(raw: unknown): string | undefined {
+  return modelRefFromUnknown(
+    raw && typeof raw === "object" ? (raw as { model?: unknown }).model : undefined,
+  );
+}
+
+/** Last prompted model on an OpenCode message list → BB `provider/model`. */
+export function lastModelIdFromMessages(
+  messages: readonly { info?: Record<string, unknown> }[],
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const info = messages[i]?.info;
+    if (!info) continue;
+    const fromInfo =
+      modelRefFromUnknown(info.model) ??
+      modelRefFromUnknown(info);
+    if (fromInfo) return fromInfo;
+  }
+  return undefined;
+}
+
+function modelRefFromUnknown(raw: unknown): string | undefined {
+  if (typeof raw === "string" && raw.includes("/")) return raw;
   if (!raw || typeof raw !== "object") return undefined;
-  const model = (raw as { model?: unknown }).model;
-  if (typeof model === "string" && model.includes("/")) return model;
-  if (model && typeof model === "object") {
-    const providerID = (model as { providerID?: unknown }).providerID;
-    const modelID = (model as { modelID?: unknown }).modelID;
-    if (typeof providerID === "string" && typeof modelID === "string") {
-      return `${providerID}/${modelID}`;
-    }
+  const providerID = (raw as { providerID?: unknown }).providerID;
+  const modelID = (raw as { modelID?: unknown }).modelID;
+  if (typeof providerID === "string" && typeof modelID === "string") {
+    return `${providerID}/${modelID}`;
   }
   return undefined;
 }
