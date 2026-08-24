@@ -26,6 +26,26 @@ describe("permission map", () => {
     ).toBe(false);
   });
 
+  it("defers a bash ask until the command string arrives", () => {
+    const mapped = mapPermissionAsk({
+      id: "p1",
+      sessionID: "s1",
+      permission: "bash",
+    });
+    expect(mapped.tag).toBe("deferred");
+    expect(
+      shouldAutoApprove({ tag: mapped.tag, permissionMode: "full" }),
+    ).toBe(false);
+    expect(
+      mapPermissionAsk({
+        id: "p1",
+        sessionID: "s1",
+        type: "bash",
+        pattern: "*",
+      }).tag,
+    ).toBe("deferred");
+  });
+
   it("auto-approves only ok asks under full", () => {
     expect(
       shouldAutoApprove({ tag: "ok", permissionMode: "full" }),

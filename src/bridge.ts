@@ -1601,6 +1601,10 @@ async function handlePermissionAsked(
     const existing = `oc-perm-${mapped.requestId}`;
     if (pendingPermission.has(existing)) return;
   }
+  if (mapped.tag === "deferred") {
+    debugLog(`ask wait ses=${sessionId} bash command pending`);
+    return;
+  }
   if (mapped.tag === "unknown" || !mapped.requestId || !mapped.subject) {
     await denyPermissionAsk({
       active,

@@ -1424,9 +1424,56 @@ describe("provider bridge", () => {
     await flush();
     await ingestOpenCodeEvent({
       type: "permission.asked",
-      properties: { id: "p-bad", sessionID: "ses_1", permission: "bash" },
+      properties: { id: "p-bad", sessionID: "ses_1" },
     });
     expect(fake.calls.reply).toEqual([{ requestID: "p-bad", reply: "reject" }]);
+  });
+
+  it("waits for the bash command instead of rejecting an empty ask", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    const accept = {
+      permissionMode: "accept-edits",
+      permissionScope: "full",
+      approvalReviewer: null,
+      permissionEscalation: null,
+    };
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ options: accept }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: { ...accept, providerOptions: { agent: "build" } },
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: { id: "p-wait", sessionID: "ses_1", permission: "bash" },
+    });
+    expect(fake.calls.reply).toEqual([]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(false);
+    await ingestOpenCodeEvent({
+      type: "permission.updated",
+      properties: {
+        id: "p-wait",
+        sessionID: "ses_1",
+        type: "bash",
+        callID: "call_wait",
+        metadata: { command: "echo SMOKE" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(true);
   });
 
   it("forwards BB reasoningLevel as OpenCode variant", async () => {

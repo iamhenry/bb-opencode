@@ -1,4 +1,4 @@
-export type PermissionTag = "ok" | "resolved" | "unknown";
+export type PermissionTag = "ok" | "resolved" | "unknown" | "deferred";
 
 export type OpenCodePermissionReply = "once" | "always" | "reject";
 
@@ -119,6 +119,18 @@ function patternsOf(ask: OpenCodePermissionAsk): string[] {
   return [];
 }
 
+function usableBashCommand(
+  command: string | undefined,
+  pattern: string | undefined,
+): string | undefined {
+  for (const value of [command, pattern]) {
+    if (typeof value === "string" && value.length > 0 && value !== "*") {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 function callIdOf(ask: OpenCodePermissionAsk): string | undefined {
   if (
     ask.tool &&
@@ -159,7 +171,12 @@ export function mapPermissionAsk(raw: unknown): MappedPermission {
     return { tag: "unknown", reason: "missing sessionID" };
   }
   if (!permission) {
-    return { tag: "unknown", reason: "missing permission name" };
+    return {
+      tag: "unknown",
+      requestId: typeof ask.id === "string" ? ask.id : undefined,
+      sessionId: typeof ask.sessionID === "string" ? ask.sessionID : undefined,
+      reason: "missing permission name",
+    };
   }
 
   const metadata =
@@ -169,12 +186,13 @@ export function mapPermissionAsk(raw: unknown): MappedPermission {
   const patterns = patternsOf(ask);
   const itemId = callIdOf(ask) ?? ask.id;
   if (COMMAND_PERMISSIONS.has(permission)) {
-    const command =
-      (typeof metadata.command === "string" && metadata.command) ||
-      patterns[0];
+    const command = usableBashCommand(
+      typeof metadata.command === "string" ? metadata.command : undefined,
+      patterns[0],
+    );
     if (!command) {
       return {
-        tag: "unknown",
+        tag: "deferred",
         requestId: ask.id,
         sessionId: ask.sessionID,
         permission,
