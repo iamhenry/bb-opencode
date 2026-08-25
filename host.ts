@@ -1,5 +1,12 @@
-import { experimental_defineHostEntry } from "@get-bb/plugin-sdk/host";
+import { homedir } from "node:os";
+import {
+  experimental_defineHostEntry,
+  experimental_filterResolvedNativeRoots,
+  experimental_nativeRootsHostContract,
+} from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
+import { PROVIDER_ID } from "./src/identity.js";
+import { opencodeNativeRoots } from "./src/native-roots.js";
 import {
   handleListAgents,
   handleListCommands,
@@ -16,7 +23,7 @@ import {
 export { experimental_providerBridge } from "./src/bridge.js";
 
 export default experimental_defineHostEntry({
-  contract: hostContract,
+  contract: { ...hostContract, ...experimental_nativeRootsHostContract },
   handlers: {
     async probe(_input, context) {
       const result = await handleProbe(context.experimental_paths.dataDir);
@@ -83,6 +90,19 @@ export default experimental_defineHostEntry({
         context.experimental_paths.dataDir,
         input.sessionId,
       );
+    },
+    async resolveNativeRoots(input) {
+      if (input.providerId !== PROVIDER_ID) {
+        return { skills: [], commands: [] };
+      }
+      const { answer } = experimental_filterResolvedNativeRoots(
+        opencodeNativeRoots({
+          cwd: input.cwd,
+          homeDir: homedir(),
+        }),
+        { warn: (message) => console.warn(message) },
+      );
+      return answer;
     },
   },
 });

@@ -183,51 +183,6 @@
   white-space: nowrap;
 }
 
-.oc-slash {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  max-height: min(14rem, 40dvh);
-  overflow: auto;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-  margin: 0 0 0.35rem;
-  padding: 0.25rem;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-  border-radius: 0.5rem;
-  background: var(--popover, var(--background, #fff));
-}
-
-.oc-slash__row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.6rem;
-  width: 100%;
-  min-height: 2.5rem;
-  margin: 0;
-  padding: 0.35rem 0.5rem;
-  touch-action: manipulation;
-  border: 0;
-  border-radius: 0.35rem;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 0.8125rem;
-  text-align: left;
-  cursor: pointer;
-}
-
-.oc-slash__row:focus {
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  outline: none;
-}
-
-@media (hover: hover) {
-  .oc-slash__row:hover {
-    background: color-mix(in srgb, currentColor 8%, transparent);
-  }
-}
-
 .oc-agent--banner {
   display: flex;
   width: 100%;
@@ -280,17 +235,4 @@
   transform: translateY(0);
 }
 
-.oc-slash__name {
-  flex: none;
-  font-variant-ligatures: none;
-}
-
-.oc-slash__hint {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted-foreground, #737373);
-  font-size: 0.75rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 

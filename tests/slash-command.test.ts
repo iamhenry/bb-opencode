@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  filterListedCommands,
   hasNonTextParts,
-  insertCommandToken,
   matchListedCommand,
   parseLeadingSlash,
-  slashAutocompleteQuery,
 } from "../src/slash-command.js";
 import { formatSkillAppendix } from "../src/skill-appendix.js";
 
@@ -28,31 +25,6 @@ describe("slash commands", () => {
     const listed = [{ name: "init" }, { name: "review" }];
     expect(matchListedCommand("init", listed)?.name).toBe("init");
     expect(matchListedCommand("nope", listed)).toBeUndefined();
-  });
-
-  it("exposes a leading slash token as an autocomplete query", () => {
-    expect(slashAutocompleteQuery("/in")).toBe("in");
-    expect(slashAutocompleteQuery("/")).toBe("");
-    expect(slashAutocompleteQuery("/init extra")).toBeNull();
-    expect(slashAutocompleteQuery("please /init")).toBeNull();
-    expect(
-      filterListedCommands("in", [{ name: "init" }, { name: "review" }]).map(
-        (item) => item.name,
-      ),
-    ).toEqual(["init"]);
-    expect(
-      filterListedCommands("", [
-        { name: "init" },
-        { name: "compact" },
-        { name: "summarize" },
-      ]).map((item) => item.name),
-    ).toEqual(["init"]);
-  });
-
-  it("inserts or replaces a leading slash token", () => {
-    expect(insertCommandToken("", "init")).toBe("/init ");
-    expect(insertCommandToken("/in", "init")).toBe("/init ");
-    expect(insertCommandToken("hello", "review")).toBe("hello /review ");
   });
 
   it("treats attachments as blocking the command path", () => {

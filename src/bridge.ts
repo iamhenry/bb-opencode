@@ -1983,7 +1983,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     });
   },
 
-  [BRIDGE_REQUEST_METHODS.experimentalProviderHealth]: (id) => {
+  [BRIDGE_REQUEST_METHODS.providerHealth]: (id) => {
     void (async () => {
       try {
         const active = await ensureClient();
@@ -2023,7 +2023,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     })();
   },
 
-  [BRIDGE_REQUEST_METHODS.experimentalProviderUsage]: (id) => {
+  [BRIDGE_REQUEST_METHODS.providerUsage]: (id) => {
     respondResult(id, {
       supported: true,
       usage: {

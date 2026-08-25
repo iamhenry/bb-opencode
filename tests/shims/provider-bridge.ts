@@ -3,8 +3,8 @@ import { z } from "zod";
 export const BRIDGE_REQUEST_METHODS = {
   initialize: "initialize",
   modelList: "model/list",
-  experimentalProviderHealth: "provider/health",
-  experimentalProviderUsage: "provider/usage",
+  providerHealth: "provider/health",
+  providerUsage: "provider/usage",
   threadStart: "thread/start",
   threadResume: "thread/resume",
   threadFork: "thread/fork",

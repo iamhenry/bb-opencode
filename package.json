@@ -6,7 +6,7 @@
   "type": "module",
   "engines": {
     "bb": ">=0.39",
-    "bbPluginSdk": ">=0.4.14"
+    "bbPluginSdk": ">=0.4.16"
   },
   "bb": {
     "name": "OpenCode",
@@ -28,11 +28,11 @@
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@get-bb/plugin-sdk": "0.4.16",
     "@opencode-ai/sdk": "1.18.21",
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.4.14",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

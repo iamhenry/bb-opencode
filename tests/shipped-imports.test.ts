@@ -28,7 +28,7 @@ describe("shipped import rules", () => {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
     };
-    expect(pkg.dependencies?.["@get-bb/plugin-sdk"]).toBeUndefined();
+    expect(pkg.dependencies?.["@get-bb/plugin-sdk"]).toBe("0.4.16");
     expect(read("server.ts")).not.toContain("provider-bridge-protocol/conformance");
     expect(read("host.ts")).not.toContain("provider-bridge-protocol/conformance");
     expect(read("app.tsx")).not.toContain("provider-bridge-protocol/conformance");
@@ -62,19 +62,15 @@ describe("shipped import rules", () => {
     }
   });
 
-  it("slash autocomplete uses OpenCode visibility (ISC-88)", () => {
-    const picker = read("src/app/composer-command.tsx");
-    expect(picker).toContain("shouldRenderOpencodeChrome");
-    expect(picker).toContain("newThreadShowsOpencodeAgent");
-    expect(read("app.tsx")).not.toContain('id: "command"');
+  it("slash autocomplete uses native BB roots (ISC-88)", () => {
+    expect(read("app.tsx")).not.toContain("ComposerSlashSuggest");
+    expect(read("server.ts")).toContain("experimental_resolvesNativeRoots: true");
+    expect(read("host.ts")).toContain("resolveNativeRoots");
   });
 
   it("does not issue session.command from slash autocomplete (ISC-89)", () => {
-    const picker = read("src/app/composer-command.tsx");
-    expect(picker).toContain("insertCommandToken");
-    expect(picker).toContain("slashAutocompleteQuery");
-    expect(picker).not.toContain("session.command");
-    expect(picker).not.toContain("sessionCommand");
+    expect(read("src/native-roots.ts")).not.toContain("session.command");
+    expect(read("app.tsx")).not.toContain("session.command");
   });
 
   it("does not put Task chrome in the thread header", () => {

@@ -43,31 +43,3 @@ export function matchListedCommand(
   return commands.find((command) => command.name === name);
 }
 
-export function insertCommandToken(draft: string, name: string): string {
-  const match = draft.match(/^(\s*)\/\S*/);
-  if (match) return `${match[1]}/${name} `;
-  if (!draft.trim()) return `/${name} `;
-  return `${draft.replace(/\s*$/, "")} /${name} `;
-}
-
-/** Leading `/token` with no trailing args. Null when this is not a slash query. */
-export function slashAutocompleteQuery(text: string): string | null {
-  const trimmedStart = text.replace(/^\s+/, "");
-  if (!trimmedStart.startsWith("/") || trimmedStart.startsWith("//")) {
-    return null;
-  }
-  if (/\s/.test(trimmedStart.slice(1))) return null;
-  return trimmedStart.slice(1);
-}
-
-export function filterListedCommands(
-  query: string,
-  commands: readonly ListedCommand[],
-): ListedCommand[] {
-  const needle = query.toLowerCase();
-  return commands.filter((command) => {
-    const name = command.name.toLowerCase();
-    if (name === "compact" || name === "summarize") return false;
-    return name.startsWith(needle);
-  });
-}

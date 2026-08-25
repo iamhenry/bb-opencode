@@ -110,14 +110,12 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  bb.agents.experimental_registerProvider({
+  bb.providers.register({
     id: PROVIDER_ID,
     displayName: PROVIDER_DISPLAY_NAME,
     icon: "./assets/icon.svg",
+    maintenance: { health: true, usage: true, installation: false },
     capabilities: {
-      experimental_providerHealth: true,
-      experimental_providerUsage: true,
-      experimental_providerInstallation: false,
       supportsServiceTier: false,
       supportsNativeUserQuestion: true,
       fork: "checkpoint",
@@ -129,14 +127,15 @@ export default async function plugin(bb: BbPluginApi) {
     },
     composerActions: [],
     experimental_visibility: "always",
-    experimental_strings: {
+    experimental_resolvesNativeRoots: true,
+    strings: {
       signInHint: "Run `opencode auth` on this machine, then send again.",
       expiredHint: "OpenCode auth expired. Run `opencode auth` and send again.",
       installUrl: "https://opencode.ai/docs",
       brandPrefix: "OpenCode ",
     },
-    experimental_env: { passthrough: ["OPENCODE_BIN"] },
-    experimental_deriveProviderOptions(ctx) {
+    env: { passthrough: ["OPENCODE_BIN"] },
+    deriveProviderOptions(ctx) {
       const stamped = peekAgent(stamps, ctx.threadId);
       const agent = resolvePromptAgent({
         stamped,
