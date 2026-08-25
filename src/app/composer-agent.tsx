@@ -6,6 +6,7 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
+import { fetchComposerChrome, type ComposerChrome } from "./composer-chrome.js";
 import {
   composerSurfaceWantsBanner,
   inspectLiveComposerProvider,
@@ -13,14 +14,6 @@ import {
 } from "./live-provider.js";
 import { shouldRenderOpencodeChrome } from "./visibility.js";
 import "./composer-agent.css";
-
-type Chrome = {
-  providerId: string | null;
-  status: "selected" | "default" | "unknown" | "hidden";
-  agent: string;
-  options: Array<{ name: string; description: string | null }>;
-  error: string | null;
-};
 
 const FALLBACK_OPTIONS = [
   { name: "build", description: "Default OpenCode primary" },
@@ -52,7 +45,7 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     found: false,
     opencode: false,
   });
-  const [chrome, setChrome] = useState<Chrome | null>(null);
+  const [chrome, setChrome] = useState<ComposerChrome | null>(null);
   const [agent, setAgent] = useState("build");
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({
@@ -107,16 +100,17 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
 
   useEffect(() => {
     let cancelled = false;
-    void rpc
-      .call("composerChrome", {
+    void fetchComposerChrome(
+      (input) => rpc.call("composerChrome", input),
+      {
         threadId: threadId ?? null,
         projectId: scopeProjectId ?? null,
-      })
-      .then((result) => {
-        if (cancelled) return;
-        setChrome(result);
-        if (result.agent) setAgent(result.agent);
-      });
+      },
+    ).then((result) => {
+      if (cancelled) return;
+      setChrome(result);
+      if (result.agent) setAgent(result.agent);
+    });
     return () => {
       cancelled = true;
     };

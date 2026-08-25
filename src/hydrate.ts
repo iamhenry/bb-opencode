@@ -141,10 +141,19 @@ export function hydrateDeltas(args: {
     if (!message) continue;
     if (message.info.role === "user") {
       closeTurn(i - 1);
-      if (args.skipUserInput) continue;
+      const text = userText(message);
+      if (args.skipUserInput) {
+        if (text) {
+          if (!turnOpen) {
+            deltas.push({ kind: "turn.open" });
+            turnOpen = true;
+          }
+          deltas.push({ kind: "input.provider", text });
+        }
+        continue;
+      }
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
-      const text = userText(message);
       if (text) deltas.push({ kind: "input.provider", text });
       continue;
     }

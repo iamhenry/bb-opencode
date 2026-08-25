@@ -3,8 +3,8 @@ import { unwrapPluginRpcResult } from "./rpc.js";
 const RUN_ATTR = "data-oc-run";
 const ALIGN_ATTR = "data-oc-align";
 const SENT_AT_ATTR = "data-bb-sent-at";
-const POLL_MS = 400;
-const REFRESH_MS = 1500;
+const POLL_MS = 2_000;
+const REFRESH_MS = 2_000;
 const MAX_THREAD_IDS = 8;
 
 type ChipRow = { id: string; label: string; title: string };
@@ -185,7 +185,8 @@ export function mountRunChips(args: {
     if (frame) return;
     frame = window.requestAnimationFrame(() => {
       frame = 0;
-      refresh(false);
+      // ponytail: DOM churn only repaints cache; poll refetches
+      decorate(chips);
     });
   });
   observer.observe(document.body, { childList: true, subtree: true });

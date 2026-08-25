@@ -49,7 +49,9 @@ describe("hydrate", () => {
         },
       ],
     });
-    expect(skipped.filter((delta) => delta.kind === "input.provider")).toEqual([]);
+    expect(skipped.filter((delta) => delta.kind === "input.provider")).toEqual([
+      { kind: "input.provider", text: "hi" },
+    ]);
     expect(skipped).toEqual(
       expect.arrayContaining([
         { kind: "session.reset" },
