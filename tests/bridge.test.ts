@@ -814,6 +814,130 @@ describe("provider bridge", () => {
     expect(await syncLiveTurnParts("ses_1")).toBe(false);
   });
 
+  it("does not remint prior-turn text on a follow-up poll", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "t1", type: "text", text: "OLD_ANSWER" }],
+      },
+    ]);
+    expect(await syncLiveTurnParts("ses_1")).toBe(true);
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    send({
+      id: "turn2",
+      method: "turn/start",
+      params: turnParams({
+        clientRequestId: "req_2",
+        input: [{ type: "text", text: "again", mentions: [] }],
+      }),
+    });
+    await flush();
+    messages.length = 0;
+    expect(await syncLiveTurnParts("ses_1")).toBe(false);
+    const stale = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textDelta")
+        .map((delta) => delta.text);
+    });
+    expect(stale).not.toContain("OLD_ANSWER");
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "t1", type: "text", text: "OLD_ANSWER" }],
+      },
+      {
+        info: { id: "u2", role: "user" },
+        parts: [{ type: "text", text: "again" }],
+      },
+      {
+        info: { id: "a2", role: "assistant" },
+        parts: [{ id: "t2", type: "text", text: "NEW_ANSWER" }],
+      },
+    ]);
+    expect(await syncLiveTurnParts("ses_1")).toBe(true);
+    const next = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textDelta")
+        .map((delta) => delta.text);
+    });
+    expect(next).toContain("NEW_ANSWER");
+    expect(next).not.toContain("OLD_ANSWER");
+  });
+
+  it("still polls current-turn text if the last-user snapshot fails", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    const inner = fake.client.sessionMessages.bind(fake.client);
+    let failSeed = true;
+    fake.client.sessionMessages = async (id) => {
+      if (failSeed) {
+        failSeed = false;
+        throw new Error("snapshot down");
+      }
+      return inner(id);
+    };
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "t1", type: "text", text: "SMOKE_OK" }],
+      },
+    ]);
+    messages.length = 0;
+    expect(await syncLiveTurnParts("ses_1")).toBe(true);
+    const texts = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textDelta")
+        .map((delta) => delta.text);
+    });
+    expect(texts).toContain("SMOKE_OK");
+  });
+
   it("recovers a title when OpenCode ensureTitle never lands", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });

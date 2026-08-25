@@ -66,6 +66,7 @@ import {
   hydrateDeltas,
   lastAssistantSettled,
   lastUserAgent,
+  lastUserMessageId,
   revertMessageIdOf,
   type HydrateMessage,
 } from "./hydrate.js";
@@ -159,6 +160,8 @@ interface LiveTurn {
   retryWarned: Set<string>;
   userMessageIds: Set<string>;
   bindOnly?: boolean;
+  /** Skip poll remint until last-user advances past this id. Unset = not seeded. */
+  remapAfterUserId?: string | null;
 }
 
 interface BoundSession {
@@ -619,6 +622,15 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
       if (message.info.role === "user" && typeof message.info.id === "string") {
         live.userMessageIds.add(message.info.id);
       }
+    }
+    // ponytail: poller-only fence. SSE is fresh parts; this stops stale last-user remint.
+    if (
+      live.promptIssued &&
+      !live.bindOnly &&
+      (live.remapAfterUserId === undefined ||
+        lastUserMessageId(messages) === live.remapAfterUserId)
+    ) {
+      return false;
     }
     const assistantMessages = live.bindOnly
       ? messages.filter((message) => message.info.role === "assistant")
@@ -2873,6 +2885,17 @@ async function runPrompt(args: {
       error instanceof Error ? error.message : String(error),
     );
     return;
+  }
+  try {
+    const priorMessages = (await active.sessionMessages(
+      args.sessionId,
+    )) as HydrateMessage[];
+    if (!live.bindOnly) {
+      live.remapAfterUserId = lastUserMessageId(priorMessages) ?? null;
+    }
+  } catch {
+    // ponytail: "" fail-open — remint rather than stall the poller forever
+    if (!live.bindOnly) live.remapAfterUserId = "";
   }
   const options = providerOptions(args.options);
   const requested =
