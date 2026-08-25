@@ -933,6 +933,54 @@ describe("provider bridge", () => {
     expect(texts).not.toContain("LIVE");
   });
 
+  it("does not remint persist-id text after SSE already painted it", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: {
+        sessionID: "ses_1",
+        textID: "sse_1",
+        delta: "LIVE",
+      },
+    });
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "persist_1", type: "text", text: "LIVE" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const kinds = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string; key?: { channel?: string } }> })
+          ?.deltas ?? []
+      )
+        .filter(
+          (delta) =>
+            delta.kind === "item.textDelta" || delta.kind === "item.textClose",
+        )
+        .map((delta) => `${delta.kind}:${delta.key?.channel ?? ""}:${delta.text ?? ""}`);
+    });
+    expect(kinds.some((row) => row.includes("persist_1"))).toBe(false);
+    expect(kinds.filter((row) => row.includes("LIVE"))).toHaveLength(0);
+  });
+
   it("does not remint prior-turn text on a follow-up poll", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);

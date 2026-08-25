@@ -235,6 +235,17 @@ export function mapPartDelta(args: {
   const parentRef = args.parentRef;
   if (type === "text" || type === "text-delta") {
     const partId = part.id ?? "anon";
+    // ponytail: OpenCode persist id ≠ SSE textID; same body must not open a second bubble
+    if (
+      typeof part.text === "string" &&
+      part.text.length > 0 &&
+      [...args.state.emittedText.entries()].some(
+        ([id, prev]) =>
+          id !== partId && !id.startsWith("reasoning:") && prev === part.text,
+      )
+    ) {
+      return [];
+    }
     const chunk = nextTextChunk(args.state, partId, part.text, args.delta);
     if (!chunk) return [];
     return [

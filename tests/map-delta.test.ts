@@ -446,4 +446,20 @@ describe("map-delta", () => {
     expect(first[0]).toMatchObject({ text: "Hi" });
     expect(second[0]).toMatchObject({ text: " there" });
   });
+
+  it("does not open a second bubble when persist id repeats the same text", () => {
+    const state = createMapDeltaState();
+    mapSessionNextEvent({
+      type: "session.next.text.delta",
+      properties: { textID: "sse_1", delta: "LIVE" },
+      state,
+      sessionId: "s",
+    });
+    const remint = mapPartDelta({
+      state,
+      sessionId: "s",
+      part: { id: "persist_1", type: "text", text: "LIVE" },
+    });
+    expect(remint).toEqual([]);
+  });
 });

@@ -166,6 +166,7 @@ interface LiveTurn {
   bindOnly?: boolean;
   /** Skip poll remint until last-user advances past this id. Unset = not seeded. */
   remapAfterUserId?: string | null;
+  settling?: boolean;
 }
 
 interface BoundSession {
@@ -1355,8 +1356,7 @@ async function onOpenCodeEvent(event: {
       }
       const typed = part as { id?: string; type?: string; text?: string };
       if (typed.type === "text" && typed.id) {
-        const latest =
-          live.mapState.emittedText.get(typed.id) ?? typed.text ?? "";
+        const latest = live.mapState.emittedText.get(typed.id);
         if (latest) live.textBuffers.set(typed.id, latest);
       }
     }
@@ -2506,15 +2506,17 @@ async function settleIssuedTurn(
   active: OpenCodeClient,
 ): Promise<void> {
   const liveAfter = liveTurns.get(threadId);
-  if (!liveAfter || liveAfter.parentBoundaryEmitted) return;
+  if (!liveAfter || liveAfter.parentBoundaryEmitted || liveAfter.settling) return;
   const queued = takeQueuedSteer(threadId, liveAfter);
   if (queued) {
     await flushSteerBody(threadId, sessionId, active, liveAfter, queued);
     return;
   }
+  liveAfter.settling = true;
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
   const lateQueued = takeQueuedSteer(threadId, liveAfter);
   if (lateQueued) {
+    liveAfter.settling = false;
     await flushSteerBody(threadId, sessionId, active, liveAfter, lateQueued);
     return;
   }
