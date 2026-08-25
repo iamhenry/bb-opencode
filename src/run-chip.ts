@@ -139,22 +139,29 @@ export function assignRunChips(args: {
   messages: readonly RunChipMessage[];
   reasoningByTurn?: ReadonlyMap<string, string>;
 }): RunChipRow[] {
+  // ponytail: BB timeline is a newest suffix; OpenCode history is complete.
+  // Zip each role independently from the end so early turns cannot stamp later bubbles.
+  const userTargets = args.targets.filter((target) => target.role === "user");
+  const assistantTargets = args.targets.filter(
+    (target) => target.role === "assistant",
+  );
+  const users = lastOf(
+    args.messages.filter((message) => message.role === "user"),
+    userTargets.length,
+  );
+  const assistants = lastOf(
+    args.messages.filter((message) => message.role === "assistant"),
+    assistantTargets.length,
+  );
+  let userIndex = users.length - userTargets.length;
+  let assistantIndex = assistants.length - assistantTargets.length;
   const rows: RunChipRow[] = [];
-  let current: RunChipMessage | null = null;
-  let index = 0;
 
   for (const target of args.targets) {
-    while (
-      index < args.messages.length &&
-      args.messages[index]?.role !== target.role
-    ) {
-      current = mergeMessage(current, args.messages[index]);
-      index += 1;
-    }
-    if (index < args.messages.length && args.messages[index]?.role === target.role) {
-      current = mergeMessage(current, args.messages[index]);
-      index += 1;
-    }
+    const current =
+      target.role === "user"
+        ? users[userIndex++]
+        : assistants[assistantIndex++];
     if (!current) continue;
 
     const reasoning =
@@ -171,6 +178,10 @@ export function assignRunChips(args: {
   }
 
   return keepLastAssistantChip(rows, args.targets);
+}
+
+function lastOf<T>(items: readonly T[], count: number): T[] {
+  return items.slice(Math.max(0, items.length - count));
 }
 
 function keepLastAssistantChip(
@@ -192,21 +203,6 @@ function keepLastAssistantChip(
 function isSystemInjectedUser(row: { text?: string; title?: string }): boolean {
   const text = `${row.text ?? ""}\n${row.title ?? ""}`;
   return text.includes("[bb system]");
-}
-
-function mergeMessage(
-  current: RunChipMessage | null,
-  next: RunChipMessage | undefined,
-): RunChipMessage | null {
-  if (!next) return current;
-  if (!current) return next;
-  return {
-    role: next.role,
-    agent: next.agent || current.agent,
-    providerId: next.providerId || current.providerId,
-    modelId: next.modelId || current.modelId,
-    reasoning: next.reasoning || current.reasoning,
-  };
 }
 
 function normalizeReasoning(value: string | null | undefined): string {

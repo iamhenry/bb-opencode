@@ -176,6 +176,55 @@ describe("assignRunChips", () => {
     expect(rows.map((row) => row.id)).toEqual(["u1", "a2"]);
     expect(rows[1]?.label).toBe("openai/gpt-5.6-sol · medium · build");
   });
+
+  it("aligns a BB timeline suffix with the latest OpenCode turns", () => {
+    const rows = assignRunChips({
+      targets: [
+        { id: "u-new", role: "user", turnId: "t2" },
+        { id: "a-new", role: "assistant", turnId: "t2" },
+      ],
+      messages: [
+        {
+          role: "user",
+          agent: "build",
+          providerId: "openai",
+          modelId: "gpt-5.6-sol",
+        },
+        {
+          role: "assistant",
+          agent: "build",
+          providerId: "openai",
+          modelId: "gpt-5.6-sol",
+          reasoning: "medium",
+        },
+        {
+          role: "user",
+          agent: "build",
+          providerId: "xai",
+          modelId: "grok-4.6",
+        },
+        {
+          role: "assistant",
+          agent: "build",
+          providerId: "xai",
+          modelId: "grok-4.6",
+        },
+      ],
+      reasoningByTurn: new Map([["t2", "medium"]]),
+    });
+    expect(rows).toEqual([
+      {
+        id: "u-new",
+        label: "xai/grok-4.6 · medium · build",
+        title: "xai/grok-4.6 · medium · build",
+      },
+      {
+        id: "a-new",
+        label: "xai/grok-4.6 · medium · build",
+        title: "xai/grok-4.6 · medium · build",
+      },
+    ]);
+  });
 });
 
 describe("reasoningByTurnFromEvents", () => {
