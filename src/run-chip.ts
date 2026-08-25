@@ -169,7 +169,26 @@ export function assignRunChips(args: {
     rows.push({ id: target.id, ...formatted });
   }
 
-  return rows;
+  return keepLastAssistantChip(rows, args.targets);
+}
+
+function keepLastAssistantChip(
+  rows: readonly RunChipRow[],
+  targets: readonly RunChipTarget[],
+): RunChipRow[] {
+  const lastByTurn = new Map<string, string>();
+  let lastLoose: string | undefined;
+  for (const target of targets) {
+    if (target.role !== "assistant") continue;
+    if (target.turnId) lastByTurn.set(target.turnId, target.id);
+    else lastLoose = target.id;
+  }
+  const keep = new Set<string>(lastByTurn.values());
+  if (lastLoose) keep.add(lastLoose);
+  const assistantIds = new Set(
+    targets.filter((target) => target.role === "assistant").map((target) => target.id),
+  );
+  return rows.filter((row) => !assistantIds.has(row.id) || keep.has(row.id));
 }
 
 function mergeMessage(

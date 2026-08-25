@@ -150,25 +150,31 @@ describe("assignRunChips", () => {
     ]);
   });
 
-  it("lets a second assistant row inherit the last OpenCode message", () => {
+  it("keeps only the last assistant bubble in a turn", () => {
     const rows = assignRunChips({
       targets: [
-        { id: "a1", role: "assistant" },
-        { id: "a2", role: "assistant" },
+        { id: "u1", role: "user", turnId: "t1" },
+        { id: "a1", role: "assistant", turnId: "t1" },
+        { id: "a2", role: "assistant", turnId: "t1" },
       ],
       messages: [
+        {
+          role: "user",
+          agent: "build",
+          providerId: "openai",
+          modelId: "gpt-5.6-sol",
+        },
         {
           role: "assistant",
           agent: "build",
           providerId: "openai",
-          modelId: "gpt-5.6-luna",
+          modelId: "gpt-5.6-sol",
+          reasoning: "medium",
         },
       ],
     });
-    expect(rows.map((row) => row.label)).toEqual([
-      "openai/gpt-5.6-luna · build",
-      "openai/gpt-5.6-luna · build",
-    ]);
+    expect(rows.map((row) => row.id)).toEqual(["u1", "a2"]);
+    expect(rows[1]?.label).toBe("openai/gpt-5.6-sol · medium · build");
   });
 });
 
