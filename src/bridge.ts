@@ -612,6 +612,12 @@ function startTitlePoller(): void {
   titleTimer.unref?.();
 }
 
+function hasStreamedAgentText(live: LiveTurn): boolean {
+  return [...live.mapState.emittedText.keys()].some(
+    (key) => !key.startsWith("reasoning:"),
+  );
+}
+
 export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
   if (!client) return false;
   const threadId = sessionToThread.get(sessionId);
@@ -640,9 +646,14 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     const assistantMessages = live.bindOnly
       ? messages.filter((message) => message.info.role === "assistant")
       : assistantsAfterLastUser(messages);
+    const streamedText = hasStreamedAgentText(live);
     for (const message of assistantMessages) {
       for (const part of message.parts) {
         rememberTaskChild(live, part);
+        // ponytail: SSE already painted this turn; leftover poll may have a new persist id.
+        if (streamedText && (part.type === "text" || part.type === "text-delta")) {
+          continue;
+        }
         leftovers.push(
           ...mapPartDelta({
             state: live.mapState,
@@ -2494,9 +2505,7 @@ async function settleIssuedTurn(
   }
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
   const leftovers: ThreadDelta[] = [];
-  const streamedText = [...liveAfter.mapState.emittedText.keys()].some(
-    (key) => !key.startsWith("reasoning:"),
-  );
+  const streamedText = hasStreamedAgentText(liveAfter);
   for (const message of assistantsAfterLastUser(messages)) {
     for (const part of message.parts) {
       if (part.type === "text" || part.type === "text-delta") {
