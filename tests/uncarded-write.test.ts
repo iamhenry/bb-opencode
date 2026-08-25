@@ -1,12 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  fileWriteHasPayload,
   nextUncardedWriteStreak,
   runningFileToolName,
   UNCARDED_WRITE_POLLS,
 } from "../src/uncarded-write.js";
 
 describe("uncarded write", () => {
-  it("finds a running apply_patch", () => {
+  it("ignores apply_patch until it has a patch", () => {
+    expect(
+      fileWriteHasPayload({
+        tool: "apply_patch",
+        state: { status: "running" },
+      }),
+    ).toBe(false);
     expect(
       runningFileToolName([
         {
@@ -14,6 +21,21 @@ describe("uncarded write", () => {
             {
               tool: "apply_patch",
               state: { status: "running" },
+            },
+          ],
+        },
+      ]),
+    ).toBeUndefined();
+    expect(
+      runningFileToolName([
+        {
+          parts: [
+            {
+              tool: "apply_patch",
+              state: {
+                status: "running",
+                input: { patchText: "*** Begin Patch\n" },
+              },
             },
           ],
         },

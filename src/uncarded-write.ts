@@ -2,6 +2,30 @@ import { isFileChangeToolName } from "./file-change.js";
 
 export const UNCARDED_WRITE_POLLS = 3;
 
+export function fileWriteHasPayload(part: Record<string, unknown>): boolean {
+  const state = asRecord(part.state);
+  const input =
+    asRecord(part.input) ??
+    asRecord(state?.input) ??
+    asRecord(part.arguments) ??
+    asRecord(state?.args);
+  if (!input) return false;
+  if (
+    nonempty(input.filePath) ||
+    nonempty(input.path) ||
+    nonempty(input.file) ||
+    nonempty(input.patchText) ||
+    nonempty(input.patch) ||
+    nonempty(input.diff) ||
+    nonempty(input.oldString) ||
+    nonempty(input.newString) ||
+    nonempty(input.content)
+  ) {
+    return true;
+  }
+  return Array.isArray(input.edits) && input.edits.length > 0;
+}
+
 export function runningFileToolName(
   messages: Array<{ parts?: Array<Record<string, unknown>> }>,
 ): string | undefined {
@@ -14,6 +38,7 @@ export function runningFileToolName(
             ? part.name
             : "";
       if (!name || !isFileChangeToolName(name)) continue;
+      if (!fileWriteHasPayload(part)) continue;
       const state = part.state;
       const status =
         state && typeof state === "object"
@@ -36,4 +61,14 @@ export function nextUncardedWriteStreak(args: {
   }
   const streak = args.streak + 1;
   return { streak, giveUp: streak >= UNCARDED_WRITE_POLLS };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function nonempty(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
 }
