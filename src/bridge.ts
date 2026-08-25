@@ -537,12 +537,16 @@ async function ensureSubscribed(
     },
   });
   try {
+    let eventQueue = Promise.resolve();
     const sub = await active.subscribe((event) => {
-      if (event.type === "server.disconnected") {
-        void onStreamClosed("OpenCode event stream closed", key);
-        return;
-      }
-      void onOpenCodeEvent(event).catch((error) => {
+      // Provider events are ordered. Keep async settlement in that same order.
+      eventQueue = eventQueue.then(async () => {
+        if (event.type === "server.disconnected") {
+          await onStreamClosed("OpenCode event stream closed", key);
+          return;
+        }
+        await onOpenCodeEvent(event);
+      }).catch((error) => {
         unknownLogLines.push(`event-handler-error ${String(error)}`);
       });
     }, key);
@@ -1314,6 +1318,23 @@ async function onOpenCodeEvent(event: {
       state: live.mapState,
       sessionId,
     });
+    const properties =
+      event.properties && typeof event.properties === "object"
+        ? (event.properties as { textID?: unknown })
+        : undefined;
+    const textId =
+      typeof properties?.textID === "string" ? properties.textID : undefined;
+    if (textId && event.type === "session.next.text.delta") {
+      const text = live.mapState.emittedText.get(textId);
+      if (text) live.textBuffers.set(textId, text);
+    } else if (textId && event.type === "session.next.text.ended") {
+      live.textBuffers.delete(textId);
+    }
+    if (textId) {
+      debugLog(
+        `trace text-next type=${event.type} id=${textId} emitted=${[...live.mapState.emittedText.keys()].join(",")} buffered=${[...live.textBuffers.keys()].join(",")}`,
+      );
+    }
     if (nextDeltas.length > 0) emitDeltas(threadId, nextDeltas);
     return;
   }
@@ -1355,9 +1376,12 @@ async function onOpenCodeEvent(event: {
         forgetPendingPermissions(threadId);
       }
       const typed = part as { id?: string; type?: string; text?: string };
-      if (typed.type === "text" && typed.id) {
+      if ((typed.type === "text" || typed.type === "text-delta") && typed.id) {
         const latest = live.mapState.emittedText.get(typed.id);
         if (latest) live.textBuffers.set(typed.id, latest);
+        debugLog(
+          `trace text-part type=${typed.type} id=${typed.id} emitted=${[...live.mapState.emittedText.keys()].join(",")} buffered=${[...live.textBuffers.keys()].join(",")}`,
+        );
       }
     }
     return;
@@ -1393,31 +1417,29 @@ async function onOpenCodeEvent(event: {
       )
     ) {
       if (client) {
-        void (async () => {
-          let stillWaiting = false;
-          try {
-            const asks = await client.listPendingPermissions(
-              sessionId,
-              boundDirectory(sessionId),
-            );
-            stillWaiting = asks.length > 0;
-          } catch {
-            stillWaiting = true;
-          }
-          if (stillWaiting) {
-            debugLog(`idle wait card ses=${sessionId}`);
-            return;
-          }
-          forgetPendingPermissions(threadId);
-          await settleIssuedTurn(threadId, sessionId, client);
-        })();
+        let stillWaiting = false;
+        try {
+          const asks = await client.listPendingPermissions(
+            sessionId,
+            boundDirectory(sessionId),
+          );
+          stillWaiting = asks.length > 0;
+        } catch {
+          stillWaiting = true;
+        }
+        if (stillWaiting) {
+          debugLog(`idle wait card ses=${sessionId}`);
+          return;
+        }
+        forgetPendingPermissions(threadId);
+        await settleIssuedTurn(threadId, sessionId, client);
         return;
       }
       debugLog(`idle wait card ses=${sessionId}`);
       return;
     }
     if (client) {
-      void settleIssuedTurn(threadId, sessionId, client);
+      await settleIssuedTurn(threadId, sessionId, client);
       return;
     }
     if (!live.parentBoundaryEmitted) {
@@ -2522,6 +2544,9 @@ async function settleIssuedTurn(
   }
   const leftovers: ThreadDelta[] = [];
   const streamedText = hasStreamedAgentText(liveAfter);
+  debugLog(
+    `trace text-settle emitted=${[...liveAfter.mapState.emittedText.keys()].join(",")} buffered=${[...liveAfter.textBuffers.keys()].join(",")}`,
+  );
   for (const message of assistantsAfterLastUser(messages)) {
     for (const part of message.parts) {
       if (part.type === "text" || part.type === "text-delta") {

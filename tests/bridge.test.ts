@@ -544,6 +544,69 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
+  it("keeps persisted assistant messages before late SSE text at idle", async () => {
+    const fake = installFake();
+    const readMessages = fake.client.sessionMessages.bind(fake.client);
+    let settling = false;
+    let releaseSettle: (() => void) | undefined;
+    let markSettleStarted: (() => void) | undefined;
+    const settleStarted = new Promise<void>((resolve) => {
+      markSettleStarted = resolve;
+    });
+    fake.client.sessionMessages = async (id) => {
+      if (!settling) return readMessages(id);
+      markSettleStarted?.();
+      await new Promise<void>((resolve) => {
+        releaseSettle = resolve;
+      });
+      return fake.messages.get(id) ?? [];
+    };
+    fake.promptImpl = async (id) => {
+      fake.messages.set(id, [
+        {
+          info: { id: "u1", role: "user" },
+          parts: [{ id: "user-text", type: "text", text: "ping" }],
+        },
+        {
+          info: { id: "a1", role: "assistant" },
+          parts: [{ id: "goal-text", type: "text", text: "GOAL first" }],
+        },
+        {
+          info: { id: "a2", role: "assistant" },
+          parts: [{ id: "final-text", type: "text", text: "final answer" }],
+        },
+      ]);
+      settling = true;
+      return {};
+    };
+
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await settleStarted;
+    messages.length = 0;
+    fake.emit({
+      type: "session.next.text.delta",
+      properties: {
+        sessionID: "ses_1",
+        textID: "late-final",
+        delta: "final answer",
+      },
+    });
+    await Promise.resolve();
+    expect(messages).toHaveLength(0);
+
+    releaseSettle?.();
+    await flush();
+    const text = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? [])
+          .filter((delta) => delta.kind === "item.textDelta")
+          .map((delta) => delta.text),
+    );
+    expect(text).toEqual(["GOAL first", "final answer"]);
+  });
+
   it("does not create a session when Task starts (ISC-71.1)", async () => {
     const fake = installFake();
     send({
@@ -933,7 +996,7 @@ describe("provider bridge", () => {
     expect(texts).not.toContain("LIVE");
   });
 
-  it("does not remint persist-id text after SSE already painted it", async () => {
+  it("closes streamed text under its SSE id when persist id differs", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -978,7 +1041,115 @@ describe("provider bridge", () => {
         .map((delta) => `${delta.kind}:${delta.key?.channel ?? ""}:${delta.text ?? ""}`);
     });
     expect(kinds.some((row) => row.includes("persist_1"))).toBe(false);
-    expect(kinds.filter((row) => row.includes("LIVE"))).toHaveLength(0);
+    expect(kinds.filter((row) => row === "item.textClose:text:sse_1:LIVE")).toHaveLength(1);
+  });
+
+  it("closes message.part text-delta when persist id differs", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "message.part.delta",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "sse_1", type: "text-delta" },
+        delta: "LIVE",
+      },
+    });
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "persist_1", type: "text", text: "LIVE" }],
+      },
+    ]);
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "persist_1", type: "text", text: "LIVE" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const closes = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string } }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textClose")
+        .map((delta) => delta.key?.channel);
+    });
+    expect(closes).toEqual(["text:sse_1"]);
+  });
+
+  it("does not close ended streamed text again at idle", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_1", delta: "LIVE" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.ended",
+      properties: { sessionID: "ses_1", textID: "sse_1", text: "LIVE" },
+    });
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "persist_1", type: "text", text: "LIVE" }],
+      },
+    ]);
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "persist_1", type: "text", text: "LIVE" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const closes = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string } }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.textClose")
+        .map((delta) => delta.key?.channel);
+    });
+    expect(closes).toEqual(["text:sse_1"]);
   });
 
   it("does not remint prior-turn text on a follow-up poll", async () => {
