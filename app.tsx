@@ -4,6 +4,7 @@ import {
   ComposerAgentPicker,
 } from "./src/app/composer-agent.js";
 import { OpenCodeProviderIcon } from "./src/app/provider-icon.js";
+import { mountPermissionModeWatch } from "./src/app/permission-mode-watch.js";
 import { mountRunChips } from "./src/app/run-chip.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 import { PROVIDER_ID } from "./src/identity.js";
@@ -15,6 +16,12 @@ export default definePluginApp((app) => {
     id: "opencode-run-chip",
     mount({ pluginId, signal }) {
       return mountRunChips({ pluginId, signal });
+    },
+  });
+  app.contentScripts.register({
+    id: "opencode-permission-mode",
+    mount({ signal }) {
+      return mountPermissionModeWatch({ signal });
     },
   });
   app.slots.experimental_providerIcon({

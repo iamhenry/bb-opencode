@@ -122,6 +122,10 @@ import {
   resolvePermissionAttach,
 } from "./permissions/target.js";
 import {
+  clearLivePermissionModes,
+  readLivePermissionMode,
+} from "./permission-mode-live.js";
+import {
   hydratePickerAgent,
   listSelectablePrimaries,
   type OpenCodeAgent,
@@ -261,6 +265,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   createCount = 0;
   unknownLogLines = [];
   dataDir = "/tmp/bb-oc-bridge-test";
+  clearLivePermissionModes(dataDir);
   deps = {
     acquire: next?.acquire ?? createSdkClient,
     attach: next?.attach ?? (async (dir) => attachOrSpawn({ dataDir: dir })),
@@ -1826,7 +1831,9 @@ async function handlePermissionAsked(
   }
 
   const live = liveTurns.get(targetThreadId);
-  const permissionMode = sessions.get(targetThreadId)?.permissionMode;
+  const permissionMode =
+    readLivePermissionMode(dataDir, targetThreadId) ??
+    sessions.get(targetThreadId)?.permissionMode;
 
   if (mapped.requestId) {
     const existing = `oc-perm-${mapped.requestId}`;

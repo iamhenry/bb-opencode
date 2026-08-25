@@ -11,6 +11,7 @@ import {
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
+import { writeLivePermissionMode } from "../src/permission-mode-live.js";
 
 const fullOptions = {
   permissionMode: "full",
@@ -1175,6 +1176,81 @@ describe("provider bridge", () => {
       },
     });
     expect(fake.calls.reply).toEqual([{ requestID: "p-full", reply: "once" }]);
+  });
+
+  it("auto-approves the next ask after a live stamp to full", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          permissionMode: "auto",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: {
+          permissionMode: "auto",
+          permissionScope: "full",
+          approvalReviewer: null,
+          permissionEscalation: null,
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    writeLivePermissionMode("/tmp/bb-oc-bridge-test", "thr_1", "full");
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: {
+        id: "p-live-full",
+        sessionID: "ses_1",
+        permission: "bash",
+        metadata: { command: "ls" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([
+      { requestID: "p-live-full", reply: "once" },
+    ]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(false);
+  });
+
+  it("shows a card on the next ask after a live stamp to accept-edits", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams(),
+    });
+    await flush();
+    writeLivePermissionMode("/tmp/bb-oc-bridge-test", "thr_1", "accept-edits");
+    await ingestOpenCodeEvent({
+      type: "permission.asked",
+      properties: {
+        id: "p-live-card",
+        sessionID: "ses_1",
+        permission: "bash",
+        metadata: { command: "ls" },
+      },
+    });
+    expect(fake.calls.reply).toEqual([]);
+    expect(
+      messages.some((message) => message.method === "interaction/request"),
+    ).toBe(true);
   });
 
   it("surfaces a 1.18 permission.updated ask as a card (ISC-33 dialect)", async () => {

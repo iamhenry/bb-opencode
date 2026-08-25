@@ -1,6 +1,8 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
+const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
+
 const probeOutput = z
   .object({
     binaryPath: z.string().nullable(),
@@ -119,6 +121,15 @@ export const hostContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
+  stampPermissionMode: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        permissionMode: permissionModeSchema,
+      })
+      .strict(),
+    output: z.object({ ok: z.boolean() }).strict(),
+  },
   listMessageMeta: {
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: z
@@ -160,6 +171,15 @@ export const rpcContract = defineRpcContract({
       .refine((value) => Boolean(value.threadId || value.projectId), {
         message: "threadId or projectId is required",
       }),
+    output: z.object({ ok: z.boolean() }).strict(),
+  },
+  stampPermissionMode: {
+    input: z
+      .object({
+        threadId: z.string().min(1),
+        permissionMode: permissionModeSchema,
+      })
+      .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
   composerChrome: {

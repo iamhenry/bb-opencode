@@ -4,6 +4,7 @@ import {
   isPermissionAskEvent,
   mapPermissionAsk,
   shouldAutoApprove,
+  shouldShowCard,
 } from "../src/permissions/map.js";
 
 describe("permission map", () => {
@@ -53,6 +54,17 @@ describe("permission map", () => {
     expect(
       shouldAutoApprove({ tag: "ok", permissionMode: "accept-edits" }),
     ).toBe(false);
+  });
+
+  it("shows a card unless the live mode is full", () => {
+    expect(shouldShowCard({ tag: "ok", permissionMode: "auto" })).toBe(true);
+    expect(shouldShowCard({ tag: "ok", permissionMode: "accept-edits" })).toBe(
+      true,
+    );
+    expect(shouldShowCard({ tag: "ok", permissionMode: "full" })).toBe(false);
+    expect(shouldShowCard({ tag: "unknown", permissionMode: "auto" })).toBe(
+      false,
+    );
   });
 
   it("maps 1.18 permission.updated bash asks (type/pattern/callID)", () => {

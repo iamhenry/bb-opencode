@@ -223,6 +223,20 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return { ok: true };
     },
+    async stampPermissionMode(input) {
+      try {
+        const thread = threadFields(
+          await bb.sdk.threads.get({ threadId: input.threadId }),
+        );
+        if (thread.providerId !== PROVIDER_ID) return { ok: true };
+        const hostId = await resolveHostId(bb, thread.environmentId);
+        if (!hostId) return { ok: false };
+        await host.call("stampPermissionMode", input, { hostId });
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    },
     async composerChrome({ threadId, projectId }) {
       return loadComposerChrome(bb, host, { threadId, projectId });
     },

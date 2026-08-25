@@ -16,6 +16,7 @@ import {
   handleProbe,
   handleRevert,
   handleSessionSnapshot,
+  handleStampPermissionMode,
   handleSummarize,
   handleUnrevert,
 } from "./src/host-handlers.js";
@@ -89,6 +90,13 @@ export default experimental_defineHostEntry({
       return handleListMessageMeta(
         context.experimental_paths.dataDir,
         input.sessionId,
+      );
+    },
+    async stampPermissionMode(input, context) {
+      return handleStampPermissionMode(
+        context.experimental_paths.dataDir,
+        input.threadId,
+        input.permissionMode,
       );
     },
     async resolveNativeRoots(input) {

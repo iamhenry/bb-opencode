@@ -9,6 +9,8 @@ import { resolveRevertMessageId } from "./revert-target.js";
 import { splitModelRef } from "./task-thread.js";
 import { runningSessionIdsFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
+import { writeLivePermissionMode } from "./permission-mode-live.js";
+import type { LivePermissionMode } from "./permission-mode.js";
 
 const clients = new Map<string, OpenCodeClient>();
 
@@ -207,4 +209,13 @@ export async function handleSummarize(
 
 export function currentLock(dataDir: string) {
   return readLock(dataDir);
+}
+
+export function handleStampPermissionMode(
+  dataDir: string,
+  threadId: string,
+  permissionMode: LivePermissionMode,
+): { ok: boolean } {
+  writeLivePermissionMode(dataDir, threadId, permissionMode);
+  return { ok: true };
 }
