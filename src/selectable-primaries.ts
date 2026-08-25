@@ -54,3 +54,53 @@ export function hydratePickerAgent(args: {
   }
   return { status: "default", agent: fallback.name };
 }
+
+function listedUsableAgent(
+  agents: readonly OpenCodeAgent[],
+  name: string | undefined,
+): OpenCodeAgent | undefined {
+  if (!name) return undefined;
+  const match = agents.find((agent) => agent.name === name);
+  if (!match || match.hidden === true || isSystemAgentName(match.name)) {
+    return undefined;
+  }
+  return match;
+}
+
+/** Prompt agent for an existing session. Subagent children keep their agent. */
+export function resolveContinueAgent(args: {
+  requested?: string;
+  lastUserAgent?: string;
+  agents: readonly OpenCodeAgent[];
+}):
+  | { ok: true; agent: string; inheritSession: boolean }
+  | { ok: false; reason: string } {
+  const last = listedUsableAgent(args.agents, args.lastUserAgent);
+  if (last?.mode === "subagent") {
+    return { ok: true, agent: last.name, inheritSession: true };
+  }
+  if (args.requested) {
+    if (
+      listSelectablePrimaries(args.agents).some(
+        (agent) => agent.name === args.requested,
+      )
+    ) {
+      return { ok: true, agent: args.requested, inheritSession: false };
+    }
+    return {
+      ok: false,
+      reason: `Unknown or non-selectable OpenCode agent: ${args.requested}`,
+    };
+  }
+  const hydrated = hydratePickerAgent({
+    lastUserAgent: args.lastUserAgent,
+    agents: args.agents,
+  });
+  if (hydrated.status === "unknown") {
+    return {
+      ok: false,
+      reason: `Unknown OpenCode agent: ${hydrated.agent}`,
+    };
+  }
+  return { ok: true, agent: hydrated.agent, inheritSession: false };
+}

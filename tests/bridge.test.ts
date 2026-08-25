@@ -11,6 +11,7 @@ import {
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
+import { TASK_CHILD_BIND_TEXT } from "../src/task-thread.js";
 import { writeLivePermissionMode } from "../src/permission-mode-live.js";
 
 const fullOptions = {
@@ -153,6 +154,80 @@ describe("provider bridge", () => {
       parts: [{ type: "text", text: "after this, update the README" }],
     });
   });
+
+  it("parks turn/steer that arrives before turn/start issues the prompt", async () => {
+    const fake = installFake();
+    let release: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise((resolve) => {
+        release = () => resolve({});
+      });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "commit these", mentions: [] }] }),
+    });
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_steer",
+        input: [{ type: "text", text: "and push", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      parts: [{ type: "text", text: "commit these" }],
+    });
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(deltas).toContainEqual({
+      kind: "input.accepted",
+      clientRequestId: "req_steer",
+    });
+    release?.();
+    fake.promptImpl = undefined;
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      parts: [{ type: "text", text: "and push" }],
+    });
+  });
+
+  it("flushes a same-tick steer after promptAsync returns idle immediately", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "commit these", mentions: [] }],
+      }),
+    });
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_fast",
+        input: [{ type: "text", text: "and push", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      parts: [{ type: "text", text: "and push" }],
+    });
+  });
+
 
   it("starts a session once and resumes without create (ISC-9, ISC-10, ISC-10.1)", async () => {
     const fake = installFake();
@@ -827,15 +902,11 @@ describe("provider bridge", () => {
     });
     await flush();
     await ingestOpenCodeEvent({
-      type: "message.part.updated",
+      type: "session.next.text.delta",
       properties: {
-        part: {
-          id: "prt_sse",
-          sessionID: "ses_1",
-          messageID: "a1",
-          type: "text",
-          text: "SAME_ANSWER",
-        },
+        sessionID: "ses_1",
+        textID: "sse_1",
+        delta: "LIVE",
       },
     });
     fake.messages.set("ses_1", [
@@ -845,7 +916,7 @@ describe("provider bridge", () => {
       },
       {
         info: { id: "a1", role: "assistant" },
-        parts: [{ id: "prt_persist", type: "text", text: "SAME_ANSWER" }],
+        parts: [{ id: "persist_1", type: "text", text: "LIVE" }],
       },
     ]);
     messages.length = 0;
@@ -859,7 +930,7 @@ describe("provider bridge", () => {
         .filter((delta) => delta.kind === "item.textDelta")
         .map((delta) => delta.text);
     });
-    expect(texts).not.toContain("SAME_ANSWER");
+    expect(texts).not.toContain("LIVE");
   });
 
   it("does not remint prior-turn text on a follow-up poll", async () => {
@@ -984,6 +1055,60 @@ describe("provider bridge", () => {
         .map((delta) => delta.text);
     });
     expect(texts).toContain("SMOKE_OK");
+  });
+
+  it("keeps inherited variant when the last-user snapshot fails", async () => {
+    const fake = installFake();
+    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
+    fake.messages.set("ses_1", [
+      {
+        info: {
+          id: "u1",
+          role: "user",
+          agent: "explore",
+          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
+        },
+        parts: [{ type: "text", text: "explore" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "ses_1" },
+        },
+      }),
+    });
+    await flush();
+    const inner = fake.client.sessionMessages.bind(fake.client);
+    let failSeed = true;
+    fake.client.sessionMessages = async (id) => {
+      if (failSeed) {
+        failSeed = false;
+        throw new Error("snapshot down");
+      }
+      return inner(id);
+    };
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "continue", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "explore",
+      variant: "high",
+    });
   });
 
   it("recovers a title when OpenCode ensureTitle never lands", async () => {
@@ -2133,6 +2258,102 @@ describe("provider bridge", () => {
     });
     expect(kinds).toContain("item.textDelta");
     expect(kinds.filter((kind) => kind === "turn.boundary")).toEqual([]);
+  });
+
+  it("bind-only does not re-prompt a running subagent with the parent agent", async () => {
+    const fake = installFake();
+    fake.runningIds.add("child");
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", [
+      {
+        info: {
+          id: "u1",
+          role: "user",
+          agent: "explore",
+          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
+        },
+        parts: [{ type: "text", text: "explore" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        threadId: "thr_child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { adoptSessionId: "child", bindOnly: true, agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        threadId: "thr_child",
+        providerThreadId: "child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.promptAsync).toBe(0);
+  });
+
+  it("follow-up on a subagent child keeps that agent's model", async () => {
+    const fake = installFake();
+    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
+    fake.messages.set("ses_1", [
+      {
+        info: {
+          id: "u1",
+          role: "user",
+          agent: "explore",
+          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
+        },
+        parts: [{ type: "text", text: "explore" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "ses_1" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "continue", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "explore",
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+      variant: "high",
+    });
   });
 
   function deltaKinds(): string[] {

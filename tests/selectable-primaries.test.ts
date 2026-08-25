@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
+  resolveContinueAgent,
   type OpenCodeAgent,
 } from "../src/selectable-primaries.js";
 
@@ -49,5 +50,22 @@ describe("selectable primaries", () => {
     expect(
       hydratePickerAgent({ lastUserAgent: "nope", agents: fixture }),
     ).toEqual({ status: "unknown", agent: "nope" });
+  });
+
+  it("keeps a session subagent instead of the parent primary", () => {
+    expect(
+      resolveContinueAgent({
+        requested: "build",
+        lastUserAgent: "explore",
+        agents: fixture,
+      }),
+    ).toEqual({ ok: true, agent: "explore", inheritSession: true });
+    expect(
+      resolveContinueAgent({
+        requested: "plan",
+        lastUserAgent: "build",
+        agents: fixture,
+      }),
+    ).toEqual({ ok: true, agent: "plan", inheritSession: false });
   });
 });

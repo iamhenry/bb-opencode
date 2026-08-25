@@ -32,6 +32,7 @@ import {
   coerceModelRef,
   configDefaultModelId,
   lastModelIdFromMessages,
+  lastVariantFromMessages,
   listPickerModels,
 } from "./catalog.js";
 import {
@@ -39,7 +40,7 @@ import {
   isCompactionSkipError,
   isOpenCodeCompactCommand,
 } from "./compaction.js";
-import { splitModelRef } from "./task-thread.js";
+import { splitModelRef, TASK_CHILD_BIND_TEXT } from "./task-thread.js";
 import {
   parseOpenCodeTodos,
   todoPlanDeltas,
@@ -126,8 +127,7 @@ import {
   readLivePermissionMode,
 } from "./permission-mode-live.js";
 import {
-  hydratePickerAgent,
-  listSelectablePrimaries,
+  resolveContinueAgent,
   type OpenCodeAgent,
 } from "./selectable-primaries.js";
 import {
@@ -181,6 +181,8 @@ interface BoundSession {
 const sessions = new Map<string, BoundSession>();
 const sessionToThread = new Map<string, string>();
 const liveTurns = new Map<string, LiveTurn>();
+const openingTurns = new Set<string>();
+const parkedSteers = new Map<string, Array<Record<string, unknown>>>();
 let configuredSkillRoots: SkillConfigureRoot[] = [];
 const pendingPermission = new Map<
   string,
@@ -236,6 +238,8 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   sessions.clear();
   sessionToThread.clear();
   liveTurns.clear();
+  openingTurns.clear();
+  parkedSteers.clear();
   pendingPermission.clear();
   pendingQuestion.clear();
   configuredSkillRoots = [];
@@ -646,12 +650,15 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     const assistantMessages = live.bindOnly
       ? messages.filter((message) => message.info.role === "assistant")
       : assistantsAfterLastUser(messages);
+    // ponytail: SSE already painted this turn; persist part ids differ and remint new BB items
     const streamedText = hasStreamedAgentText(live);
     for (const message of assistantMessages) {
       for (const part of message.parts) {
         rememberTaskChild(live, part);
-        // ponytail: SSE already painted this turn; leftover poll may have a new persist id.
-        if (streamedText && (part.type === "text" || part.type === "text-delta")) {
+        if (
+          streamedText &&
+          (part.type === "text" || part.type === "text-delta")
+        ) {
           continue;
         }
         leftovers.push(
@@ -1962,30 +1969,19 @@ async function resolveSelectableAgent(args: {
   active: OpenCodeClient;
   requested: string | undefined;
   sessionId: string;
-}): Promise<{ ok: true; agent: string } | { ok: false; reason: string }> {
+}): Promise<
+  | { ok: true; agent: string; inheritSession: boolean }
+  | { ok: false; reason: string }
+> {
   const agents = (await args.active.agents()) as OpenCodeAgent[];
-  const selectable = listSelectablePrimaries(agents);
-  if (args.requested) {
-    if (selectable.some((agent) => agent.name === args.requested)) {
-      return { ok: true, agent: args.requested };
-    }
-    return {
-      ok: false,
-      reason: `Unknown or non-selectable OpenCode agent: ${args.requested}`,
-    };
-  }
-  const messages = (await args.active.sessionMessages(args.sessionId)) as HydrateMessage[];
-  const hydrated = hydratePickerAgent({
+  const messages = (await args.active.sessionMessages(
+    args.sessionId,
+  )) as HydrateMessage[];
+  return resolveContinueAgent({
+    requested: args.requested,
     lastUserAgent: lastUserAgent(messages),
     agents,
   });
-  if (hydrated.status === "unknown") {
-    return {
-      ok: false,
-      reason: `Unknown OpenCode agent: ${hydrated.agent}`,
-    };
-  }
-  return { ok: true, agent: hydrated.agent };
 }
 
 const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
@@ -2176,13 +2172,18 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         }
         const input = parsed.data.input ?? [];
         if (input.length > 0) {
-          await runPrompt({
-            threadId: parsed.data.threadId,
-            sessionId,
-            input,
-            options: parsed.data.options,
-            clientRequestId: undefined,
-          });
+          openingTurns.add(parsed.data.threadId);
+          try {
+            await runPrompt({
+              threadId: parsed.data.threadId,
+              sessionId,
+              input,
+              options: parsed.data.options,
+              clientRequestId: undefined,
+            });
+          } finally {
+            closeOpeningTurn(parsed.data.threadId);
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2304,18 +2305,40 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         bound.permissionMode = permissionModeOf(parsed.data.options);
         Object.assign(bound, sessionPolicy(parsed.data));
         respondResult(id, {});
-        await restoreRewindFiles({
-          threadId: parsed.data.threadId,
-          sessionId: bound.sessionId,
-          active: await ensureClient(),
-        });
-        await runPrompt({
-          threadId: parsed.data.threadId,
-          sessionId: bound.sessionId,
-          input: parsed.data.input,
-          options: parsed.data.options,
-          clientRequestId: parsed.data.clientRequestId,
-        });
+        openingTurns.add(parsed.data.threadId);
+        try {
+          await restoreRewindFiles({
+            threadId: parsed.data.threadId,
+            sessionId: bound.sessionId,
+            active: await ensureClient(),
+          });
+          const live = liveTurns.get(parsed.data.threadId);
+          // ponytail: agent-only bind seed must not become a second OpenCode prompt
+          if (
+            live?.bindOnly &&
+            !live.promptIssued &&
+            firstTextPart(parsed.data.input ?? []).trim() === TASK_CHILD_BIND_TEXT
+          ) {
+            if (parsed.data.clientRequestId) {
+              emitDeltas(parsed.data.threadId, [
+                {
+                  kind: "input.accepted",
+                  clientRequestId: parsed.data.clientRequestId,
+                },
+              ]);
+            }
+            return;
+          }
+          await runPrompt({
+            threadId: parsed.data.threadId,
+            sessionId: bound.sessionId,
+            input: parsed.data.input,
+            options: parsed.data.options,
+            clientRequestId: parsed.data.clientRequestId,
+          });
+        } finally {
+          closeOpeningTurn(parsed.data.threadId);
+        }
       } catch (error) {
         failIssuedTurn(
           parsed.data.threadId,
@@ -2484,26 +2507,17 @@ async function settleIssuedTurn(
 ): Promise<void> {
   const liveAfter = liveTurns.get(threadId);
   if (!liveAfter || liveAfter.parentBoundaryEmitted) return;
-  const queued = liveAfter.pendingPrompts.shift();
+  const queued = takeQueuedSteer(threadId, liveAfter);
   if (queued) {
-    try {
-      await active.promptAsync(sessionId, queued, boundDirectory(sessionId));
-    } catch (error) {
-      liveAfter.parentBoundaryEmitted = true;
-      liveTurns.delete(threadId);
-      emitDeltas(threadId, [
-        {
-          kind: "turn.boundary",
-          status: "failed",
-          error: {
-            message: error instanceof Error ? error.message : String(error),
-          },
-        },
-      ]);
-    }
+    await flushSteerBody(threadId, sessionId, active, liveAfter, queued);
     return;
   }
   const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+  const lateQueued = takeQueuedSteer(threadId, liveAfter);
+  if (lateQueued) {
+    await flushSteerBody(threadId, sessionId, active, liveAfter, lateQueued);
+    return;
+  }
   const leftovers: ThreadDelta[] = [];
   const streamedText = hasStreamedAgentText(liveAfter);
   for (const message of assistantsAfterLastUser(messages)) {
@@ -2596,6 +2610,101 @@ async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
   }
 }
 
+function closeOpeningTurn(threadId: string): void {
+  openingTurns.delete(threadId);
+  const live = liveTurns.get(threadId);
+  if (live) live.pendingPrompts.push(...takeParkedSteers(threadId));
+}
+
+function takeParkedSteers(threadId: string): Array<Record<string, unknown>> {
+  const parked = parkedSteers.get(threadId);
+  parkedSteers.delete(threadId);
+  return parked ?? [];
+}
+
+function takeQueuedSteer(
+  threadId: string,
+  live: LiveTurn,
+): Record<string, unknown> | undefined {
+  const fromLive = live.pendingPrompts.shift();
+  if (fromLive) return fromLive;
+  const parked = parkedSteers.get(threadId);
+  if (!parked?.length) return undefined;
+  const next = parked.shift();
+  if (parked.length === 0) parkedSteers.delete(threadId);
+  return next;
+}
+
+async function flushSteerBody(
+  threadId: string,
+  sessionId: string,
+  active: OpenCodeClient,
+  live: LiveTurn,
+  queued: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await active.promptAsync(sessionId, queued, boundDirectory(sessionId));
+  } catch (error) {
+    live.parentBoundaryEmitted = true;
+    liveTurns.delete(threadId);
+    emitDeltas(threadId, [
+      {
+        kind: "turn.boundary",
+        status: "failed",
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      },
+    ]);
+  }
+}
+
+function usableSteerLive(
+  threadId: string,
+  sessionId: string,
+): LiveTurn | undefined {
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted || live.sessionId !== sessionId) {
+    return undefined;
+  }
+  return live;
+}
+
+function steerPromptBody(args: {
+  sessionId: string;
+  input: readonly PromptInput[];
+  options: unknown;
+}): { ok: true; body: Record<string, unknown> } | { ok: false; reason: string } {
+  const options = providerOptions(args.options);
+  const agent = typeof options.agent === "string" ? options.agent : "build";
+  const model =
+    typeof (args.options as { model?: unknown })?.model === "string"
+      ? ((args.options as { model: string }).model as string)
+      : (lastPromptedModels.get(args.sessionId) ?? lastPromptedModel);
+  const built = buildPrompt({ agent, input: args.input, model });
+  if (!built.ok) return built;
+  const variant = openCodeVariantFor(reasoningLevelOf(args.options));
+  return {
+    ok: true,
+    body: { ...built.prompt, ...(variant ? { variant } : {}) },
+  };
+}
+
+function enqueueSteer(threadId: string, body: Record<string, unknown>): boolean {
+  const live = liveTurns.get(threadId);
+  if (live && !live.parentBoundaryEmitted) {
+    live.pendingPrompts.push(body);
+    return true;
+  }
+  if (openingTurns.has(threadId)) {
+    const parked = parkedSteers.get(threadId) ?? [];
+    parked.push(body);
+    parkedSteers.set(threadId, parked);
+    return true;
+  }
+  return false;
+}
+
 async function runSteer(args: {
   threadId: string;
   sessionId: string;
@@ -2603,40 +2712,7 @@ async function runSteer(args: {
   options: unknown;
   clientRequestId?: string;
 }): Promise<void> {
-  const live = liveTurns.get(args.threadId);
-  if (!live || live.parentBoundaryEmitted || live.sessionId !== args.sessionId) {
-    await runPrompt(args);
-    return;
-  }
-  const active = await ensureClient();
-  const options = providerOptions(args.options);
-  const requested =
-    typeof options.agent === "string" ? options.agent : undefined;
-  const resolved = await resolveSelectableAgent({
-    active,
-    requested,
-    sessionId: args.sessionId,
-  });
-  if (!resolved.ok) {
-    emitDeltas(args.threadId, [
-      {
-        kind: "provider.warning",
-        category: "general",
-        summary: "Could not deliver follow-up",
-        details: resolved.reason,
-        vouchedTurn: true,
-      },
-    ]);
-    return;
-  }
-  const built = buildPrompt({
-    agent: resolved.agent,
-    input: args.input,
-    model:
-      typeof (args.options as { model?: unknown })?.model === "string"
-        ? ((args.options as { model: string }).model as string)
-        : undefined,
-  });
+  const built = steerPromptBody(args);
   if (!built.ok) {
     emitDeltas(args.threadId, [
       {
@@ -2654,23 +2730,22 @@ async function runSteer(args: {
       { kind: "input.accepted", clientRequestId: args.clientRequestId },
     ]);
   }
-  const variant = openCodeVariantFor(reasoningLevelOf(args.options));
-  const body = {
-    ...built.prompt,
-    ...(variant ? { variant } : {}),
-  };
-  if (steerDeliveryOf(args.options) === "inject") {
+  if (
+    steerDeliveryOf(args.options) === "inject" &&
+    usableSteerLive(args.threadId, args.sessionId)
+  ) {
+    const active = await ensureClient();
     try {
       await active.promptAsync(
         args.sessionId,
-        body,
+        built.body,
         boundDirectory(args.sessionId),
       );
     } catch (error) {
       try {
         await active.prompt(
           args.sessionId,
-          body,
+          built.body,
           boundDirectory(args.sessionId),
         );
       } catch {
@@ -2687,7 +2762,8 @@ async function runSteer(args: {
     }
     return;
   }
-  live.pendingPrompts.push(body);
+  if (enqueueSteer(args.threadId, built.body)) return;
+  await runPrompt(args);
 }
 
 function rememberPromptedModel(sessionId: string, model: string): void {
@@ -2699,7 +2775,22 @@ async function resolvePromptModel(
   sessionId: string,
   options: unknown,
   active: OpenCodeClient,
+  preferSession = false,
 ): Promise<{ ok: true; id?: string } | { ok: false; reason: string }> {
+  if (preferSession) {
+    try {
+      const fromHistory = lastModelIdFromMessages(
+        await active.sessionMessages(sessionId),
+      );
+      if (fromHistory) {
+        rememberPromptedModel(sessionId, fromHistory);
+        return { ok: true, id: fromHistory };
+      }
+    } catch {
+      /* history is best-effort */
+    }
+    return { ok: true };
+  }
   const raw =
     typeof (options as { model?: unknown })?.model === "string"
       ? ((options as { model: string }).model as string).trim()
@@ -2875,6 +2966,8 @@ async function runPrompt(args: {
 }): Promise<void> {
   const existing = liveTurns.get(args.threadId);
   if (existing?.promptIssued) {
+    const built = steerPromptBody(args);
+    if (built.ok) existing.pendingPrompts.push(built.body);
     return;
   }
   if (!existing) {
@@ -2883,6 +2976,7 @@ async function runPrompt(args: {
   const live = liveTurns.get(args.threadId);
   if (!live) return;
   live.promptIssued = true;
+  live.pendingPrompts.push(...takeParkedSteers(args.threadId));
   if (args.clientRequestId) {
     emitDeltas(args.threadId, [
       {
@@ -2902,8 +2996,9 @@ async function runPrompt(args: {
     );
     return;
   }
+  let priorMessages: HydrateMessage[] | undefined;
   try {
-    const priorMessages = (await active.sessionMessages(
+    priorMessages = (await active.sessionMessages(
       args.sessionId,
     )) as HydrateMessage[];
     if (!live.bindOnly) {
@@ -2930,6 +3025,7 @@ async function runPrompt(args: {
     args.sessionId,
     args.options,
     active,
+    resolved.inheritSession,
   );
   if (!model.ok) {
     failIssuedTurn(args.threadId, model.reason);
@@ -2946,8 +3042,13 @@ async function runPrompt(args: {
     failIssuedTurn(args.threadId, built.reason);
     return;
   }
-
   try {
+    const variant = resolved.inheritSession
+      ? lastVariantFromMessages(
+          priorMessages ??
+            ((await active.sessionMessages(args.sessionId)) as HydrateMessage[]),
+        )
+      : openCodeVariantFor(reasoningLevelOf(args.options));
     const slash = parseLeadingSlash(firstTextPart(args.input));
     if (isCompactRequest(args.input)) {
       await runCompact({
@@ -2964,7 +3065,6 @@ async function runPrompt(args: {
       const listed = await active.listCommands(cwd);
       const matched = matchListedCommand(slash.name, listed);
       if (matched && !isOpenCodeCompactCommand(matched.name)) {
-        const variant = openCodeVariantFor(reasoningLevelOf(args.options));
         await active.sessionCommand(
           args.sessionId,
           {
@@ -2984,7 +3084,6 @@ async function runPrompt(args: {
     const prompt = system
       ? { ...built.prompt, system }
       : built.prompt;
-    const variant = openCodeVariantFor(reasoningLevelOf(args.options));
     await active.promptAsync(
       args.sessionId,
       {
