@@ -167,6 +167,6 @@ export function hydrateDeltas(args: {
       }
     }
   }
-  closeTurn(args.messages.length - 1);
+  if (!args.skipUserInput) closeTurn(args.messages.length - 1);
   return deltas;
 }

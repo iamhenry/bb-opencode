@@ -241,6 +241,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   compactInFlight.clear();
   pollInFlight.clear();
   emptyAskStreak.clear();
+
   lastPermissionCount.clear();
   rewindRestores.clear();
   resetDebugLogForTests();
@@ -415,6 +416,18 @@ function isUserMessageText(
   const messageID =
     typeof part.messageID === "string" ? part.messageID : undefined;
   return Boolean(messageID && live.userMessageIds.has(messageID));
+}
+
+function isChildProseType(type: unknown): boolean {
+  if (typeof type !== "string") return false;
+  return (
+    type === "text" ||
+    type === "text-delta" ||
+    type === "reasoning" ||
+    type === "reasoning-delta" ||
+    type.startsWith("session.next.text.") ||
+    type.startsWith("session.next.reasoning.")
+  );
 }
 
 function toolPartFromEvent(
@@ -658,7 +671,7 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     }
     await maybeFailUncardedWrite(sessionId, messages);
     if (leftovers.length > 0) emitDeltas(threadId, leftovers);
-    completeBindOnlyIfSettled(threadId, messages);
+    await completeBindOnlyIfIdle(threadId, sessionId, messages);
     return leftovers.length > 0;
   } catch {
     return false;
@@ -898,19 +911,39 @@ async function joinRunningSession(
   await syncLiveTurnParts(sessionId);
 }
 
-function completeBindOnlyIfSettled(
+function completeBindOnlyTurn(
   threadId: string,
-  messages: readonly HydrateMessage[],
+  messages?: readonly HydrateMessage[],
 ): boolean {
   const live = liveTurns.get(threadId);
   if (!live || live.parentBoundaryEmitted || live.promptIssued || !live.bindOnly) {
     return false;
   }
-  if (!lastAssistantSettled(messages)) return false;
   live.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);
   emitDeltas(threadId, [completedTurnBoundary(messages)]);
   return true;
+}
+
+/** First completed assistant step is not idle. Close only when OpenCode is idle. */
+async function completeBindOnlyIfIdle(
+  threadId: string,
+  sessionId: string,
+  messages: readonly HydrateMessage[],
+): Promise<boolean> {
+  const live = liveTurns.get(threadId);
+  if (!live || live.parentBoundaryEmitted || live.promptIssued || !live.bindOnly) {
+    return false;
+  }
+  if (!lastAssistantSettled(messages) || !client) return false;
+  try {
+    if (await client.sessionIsRunning(sessionId, boundDirectory(sessionId))) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return completeBindOnlyTurn(threadId, messages);
 }
 
 async function finishBindOnlyStart(args: {
@@ -918,9 +951,26 @@ async function finishBindOnlyStart(args: {
   sessionId: string;
   active: OpenCodeClient;
 }): Promise<void> {
-  await joinRunningSession(args.threadId, args.sessionId);
-  const live = liveTurns.get(args.threadId);
-  if (live) live.bindOnly = true;
+  if (!liveTurns.has(args.threadId)) {
+    liveTurns.set(args.threadId, {
+      threadId: args.threadId,
+      sessionId: args.sessionId,
+      promptIssued: false,
+      mapState: createMapDeltaState(),
+      textBuffers: new Map(),
+      parentBoundaryEmitted: false,
+      liveChildIds: new Set(),
+      childWork: new Map(),
+      pendingPrompts: [],
+      retryWarned: new Set(),
+      userMessageIds: new Set(),
+      bindOnly: true,
+    });
+    emitDeltas(args.threadId, [{ kind: "turn.open" }]);
+  } else {
+    const live = liveTurns.get(args.threadId);
+    if (live) live.bindOnly = true;
+  }
   await syncLiveTurnParts(args.sessionId);
 }
 
@@ -1162,6 +1212,8 @@ async function onOpenCodeEvent(event: {
       return;
     }
     if (event.type.startsWith("session.next.")) {
+      // BB renders final child prose from the delegation summary; nesting it duplicates Output.
+      if (isChildProseType(event.type)) return;
       const work = live.childWork.get(id);
       if (!work) return;
       const nextDeltas = mapSessionNextEvent({
@@ -1418,7 +1470,7 @@ function rememberTaskChild(
   },
 ): ChildWork | undefined {
   const childId = taskChildSessionId(part);
-  const parentItemId = part.id ?? part.callID;
+  const parentItemId = part.callID ?? part.id;
   if (!childId || !parentItemId) return undefined;
   live.liveChildIds.add(childId);
   noteLiveTaskChild({
@@ -1446,6 +1498,8 @@ function projectChildParts(
 ): ThreadDelta[] {
   const work = live.childWork.get(childId);
   if (!work) return [];
+  const activityParts = parts.filter((part) => !isChildProseType(part.type));
+  if (activityParts.length === 0) return [];
   const deltas: ThreadDelta[] = [];
   if (!work.turnOpened) {
     work.turnOpened = true;
@@ -1455,7 +1509,7 @@ function projectChildParts(
       parentRef: work.parentItemId,
     });
   }
-  for (const part of parts) {
+  for (const part of activityParts) {
     deltas.push(
       ...mapPartDelta({
         state: work.mapState,
@@ -3013,5 +3067,3 @@ export const experimental_providerBridge = experimental_defineProviderBridge({
     dataDir = context.dataDir;
   },
 });
-
-

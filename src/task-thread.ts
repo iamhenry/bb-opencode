@@ -15,6 +15,12 @@ export function shouldAutoBindTaskChild(args: {
   return args.parentBound && args.running && !args.alreadyImported;
 }
 
+/** `threads.get` / spawn 404 must not fail the whole 750ms Task poll. */
+export function isThreadNotFoundError(error: unknown): boolean {
+  const text = String(error);
+  return /404/.test(text) && /thread not found/i.test(text);
+}
+
 /** BB thread list often omits providerThreadId; resolve it from identity events. */
 export function isOpenCodeParentThread(thread: {
   providerId?: string | null;

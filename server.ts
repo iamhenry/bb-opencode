@@ -44,6 +44,7 @@ import {
   type RunChipRow,
 } from "./src/run-chip.js";
 import {
+  isThreadNotFoundError,
   taskChildBindInput,
   taskChildThreadTitle,
 } from "./src/task-thread.js";
@@ -999,9 +1000,28 @@ async function ensureRunningTaskChildThreads(
     }
     const now = Date.now();
     if ((skippedTaskChildrenUntil.get(live.childSessionId) ?? 0) > now) continue;
-    const parent = fullThreadFields(
-      await bb.sdk.threads.get({ threadId: live.parentThreadId }),
-    );
+    const listedParent = threads
+      .map((thread) => fullThreadFields(thread))
+      .find((thread) => thread.id === live.parentThreadId);
+    let parent = listedParent;
+    if (!parent) {
+      try {
+        parent = fullThreadFields(
+          await bb.sdk.threads.get({ threadId: live.parentThreadId }),
+        );
+      } catch (error) {
+        skippedTaskChildrenUntil.set(
+          live.childSessionId,
+          now + (isThreadNotFoundError(error) ? 300_000 : 30_000),
+        );
+        if (!isThreadNotFoundError(error)) {
+          bb.log.warn(
+            `OpenCode Task parent lookup failed ${live.parentThreadId}: ${String(error)}`,
+          );
+        }
+        continue;
+      }
+    }
     if (parent.providerId !== PROVIDER_ID || !parent.id || !parent.projectId) continue;
     spawningTaskChildren.add(live.childSessionId);
     try {

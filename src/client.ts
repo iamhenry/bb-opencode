@@ -1,5 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import { listAuthenticatedProviders } from "./catalog.js";
+import { runningSessionIdsFromStatus } from "./session-status.js";
 import { debugLog } from "./debug-log.js";
 import { isAbortTimeout } from "./process.js";
 
@@ -93,7 +94,7 @@ export interface OpenCodeClient {
     sessionID: string;
   }): Promise<void>;
   listPendingQuestions(sessionID: string): Promise<unknown[]>;
-  sessionIsRunning(id: string): Promise<boolean>;
+  sessionIsRunning(id: string, directory?: string): Promise<boolean>;
   sessionTodos(id: string): Promise<unknown[]>;
   summarize(
     id: string,
@@ -525,30 +526,20 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const body = unwrap<unknown>(result);
       return Array.isArray(body) ? body : [];
     },
-    async sessionIsRunning(id) {
+    async sessionIsRunning(id, directory) {
       const response = await fetchTimed(
-        `${url}/session/status`,
+        `${url}/session/status${directoryQuery(directory)}`,
         {},
         OPENCODE_SETUP_MS,
       );
-      if (!response.ok) return false;
+      if (!response.ok) {
+        throw new Error(`session.status failed: ${response.status}`);
+      }
+      if (!isJsonContentType(response)) {
+        throw new Error("session.status was not JSON");
+      }
       const body = (await response.json()) as unknown;
-      if (Array.isArray(body)) {
-        return body.some((item) => {
-          if (!item || typeof item !== "object") return false;
-          const row = item as { id?: unknown; status?: unknown };
-          return row.id === id && row.status && row.status !== "idle";
-        });
-      }
-      if (body && typeof body === "object") {
-        const status = (body as Record<string, unknown>)[id];
-        if (typeof status === "string") return status !== "idle";
-        if (status && typeof status === "object") {
-          const value = (status as { status?: unknown }).status;
-          return typeof value === "string" && value !== "idle";
-        }
-      }
-      return false;
+      return runningSessionIdsFromStatus(body).has(id);
     },
     async summarize(id, body) {
       const result = await sdk.session.summarize({

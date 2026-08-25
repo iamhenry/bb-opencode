@@ -6,6 +6,7 @@ import {
   readSessionStatus,
   retryFromPart,
   retryKey,
+  runningSessionIdsFromStatus,
 } from "../src/session-status.js";
 
 describe("session status", () => {
@@ -17,6 +18,16 @@ describe("session status", () => {
     });
     expect(readSessionStatus({ status: "idle" })).toEqual({ kind: "idle" });
     expect(readSessionStatus({ type: "busy" })).toEqual({ kind: "busy" });
+  });
+
+  it("treats OpenCode { type: busy } rows as running", () => {
+    expect(
+      [...runningSessionIdsFromStatus({
+        ses_busy: { type: "busy" },
+        ses_idle: { type: "idle" },
+        ses_retry: { type: "retry", attempt: 1 },
+      })].sort(),
+    ).toEqual(["ses_busy", "ses_retry"]);
   });
 
   it("extracts retry parts and session errors", () => {

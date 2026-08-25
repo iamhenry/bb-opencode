@@ -90,6 +90,7 @@ export function collectChipTargets(rows: unknown): RunChipTarget[] {
     if (row.kind !== "conversation") return;
     if (row.role !== "user" && row.role !== "assistant") return;
     if (row.role === "user" && row.initiator && row.initiator !== "user") return;
+    if (row.role === "user" && isSystemInjectedUser(row)) return;
     if (!row.id) return;
     targets.push({
       id: row.id,
@@ -176,19 +177,21 @@ function keepLastAssistantChip(
   rows: readonly RunChipRow[],
   targets: readonly RunChipTarget[],
 ): RunChipRow[] {
-  const lastByTurn = new Map<string, string>();
-  let lastLoose: string | undefined;
+  let lastAssistant: string | undefined;
   for (const target of targets) {
-    if (target.role !== "assistant") continue;
-    if (target.turnId) lastByTurn.set(target.turnId, target.id);
-    else lastLoose = target.id;
+    if (target.role === "assistant") lastAssistant = target.id;
   }
-  const keep = new Set<string>(lastByTurn.values());
-  if (lastLoose) keep.add(lastLoose);
   const assistantIds = new Set(
     targets.filter((target) => target.role === "assistant").map((target) => target.id),
   );
-  return rows.filter((row) => !assistantIds.has(row.id) || keep.has(row.id));
+  return rows.filter(
+    (row) => !assistantIds.has(row.id) || row.id === lastAssistant,
+  );
+}
+
+function isSystemInjectedUser(row: { text?: string; title?: string }): boolean {
+  const text = `${row.text ?? ""}\n${row.title ?? ""}`;
+  return text.includes("[bb system]");
 }
 
 function mergeMessage(
@@ -220,6 +223,8 @@ function walkRows(
     role?: string;
     initiator?: string;
     turnId?: string | null;
+    text?: string;
+    title?: string;
   }) => void,
 ): void {
   if (!Array.isArray(rows)) return;
@@ -231,6 +236,8 @@ function walkRows(
       role?: string;
       initiator?: string;
       turnId?: string | null;
+      text?: string;
+      title?: string;
       children?: unknown;
       childRows?: unknown;
     };

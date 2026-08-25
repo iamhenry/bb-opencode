@@ -150,12 +150,12 @@ describe("assignRunChips", () => {
     ]);
   });
 
-  it("keeps only the last assistant bubble in a turn", () => {
+  it("keeps only the last assistant bubble in the thread", () => {
     const rows = assignRunChips({
       targets: [
         { id: "u1", role: "user", turnId: "t1" },
         { id: "a1", role: "assistant", turnId: "t1" },
-        { id: "a2", role: "assistant", turnId: "t1" },
+        { id: "a2", role: "assistant", turnId: "t2" },
       ],
       messages: [
         {

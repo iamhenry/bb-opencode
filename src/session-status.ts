@@ -41,6 +41,27 @@ function unwrapStatus(properties: unknown): unknown {
   return record.status ?? properties;
 }
 
+/** OpenCode `GET /session/status` is `{ [sessionId]: { type: idle|busy|retry } }`. */
+export function runningSessionIdsFromStatus(body: unknown): Set<string> {
+  const ids = new Set<string>();
+  if (Array.isArray(body)) {
+    for (const item of body) {
+      if (!item || typeof item !== "object") continue;
+      const id = (item as { id?: unknown }).id;
+      if (typeof id !== "string" || !id) continue;
+      const status = readSessionStatus(item);
+      if (status.kind && status.kind !== "idle") ids.add(id);
+    }
+    return ids;
+  }
+  if (!body || typeof body !== "object") return ids;
+  for (const [id, value] of Object.entries(body as Record<string, unknown>)) {
+    const status = readSessionStatus(value);
+    if (status.kind && status.kind !== "idle") ids.add(id);
+  }
+  return ids;
+}
+
 export function retryKey(args: {
   sessionId: string;
   messageId?: string;

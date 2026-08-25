@@ -493,7 +493,7 @@ describe("provider bridge", () => {
     expect(fake.calls.create).toBe(1);
   });
 
-  it("nests Task child tool parts on the parent thread", async () => {
+  it("nests Task child tools without duplicating child prose", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -509,6 +509,7 @@ describe("provider bridge", () => {
       properties: {
         part: {
           id: "task-1",
+          callID: "task-call-1",
           type: "tool",
           tool: "task",
           sessionID: "ses_1",
@@ -522,6 +523,57 @@ describe("provider bridge", () => {
       },
     });
     messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        part: {
+          id: "text-1",
+          type: "text",
+          text: "final child prose",
+          sessionID: "ses_child",
+        },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "message.part.delta",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        part: {
+          id: "reasoning-1",
+          type: "reasoning-delta",
+          text: "private child reasoning",
+          sessionID: "ses_child",
+        },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        textID: "next-text-1",
+        delta: "next child prose",
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.reasoning.delta",
+      properties: {
+        parentID: "ses_1",
+        sessionID: "ses_child",
+        reasoningID: "next-reasoning-1",
+        delta: "next child reasoning",
+      },
+    });
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toEqual([]);
     await ingestOpenCodeEvent({
       type: "message.part.updated",
       properties: {
@@ -546,7 +598,7 @@ describe("provider bridge", () => {
         (delta) =>
           delta.kind === "turn.open" &&
           delta.providerTurnId === "ses_child" &&
-          delta.parentRef === "task-1",
+          delta.parentRef === "task-call-1",
       ),
     ).toBe(true);
     expect(
@@ -557,7 +609,7 @@ describe("provider bridge", () => {
           delta.kind === "item.open" &&
           item?.type === "fileRead" &&
           item.path === "ISA.md" &&
-          key?.parentRef === "task-1"
+          key?.parentRef === "task-call-1"
         );
       }),
     ).toBe(true);
@@ -1786,6 +1838,56 @@ describe("provider bridge", () => {
     expect(afterIdle).toContain("turn.boundary");
   });
 
+  it("bind-only does not close on the first completed assistant step", async () => {
+    const fake = installFake();
+    fake.runningIds.add("child");
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "explore" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [
+          {
+            id: "t1",
+            type: "text",
+            text: "GOAL",
+            state: { status: "completed" },
+          },
+          {
+            id: "tool1",
+            type: "tool",
+            tool: "read",
+            state: { status: "completed", input: { filePath: "a.ts" } },
+          },
+        ],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        threadId: "thr_child",
+        input: [{ type: "text", text: "seed", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "child", bindOnly: true },
+        },
+      }),
+    });
+    await flush();
+    const kinds = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []
+      ).map((delta) => delta.kind);
+    });
+    expect(kinds).toContain("item.textDelta");
+    expect(kinds.filter((kind) => kind === "turn.boundary")).toEqual([]);
+  });
+
   function deltaKinds(): string[] {
     return messages.flatMap((message) => {
       if (message.method !== "thread/delta") return [];
@@ -2054,7 +2156,10 @@ describe("provider bridge", () => {
           {
             type: "tool",
             tool: "apply_patch",
-            state: { status: "running" },
+            state: {
+              status: "running",
+              input: { patchText: "*** Begin Patch\n*** Update File: a.ts\n" },
+            },
           },
         ],
       },

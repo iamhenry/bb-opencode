@@ -7,6 +7,7 @@ import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
 import { splitModelRef } from "./task-thread.js";
+import { runningSessionIdsFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
 
 const clients = new Map<string, OpenCodeClient>();
@@ -40,9 +41,9 @@ export async function handleListSessions(
     return { sessions: [] };
   }
   const client = acquire(attached.url);
+  let directory: string | undefined;
   let sessions;
   if (parentSessionId) {
-    let directory: string | undefined;
     try {
       directory = (await client.getSession(parentSessionId)).directory;
     } catch {
@@ -52,29 +53,14 @@ export async function handleListSessions(
   } else {
     sessions = await client.listSessions();
   }
-  const statuses = new Set<string>();
+  let statuses = new Set<string>();
   try {
-    const response = await fetch(`${attached.url}/session/status`);
+    const query = directory
+      ? `?directory=${encodeURIComponent(directory)}`
+      : "";
+    const response = await fetch(`${attached.url}/session/status${query}`);
     if (response.ok) {
-      const body = (await response.json()) as unknown;
-      if (Array.isArray(body)) {
-        for (const item of body) {
-          if (
-            item &&
-            typeof item === "object" &&
-            typeof (item as { id?: unknown }).id === "string"
-          ) {
-            const status = (item as { status?: unknown }).status;
-            if (status && status !== "idle") {
-              statuses.add((item as { id: string }).id);
-            }
-          }
-        }
-      } else if (body && typeof body === "object") {
-        for (const [id, value] of Object.entries(body as Record<string, unknown>)) {
-          if (value && value !== "idle") statuses.add(id);
-        }
-      }
+      statuses = runningSessionIdsFromStatus((await response.json()) as unknown);
     }
   } catch {
     /* status is best-effort */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isOpenCodeParentThread,
+  isThreadNotFoundError,
   shouldAutoBindTaskChild,
   splitModelRef,
   taskChildThreadTitle,
@@ -64,6 +65,15 @@ describe("task child threads", () => {
     expect(taskChildThreadTitle("Explore package.json")).toBe(
       "Explore package.json",
     );
+  });
+
+  it("recognizes a missing BB thread without treating other errors as gone", () => {
+    expect(
+      isThreadNotFoundError(
+        new Error('BbHttpError: HTTP 404: Thread not found'),
+      ),
+    ).toBe(true);
+    expect(isThreadNotFoundError(new Error("spawn failed"))).toBe(false);
   });
 
   it("splits provider/model ids for summarize", () => {
