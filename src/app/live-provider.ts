@@ -6,16 +6,16 @@ export function providerIdFromModelTriggerTitle(
 ): string | null {
   if (!title) return null;
   const trimmed = title.trim();
+  // Plugin brand only. ACP titles use "opencode:" / "OpenCode Go/…" — not this plugin.
   if (
     trimmed === PROVIDER_DISPLAY_NAME ||
-    trimmed === PROVIDER_ID ||
-    trimmed.startsWith(`${PROVIDER_DISPLAY_NAME}:`) ||
-    trimmed.toLowerCase().startsWith(`${PROVIDER_ID}:`)
+    trimmed.startsWith(`${PROVIDER_DISPLAY_NAME}:`)
   ) {
     return PROVIDER_ID;
   }
   const label = trimmed.split(":")[0]?.trim();
   if (!label) return null;
+  if (label.toLowerCase() === PROVIDER_ID) return "acp-opencode";
   return label;
 }
 
@@ -29,14 +29,8 @@ export function titleFromModelTrigger(button: Element | null): string | null {
 
 export function chipSuggestsOpencode(args: {
   liveProviderId?: string | null;
-  title?: string | null;
-  text?: string | null;
-  hasOpencodeLogo?: boolean;
 }): boolean {
-  if (args.liveProviderId === PROVIDER_ID) return true;
-  if (args.hasOpencodeLogo) return true;
-  const blob = `${args.title ?? ""} ${args.text ?? ""}`;
-  return new RegExp(`\\b${PROVIDER_DISPLAY_NAME}\\b`, "i").test(blob);
+  return args.liveProviderId === PROVIDER_ID;
 }
 
 function modelButtons(shell: ParentNode): Element[] {
@@ -109,19 +103,8 @@ export function inspectLiveComposerProvider(from: Element | null): {
   for (const shell of shells) {
     for (const node of modelButtons(shell)) {
       const title = titleFromModelTrigger(node);
-      const text = node.textContent;
-      const hasOpencodeLogo = Boolean(
-        node.querySelector(
-          'img[src*="/providers/opencode/"], img[src*="provider=opencode"], [data-plugin-icon-asset*="opencode"]',
-        ),
-      );
       const liveProviderId = providerIdFromModelTriggerTitle(title);
-      const opencode = chipSuggestsOpencode({
-        liveProviderId,
-        title,
-        text,
-        hasOpencodeLogo,
-      });
+      const opencode = chipSuggestsOpencode({ liveProviderId });
       if (opencode || liveProviderId) {
         return { found: true, opencode };
       }

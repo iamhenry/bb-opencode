@@ -32,6 +32,7 @@ import {
   coerceModelRef,
   configDefaultModelId,
   lastModelIdFromMessages,
+  listPickerModels,
 } from "./catalog.js";
 import {
   isCompactRequest,
@@ -110,7 +111,6 @@ import {
   matchListedCommand,
   parseLeadingSlash,
 } from "./slash-command.js";
-import { formatModelDisplayName } from "./model-label.js";
 import {
   defaultReasoningEffortFor,
   openCodeVariantFor,
@@ -2052,34 +2052,22 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         const active = await ensureClient();
         const catalog = await active.providers();
         rememberModelWindows(modelContextWindows, catalog.providers ?? []);
-        const models = (catalog.providers ?? []).flatMap((provider) => {
-          const modelsRecord =
-            provider.models && typeof provider.models === "object"
-              ? provider.models
-              : {};
-          return Object.keys(modelsRecord as Record<string, unknown>).map(
-            (modelId) => {
-              const raw = (modelsRecord as Record<string, { name?: string }>)[
-                modelId
-              ];
-              const supportedReasoningEfforts =
-                supportedReasoningEffortsForModel(raw);
-              return {
-                id: `${provider.id}/${modelId}`,
-                model: modelId,
-                displayName: formatModelDisplayName(
-                  provider.id,
-                  raw?.name ?? modelId,
-                ),
-                description: provider.id,
-                supportedReasoningEfforts,
-                defaultReasoningEffort: defaultReasoningEffortFor(
-                  supportedReasoningEfforts,
-                ),
-                isDefault: false,
-              };
-            },
+        const models = listPickerModels(catalog.providers ?? []).map((row) => {
+          const supportedReasoningEfforts = supportedReasoningEffortsForModel(
+            row.raw,
           );
+          return {
+            id: row.id,
+            model: row.model,
+            displayName: row.displayName,
+            description: row.description,
+            routeProviderId: row.routeProviderId,
+            supportedReasoningEfforts,
+            defaultReasoningEffort: defaultReasoningEffortFor(
+              supportedReasoningEfforts,
+            ),
+            isDefault: false,
+          };
         });
         let configured: string | undefined;
         try {

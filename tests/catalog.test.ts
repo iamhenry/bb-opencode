@@ -3,7 +3,9 @@ import {
   coerceModelRef,
   configDefaultModelId,
   lastModelIdFromMessages,
+  lastVariantFromMessages,
   listAuthenticatedProviders,
+  listPickerModels,
 } from "../src/catalog.js";
 
 describe("authenticated OpenCode catalog", () => {
@@ -68,6 +70,45 @@ describe("authenticated OpenCode catalog", () => {
     expect(coerceModelRef("gpt-5.6-luna")).toBeUndefined();
   });
 
+  it("emits pretty unique picker rows with routeProviderId", () => {
+    const rows = listPickerModels([
+      {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        models: {
+          "grok-4.6": { name: "Grok 4.6" },
+          "glm-5.2": { name: "GLM-5.2" },
+        },
+      },
+      {
+        id: "opencode-go",
+        name: "OpenCode Go",
+        models: { "grok-4.6": { name: "Grok 4.6" } },
+      },
+      {
+        id: "xai",
+        name: "xAI",
+        models: { "grok-4.6": { name: "Grok 4.6" } },
+      },
+    ]);
+    expect(rows.map((row) => row.id)).toEqual([
+      "opencode-go/grok-4.6",
+      "opencode-go/glm-5.2",
+      "xai/grok-4.6",
+    ]);
+    expect(rows.map((row) => row.model)).toEqual(rows.map((row) => row.id));
+    expect(rows.map((row) => row.displayName)).toEqual([
+      "OpenCode Go/Grok 4.6",
+      "OpenCode Go/GLM-5.2",
+      "xAI/Grok 4.6",
+    ]);
+    expect(rows.map((row) => row.routeProviderId)).toEqual([
+      "opencode-go",
+      "opencode-go",
+      "xai",
+    ]);
+  });
+
   it("reads the last prompted model from session messages", () => {
     expect(
       lastModelIdFromMessages([
@@ -86,5 +127,19 @@ describe("authenticated OpenCode catalog", () => {
         },
       ]),
     ).toBe("openai/gpt-5.6-sol");
+    expect(
+      lastVariantFromMessages([
+        {
+          info: {
+            role: "user",
+            model: {
+              providerID: "openai",
+              modelID: "gpt-5.6-luna",
+              variant: "high",
+            },
+          },
+        },
+      ]),
+    ).toBe("high");
   });
 });

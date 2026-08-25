@@ -1,3 +1,5 @@
+import { formatModelDisplayName } from "./model-label.js";
+
 export interface CatalogProvider {
   id: string;
   models?: unknown;
@@ -57,6 +59,22 @@ export function lastModelIdFromMessages(
   return undefined;
 }
 
+export function lastVariantFromMessages(
+  messages: readonly { info?: Record<string, unknown> }[],
+): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const info = messages[i]?.info;
+    if (!info) continue;
+    const model = info.model;
+    if (model && typeof model === "object") {
+      const variant = (model as { variant?: unknown }).variant;
+      if (typeof variant === "string" && variant) return variant;
+    }
+    if (typeof info.variant === "string" && info.variant) return info.variant;
+  }
+  return undefined;
+}
+
 function modelRefFromUnknown(raw: unknown): string | undefined {
   if (typeof raw === "string" && raw.includes("/")) return raw;
   if (!raw || typeof raw !== "object") return undefined;
@@ -71,6 +89,54 @@ function modelRefFromUnknown(raw: unknown): string | undefined {
 function modelIdsOf(provider: CatalogProvider): string[] {
   if (!provider.models || typeof provider.models !== "object") return [];
   return Object.keys(provider.models as Record<string, unknown>);
+}
+
+export interface PickerModelRow {
+  id: string;
+  model: string;
+  displayName: string;
+  description: string;
+  routeProviderId: string;
+  raw: unknown;
+}
+
+function modelNameOf(raw: unknown, fallback: string): string {
+  if (raw && typeof raw === "object") {
+    const name = (raw as { name?: unknown }).name;
+    if (typeof name === "string" && name.trim()) return name;
+  }
+  return fallback;
+}
+
+/** One BB picker row per `provider/model` id. Pretty `provider.name` for search. */
+export function listPickerModels(
+  providers: readonly CatalogProvider[],
+): PickerModelRow[] {
+  const seen = new Set<string>();
+  const rows: PickerModelRow[] = [];
+  for (const provider of providers) {
+    const prefix = provider.name?.trim() || provider.id;
+    const models =
+      provider.models && typeof provider.models === "object"
+        ? (provider.models as Record<string, unknown>)
+        : {};
+    for (const modelId of Object.keys(models)) {
+      const id = `${provider.id}/${modelId}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const raw = models[modelId];
+      rows.push({
+        id,
+        // ACP shape: picker value is the full provider/model id, not the bare key.
+        model: id,
+        displayName: formatModelDisplayName(prefix, modelNameOf(raw, modelId)),
+        description: provider.id,
+        routeProviderId: provider.id,
+        raw,
+      });
+    }
+  }
+  return rows;
 }
 
 /** BB `options.model` is often the catalog `model` field (bare id), not `provider/model`. */

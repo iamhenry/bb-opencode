@@ -30,21 +30,22 @@ describe("live composer provider from model chip", () => {
     expect(providerIdFromModelTriggerTitle(null)).toBeNull();
   });
 
-  it("treats the OpenCode logo or title as selected", () => {
+  it("does not treat native ACP OpenCode as this plugin (ISC-8)", () => {
+    expect(
+      providerIdFromModelTriggerTitle(
+        "opencode: OpenCode Go/GLM-5.3 · High reasoning",
+      ),
+    ).toBe("acp-opencode");
     expect(
       chipSuggestsOpencode({
-        hasOpencodeLogo: true,
-        text: "DeepSeek V4 Flash Medium",
-      }),
-    ).toBe(true);
-    expect(composerLayoutIsCompact(null)).toBe(false);
-    expect(
-      chipSuggestsOpencode({
-        hasOpencodeLogo: false,
-        text: "Opus 5 1M Medium",
-        title: "Pi: Opus 5 1M · Medium reasoning",
+        liveProviderId: providerIdFromModelTriggerTitle(
+          "opencode: OpenCode Go/GLM-5.3 · High reasoning",
+        ),
       }),
     ).toBe(false);
+    expect(chipSuggestsOpencode({ liveProviderId: "opencode" })).toBe(true);
+    expect(composerLayoutIsCompact(null)).toBe(false);
+    expect(chipSuggestsOpencode({ liveProviderId: "Pi" })).toBe(false);
   });
 
   it("puts the agent chip on the banner for compact/coarse surfaces", () => {
