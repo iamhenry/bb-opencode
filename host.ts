@@ -15,7 +15,9 @@ import {
   handleLogs,
   handleProbe,
   handleRevert,
+  handleRevertState,
   handleSessionSnapshot,
+  handleSettleSession,
   handleStampPermissionMode,
   handleSummarize,
   handleUnrevert,
@@ -60,6 +62,12 @@ export default experimental_defineHostEntry({
         input.sessionId,
       );
     },
+    async settleSession(input, context) {
+      return handleSettleSession(
+        context.experimental_paths.dataDir,
+        input.sessionId,
+      );
+    },
     async revert(input, context) {
       return handleRevert(context.experimental_paths.dataDir, input.sessionId, {
         messageID: input.messageID,
@@ -69,6 +77,12 @@ export default experimental_defineHostEntry({
     },
     async unrevert(input, context) {
       return handleUnrevert(context.experimental_paths.dataDir, input.sessionId);
+    },
+    async revertState(input, context) {
+      return handleRevertState(
+        context.experimental_paths.dataDir,
+        input.sessionId,
+      );
     },
     async listAgents(_input, context) {
       return handleListAgents(context.experimental_paths.dataDir);

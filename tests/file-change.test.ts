@@ -2,9 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   fileChangesFromDiffs,
   fileChangesFromToolInput,
-  firstMessageAfterCheckpoint,
   isFileChangeToolName,
-  isRewindStagingThread,
 } from "../src/file-change.js";
 
 describe("file changes", () => {
@@ -44,14 +42,4 @@ describe("file changes", () => {
     ]);
   });
 
-  it("detects BB rewind staging threads and the first dropped message", () => {
-    expect(isRewindStagingThread("thr_1:rewind:lease")).toBe(true);
-    expect(isRewindStagingThread("thr_1")).toBe(false);
-    expect(
-      firstMessageAfterCheckpoint(
-        [{ info: { id: "keep" } }, { info: { id: "drop" } }],
-        "keep",
-      ),
-    ).toBe("drop");
-  });
 });

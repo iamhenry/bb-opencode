@@ -3,7 +3,7 @@ import { resolveImportEnvironment } from "../src/import-environment.js";
 
 const projects = [
   { id: "proj", paths: ["/work/app"] },
-  { id: "personal", personal: true, paths: ["/Users/me"] },
+  { id: "personal", personal: true, paths: ["/personal-home"] },
 ];
 
 describe("import environment", () => {

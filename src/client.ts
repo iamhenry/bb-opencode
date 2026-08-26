@@ -144,6 +144,8 @@ type SdkClient = ReturnType<typeof createOpencodeClient>;
 
 export const OPENCODE_SETUP_MS = 8_000;
 export const OPENCODE_REPLY_MS = 8_000;
+/** Revert cleanup can snapshot and delete a long suffix before prompt_async acks. */
+export const OPENCODE_PROMPT_MS = 30_000;
 
 async function withTimeout<T>(
   promise: Promise<T>,
@@ -329,7 +331,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
             headers: { "content-type": "application/json" },
             body: JSON.stringify(payload),
           },
-          OPENCODE_REPLY_MS,
+          OPENCODE_PROMPT_MS,
         );
       let response = await send(body);
       if (response.status === 404) {

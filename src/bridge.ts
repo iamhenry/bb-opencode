@@ -47,10 +47,6 @@ import {
   todoSnapshotKey,
 } from "./todos.js";
 import {
-  firstMessageAfterCheckpoint,
-  isRewindStagingThread,
-} from "./file-change.js";
-import {
   describeSessionError,
   readSessionStatus,
   retryFromPart,
@@ -217,10 +213,6 @@ const lastRevertCursors = new Map<string, string | null>();
 const lastTodos = new Map<string, string>();
 const compactIssued = new Set<string>();
 const compactInFlight = new Set<string>();
-const rewindRestores = new Map<
-  string,
-  { sourceId: string; checkpointId: string }
->();
 const modelContextWindows = new Map<string, number>();
 const lastPromptedModels = new Map<string, string>();
 let lastPromptedModel: string | undefined;
@@ -257,7 +249,6 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   emptyAskStreak.clear();
 
   lastPermissionCount.clear();
-  rewindRestores.clear();
   resetDebugLogForTests();
   modelContextWindows.clear();
   lastPromptedModels.clear();
@@ -786,7 +777,10 @@ export async function syncSessionRevert(sessionId: string): Promise<boolean> {
     const cursor = revertMessageIdOf(session) ?? null;
     if (lastRevertCursors.get(sessionId) === cursor) return false;
     lastRevertCursors.set(sessionId, cursor);
-    await replayHydrate(threadId, sessionId, client);
+    // The BB event log is append-only: replaying retained provider messages
+    // here duplicates the visible prefix instead of replacing the old suffix.
+    // The app projects the reversible suffix from the authoritative cursor;
+    // normal resume hydration remains responsible for a newly bound session.
     return true;
   } catch {
     return false;
@@ -2021,30 +2015,6 @@ async function handlePermissionAsked(
   });
 }
 
-async function restoreRewindFiles(args: {
-  threadId: string;
-  sessionId: string;
-  active: OpenCodeClient;
-}): Promise<void> {
-  if (isRewindStagingThread(args.threadId)) return;
-  const pending = rewindRestores.get(args.sessionId);
-  if (!pending) return;
-  rewindRestores.delete(args.sessionId);
-  try {
-    const messages = (await args.active.sessionMessages(
-      pending.sourceId,
-    )) as Array<{ info?: { id?: unknown } }>;
-    const messageID = firstMessageAfterCheckpoint(
-      messages,
-      pending.checkpointId,
-    );
-    if (!messageID) return;
-    await args.active.revert(pending.sourceId, { messageID });
-  } catch {
-    /* OpenCode snapshot restore is best-effort; the edited turn still runs */
-  }
-}
-
 async function resolveSelectableAgent(args: {
   active: OpenCodeClient;
   requested: string | undefined;
@@ -2336,15 +2306,6 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
             : {},
         );
         const forkedId = requireSessionId(forked.id, "session.fork");
-        if (
-          isRewindStagingThread(parsed.data.threadId) &&
-          parsed.data.sourceProviderCheckpointId
-        ) {
-          rewindRestores.set(forkedId, {
-            sourceId: parsed.data.sourceProviderThreadId,
-            checkpointId: parsed.data.sourceProviderCheckpointId,
-          });
-        }
         bindSession(parsed.data.threadId, {
           threadId: parsed.data.threadId,
           sessionId: forkedId,
@@ -2387,11 +2348,6 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         respondResult(id, {});
         openingTurns.add(parsed.data.threadId);
         try {
-          await restoreRewindFiles({
-            threadId: parsed.data.threadId,
-            sessionId: bound.sessionId,
-            active: await ensureClient(),
-          });
           const live = liveTurns.get(parsed.data.threadId);
           // ponytail: agent-only bind seed must not become a second OpenCode prompt
           if (

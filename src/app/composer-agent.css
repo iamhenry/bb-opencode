@@ -187,6 +187,106 @@
   white-space: nowrap;
 }
 
+[data-timeline-row-id][data-oc-reverted="true"] {
+  display: none !important;
+}
+
+.oc-revert-dock {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 12%, transparent);
+  border-radius: 0.7rem;
+  background: var(--card, transparent);
+  color: var(--foreground, inherit);
+}
+
+.oc-revert-dock__summary,
+.oc-revert-dock__undo {
+  min-height: 2.25rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.oc-revert-dock__summary {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  text-align: left;
+}
+
+.oc-revert-dock__undo {
+  padding: 0.45rem 0.7rem;
+  border-left: 1px solid color-mix(in srgb, var(--foreground, currentColor) 10%, transparent);
+  color: var(--primary, inherit);
+}
+
+.oc-revert-dock__summary:hover,
+.oc-revert-dock__undo:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+
+.oc-revert-dock__undo:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.oc-revert-dock__chevron {
+  color: var(--muted-foreground, #a1a1aa);
+}
+
+.oc-revert-dock__messages,
+.oc-revert-dock__error {
+  grid-column: 1 / -1;
+  border-top: 1px solid color-mix(in srgb, var(--foreground, currentColor) 10%, transparent);
+}
+
+.oc-revert-dock__messages {
+  display: flex;
+  max-height: 10.5rem;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 0.35rem 0.7rem 0.55rem;
+}
+
+.oc-revert-dock__message {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.3rem 0;
+  font-size: 0.72rem;
+}
+
+.oc-revert-dock__message > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-revert-dock__message > small {
+  overflow: hidden;
+  color: var(--muted-foreground, #a1a1aa);
+  font-size: 0.65rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oc-revert-dock__error {
+  padding: 0.4rem 0.7rem;
+  color: var(--destructive, #dc2626);
+  font-size: 0.7rem;
+}
+
 .oc-agent--banner {
   display: flex;
   width: 100%;

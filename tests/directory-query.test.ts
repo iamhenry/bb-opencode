@@ -3,8 +3,8 @@ import { directoryQuery } from "../src/client.js";
 
 describe("directoryQuery", () => {
   it("encodes a bound project directory", () => {
-    expect(directoryQuery("/Users/macvm/Desktop/Projects/other/bb-plugin-opencode")).toBe(
-      "?directory=%2FUsers%2Fmacvm%2FDesktop%2FProjects%2Fother%2Fbb-plugin-opencode",
+    expect(directoryQuery("/work/example/bb-plugin-opencode")).toBe(
+      "?directory=%2Fwork%2Fexample%2Fbb-plugin-opencode",
     );
   });
 

@@ -3,6 +3,7 @@ import { callPluginRpc, reportActionError } from "./rpc.js";
 
 export async function runMessageUndo(args: {
   threadId: string;
+  messageId: string;
   role: "user" | "assistant";
   text: string;
 }): Promise<void> {
@@ -16,6 +17,7 @@ export async function runMessageUndo(args: {
       "undo",
       {
         threadId: args.threadId,
+        messageId: args.messageId,
         role: args.role,
         text: args.text,
       },

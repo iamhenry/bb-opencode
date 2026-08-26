@@ -369,6 +369,7 @@ describe("provider bridge", () => {
     expect(fake.calls.fork).toEqual([
       { id: "ses_1", body: { messageID: "u1" } },
     ]);
+    expect(fake.calls.revert).toBe(0);
     expect(messages.some((message) => message.id === "fork")).toBe(true);
     expect(
       messages.find((message) => message.id === "fork"),
@@ -1724,7 +1725,7 @@ describe("provider bridge", () => {
     ).toBe(true);
   });
 
-  it("rehydrates in place when the OpenCode revert cursor changes", async () => {
+  it("tracks revert cursor changes without replaying duplicate history", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
@@ -1742,13 +1743,7 @@ describe("provider bridge", () => {
     if (session) session.revert = { messageID: "u1" };
     messages.length = 0;
     expect(await syncSessionRevert("ses_1")).toBe(true);
-    expect(
-      messages.some((message) => {
-        const deltas = (message.params as { deltas?: Array<{ kind: string }> })
-          ?.deltas;
-        return deltas?.some((delta) => delta.kind === "session.reset");
-      }),
-    ).toBe(true);
+    expect(messages).toEqual([]);
     expect(await syncSessionRevert("ses_1")).toBe(false);
   });
 
@@ -3159,71 +3154,6 @@ describe("provider bridge", () => {
       },
     });
     expect(fake.todos.size).toBe(0);
-  });
-
-  it("restores files on Edit commit, not on user Fork or rewind prepare", async () => {
-    const fake = installFake();
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    fake.messages.set("ses_1", [
-      { info: { id: "keep" }, parts: [] },
-      { info: { id: "drop" }, parts: [] },
-    ]);
-    send({
-      id: "user-fork",
-      method: "thread/fork",
-      params: sessionParams({
-        threadId: "thr_user_fork",
-        sourceProviderThreadId: "ses_1",
-        sourceProviderCheckpointId: "keep",
-      }),
-    });
-    await flush();
-    expect(fake.calls.revert).toBe(0);
-    send({
-      id: "prepare",
-      method: "thread/fork",
-      params: sessionParams({
-        threadId: "thr_1:rewind:lease",
-        sourceProviderThreadId: "ses_1",
-        sourceProviderCheckpointId: "keep",
-      }),
-    });
-    await flush();
-    expect(fake.calls.revert).toBe(0);
-    send({
-      id: "commit",
-      method: "thread/start",
-      params: sessionParams({
-        threadId: "thr_edit",
-        input: [{ type: "text", text: "seed", mentions: [] }],
-        options: {
-          ...fullOptions,
-          providerOptions: {
-            agent: "build",
-            adoptSessionId: "ses_fork_2",
-            bindOnly: true,
-          },
-        },
-      }),
-    });
-    await flush();
-    expect(fake.calls.revert).toBe(0);
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({
-        threadId: "thr_edit",
-        providerThreadId: "ses_fork_2",
-        input: [{ type: "text", text: "rewrite", mentions: [] }],
-      }),
-    });
-    await flush();
-    expect(fake.calls.revert).toBe(1);
-    expect(fake.lastRevert).toEqual({
-      id: "ses_1",
-      body: { messageID: "drop" },
-    });
   });
 
   it("subscribes to the bound project directory", async () => {

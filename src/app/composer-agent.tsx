@@ -36,8 +36,12 @@ export function CompactComposerAgentPicker() {
 
 function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const rpc = useRpc<typeof rpcContract>();
-  const { threadId, projectId } = useBbContext();
+  const { projectId } = useBbContext();
   const view = useComposerView();
+  const threadId =
+    view.scope.kind === "thread" || view.scope.kind === "queued-message"
+      ? view.scope.threadId
+      : null;
   const isNewThread = view.scope.kind === "new-thread" || !threadId;
   const rootRef = useRef<HTMLSpanElement>(null);
   const [wantsBanner, setWantsBanner] = useState(

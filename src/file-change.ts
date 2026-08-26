@@ -107,19 +107,6 @@ export function fileChangesFromDiffs(raw: unknown): FileChange[] {
   });
 }
 
-export function isRewindStagingThread(threadId: string): boolean {
-  return threadId.includes(":rewind:");
-}
-
-export function firstMessageAfterCheckpoint(
-  messages: readonly { info?: { id?: unknown } }[],
-  checkpointId: string,
-): string | undefined {
-  const index = messages.findIndex((message) => message.info?.id === checkpointId);
-  if (index < 0) return undefined;
-  const next = messages[index + 1];
-  return typeof next?.info?.id === "string" ? next.info.id : undefined;
-}
 
 function stringField(
   record: Record<string, unknown>,

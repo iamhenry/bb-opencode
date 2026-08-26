@@ -36,6 +36,20 @@ import {
 } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
+  EMPTY_REVERT_STATE,
+  OPENCODE_REVERT_CHANNEL,
+} from "./src/revert-state.js";
+import {
+  commitRevertProjection,
+  EMPTY_REVERT_PROJECTION,
+  hiddenRevertRowIds,
+  rowIdsHiddenByRevert,
+  stageRevertProjection,
+  undoRevertProjection,
+  type RevertProjectionState,
+  type RevertTimelineRow,
+} from "./src/revert-projection.js";
+import {
   assignRunChips,
   collectChipTargets,
   flattenChipTargetPages,
@@ -481,15 +495,65 @@ export default async function plugin(bb: BbPluginApi) {
     async messageRunChips({ threadIds }) {
       return { rows: await loadMessageRunChips(bb, host, threadIds) };
     },
-    async undo({ threadId, messageID, role, text }) {
+    async undo({ threadId, messageID, messageId, role, text }) {
       return revertThread(bb, host, threadId, "revert", {
         messageID,
+        bbMessageId: messageId,
         role,
         text,
       });
     },
     async redo({ threadId }) {
       return revertThread(bb, host, threadId, "unrevert");
+    },
+    async revertState({ threadId }) {
+      try {
+        const thread = threadFields(await bb.sdk.threads.get({ threadId }));
+        if (thread.providerId !== PROVIDER_ID) {
+          return {
+            ...EMPTY_REVERT_STATE,
+            error: null,
+            hiddenRowIds: [],
+          };
+        }
+        const hostId = await resolveHostId(bb, thread.environmentId);
+        const sessionId = await resolveSessionId(
+          bb,
+          threadId,
+          thread.providerThreadId,
+        );
+        if (!hostId || !sessionId) {
+          return {
+            ...EMPTY_REVERT_STATE,
+            error: "Thread is not bound to an OpenCode session",
+            hiddenRowIds: [],
+          };
+        }
+        const state = await host.call(
+          "revertState",
+          { sessionId },
+          { hostId },
+        );
+        let projection = await readRevertProjection(bb, threadId);
+        if (!state.active && projection.stagedRowIds.length > 0) {
+          projection = commitRevertProjection(projection);
+          await writeRevertProjection(bb, threadId, projection);
+        }
+        return {
+          ...state,
+          error: null,
+          hiddenRowIds: hiddenRevertRowIds(projection),
+        };
+      } catch (error) {
+        const projection = await readRevertProjection(bb, threadId).catch(
+          () => EMPTY_REVERT_PROJECTION,
+        );
+        return {
+          ...EMPTY_REVERT_STATE,
+          error: error instanceof Error ? error.message : String(error),
+          hiddenRowIds: hiddenRevertRowIds(projection),
+        };
+      }
     },
     async forkFromMessage({ threadId, sourceSeqEnd }) {
       try {
@@ -1358,12 +1422,94 @@ async function decideImportTarget(
   });
 }
 
+const REVERT_THREAD_SETTLE_TIMEOUT_MS = 15_000;
+const REVERT_THREAD_SETTLE_POLL_MS = 100;
+const REVERT_PROJECTION_KEY_PREFIX = "revert-projection:";
+
+function revertProjectionKey(threadId: string): string {
+  return `${REVERT_PROJECTION_KEY_PREFIX}${threadId}`;
+}
+
+async function readRevertProjection(
+  bb: BbPluginApi,
+  threadId: string,
+): Promise<RevertProjectionState> {
+  const stored = await bb.storage.kv.get<Partial<RevertProjectionState>>(
+    revertProjectionKey(threadId),
+  );
+  return {
+    committedRowIds: Array.isArray(stored?.committedRowIds)
+      ? stored.committedRowIds.filter(
+          (value): value is string => typeof value === "string" && value.length > 0,
+        )
+      : [],
+    stagedRowIds: Array.isArray(stored?.stagedRowIds)
+      ? stored.stagedRowIds.filter(
+          (value): value is string => typeof value === "string" && value.length > 0,
+        )
+      : [],
+  };
+}
+
+async function writeRevertProjection(
+  bb: BbPluginApi,
+  threadId: string,
+  state: RevertProjectionState,
+): Promise<void> {
+  if (hiddenRevertRowIds(state).length === 0) {
+    await bb.storage.kv.delete(revertProjectionKey(threadId));
+    return;
+  }
+  await bb.storage.kv.set(revertProjectionKey(threadId), state);
+}
+
+async function timelineRowsHiddenFromMessage(
+  bb: BbPluginApi,
+  threadId: string,
+  messageId: string | undefined,
+): Promise<string[]> {
+  if (!messageId) return [];
+  const timeline = (await bb.sdk.threads.timeline({ threadId })) as {
+    rows?: RevertTimelineRow[];
+  };
+  return rowIdsHiddenByRevert(timeline.rows ?? [], messageId);
+}
+
+async function waitForThreadRevertQuiescence(
+  bb: BbPluginApi,
+  threadId: string,
+): Promise<void> {
+  let thread = fullThreadFields(await bb.sdk.threads.get({ threadId }));
+  if (thread.status !== "idle" && thread.status !== "error") {
+    // OpenCode abort settles the provider first. BB stop then closes any
+    // pending interaction/turn and releases the bridge without fabricating a
+    // replacement prompt; the next send resumes this same provider session.
+    await bb.sdk.threads.stop({ threadId });
+  }
+  const deadline = Date.now() + REVERT_THREAD_SETTLE_TIMEOUT_MS;
+  while (true) {
+    thread = fullThreadFields(await bb.sdk.threads.get({ threadId }));
+    if (thread.status === "idle" || thread.status === "error") return;
+    if (Date.now() >= deadline) {
+      throw new Error("BB thread did not settle before revert");
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, REVERT_THREAD_SETTLE_POLL_MS),
+    );
+  }
+}
+
 async function revertThread(
   bb: BbPluginApi,
   host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
   threadId: string,
   kind: "revert" | "unrevert",
-  target?: { messageID?: string; role?: "user" | "assistant"; text?: string },
+  target?: {
+    messageID?: string;
+    bbMessageId?: string;
+    role?: "user" | "assistant";
+    text?: string;
+  },
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
     const thread = threadFields(await bb.sdk.threads.get({ threadId }));
@@ -1379,6 +1525,30 @@ async function revertThread(
     if (!hostId || !sessionId) {
       return { ok: false, error: "Thread is not bound to an OpenCode session" };
     }
+    const settled = (await host.call(
+      "settleSession",
+      { sessionId },
+      { hostId },
+    )) as { ok: boolean; error: string | null };
+    if (!settled.ok) {
+      return {
+        ok: false,
+        error: settled.error ?? "OpenCode session did not settle",
+      };
+    }
+    await waitForThreadRevertQuiescence(bb, threadId);
+    const hiddenByThisRevert =
+      kind === "revert"
+        ? await timelineRowsHiddenFromMessage(bb, threadId, target?.bbMessageId)
+        : [];
+    if (
+      kind === "revert" &&
+      target?.bbMessageId &&
+      hiddenByThisRevert.length === 0
+    ) {
+      return { ok: false, error: "Could not locate that BB message" };
+    }
+
     if (kind === "revert") {
       const result = (await host.call(
         "revert",
@@ -1397,14 +1567,25 @@ async function revertThread(
         };
       }
     } else {
-      const result = (await host.call("unrevert", { sessionId }, { hostId })) as {
-        ok: boolean;
-        error: string | null;
-      };
+      const result = (await host.call(
+        "unrevert",
+        { sessionId },
+        { hostId },
+      )) as { ok: boolean; error: string | null };
       if (!result.ok) {
         return { ok: false, error: result.error ?? "nothing to redo" };
       }
     }
+
+    const projection = await readRevertProjection(bb, threadId);
+    await writeRevertProjection(
+      bb,
+      threadId,
+      kind === "revert"
+        ? stageRevertProjection(projection, hiddenByThisRevert)
+        : undoRevertProjection(projection),
+    );
+    bb.realtime.publish(OPENCODE_REVERT_CHANNEL, { threadId });
     return { ok: true, error: null };
   } catch (error) {
     return {

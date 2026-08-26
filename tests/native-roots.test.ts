@@ -4,11 +4,11 @@ import { opencodeNativeRoots } from "../src/native-roots.js";
 
 describe("opencodeNativeRoots", () => {
   it("lists user OpenCode skill and command dirs", () => {
-    const roots = opencodeNativeRoots({ cwd: null, homeDir: "/home/me" });
+    const roots = opencodeNativeRoots({ cwd: null, homeDir: "/test-home" });
     expect(roots.skills).toEqual([
       {
         origin: "user",
-        path: join("/home/me", ".config", "opencode", "skills"),
+        path: join("/test-home", ".config", "opencode", "skills"),
         recursive: true,
         shape: "skills",
       },
@@ -16,7 +16,7 @@ describe("opencodeNativeRoots", () => {
     expect(roots.commands).toEqual([
       {
         origin: "user",
-        path: join("/home/me", ".config", "opencode", "commands"),
+        path: join("/test-home", ".config", "opencode", "commands"),
         recursive: true,
         shape: "commands",
       },
@@ -26,14 +26,14 @@ describe("opencodeNativeRoots", () => {
   it("adds project .opencode dirs when cwd is set", () => {
     const roots = opencodeNativeRoots({
       cwd: "/proj",
-      homeDir: "/home/me",
+      homeDir: "/test-home",
     });
     expect(roots.skills.map((root) => root.path)).toEqual([
-      join("/home/me", ".config", "opencode", "skills"),
+      join("/test-home", ".config", "opencode", "skills"),
       join("/proj", ".opencode", "skills"),
     ]);
     expect(roots.commands.map((root) => root.path)).toEqual([
-      join("/home/me", ".config", "opencode", "commands"),
+      join("/test-home", ".config", "opencode", "commands"),
       join("/proj", ".opencode", "commands"),
     ]);
     expect(roots.skills[1]?.ancestors).toBe(true);

@@ -3,6 +3,23 @@ import { z } from "zod";
 
 const permissionModeSchema = z.enum(["accept-edits", "auto", "full"]);
 
+const revertStateOutput = z
+  .object({
+    active: z.boolean(),
+    messageID: z.string().nullable(),
+    promptText: z.string().nullable(),
+    messages: z.array(
+      z
+        .object({
+          id: z.string(),
+          text: z.string(),
+          attachments: z.array(z.string()),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 const probeOutput = z
   .object({
     binaryPath: z.string().nullable(),
@@ -61,6 +78,10 @@ export const hostContract = defineRpcContract({
       })
       .strict(),
   },
+  settleSession: {
+    input: z.object({ sessionId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
   revert: {
     input: z
       .object({
@@ -75,6 +96,10 @@ export const hostContract = defineRpcContract({
   unrevert: {
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  revertState: {
+    input: z.object({ sessionId: z.string().min(1) }).strict(),
+    output: revertStateOutput,
   },
   listCommands: {
     input: z
@@ -261,6 +286,7 @@ export const rpcContract = defineRpcContract({
       .object({
         threadId: z.string().min(1),
         messageID: z.string().min(1).optional(),
+        messageId: z.string().min(1).optional(),
         role: z.enum(["user", "assistant"]).optional(),
         text: z.string().optional(),
       })
@@ -270,6 +296,15 @@ export const rpcContract = defineRpcContract({
   redo: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  revertState: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: revertStateOutput
+      .extend({
+        error: z.string().nullable(),
+        hiddenRowIds: z.array(z.string()),
+      })
+      .strict(),
   },
   forkFromMessage: {
     input: z

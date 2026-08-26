@@ -1,11 +1,19 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
 import { configDefaultModelId } from "./catalog.js";
-import { lastUserAgent, type HydrateMessage } from "./hydrate.js";
+import {
+  lastUserAgent,
+  revertMessageIdOf,
+  type HydrateMessage,
+} from "./hydrate.js";
 import { messageMetaFromInfo } from "./run-chip.js";
 import { attachOrSpawn, readLock, recentServeLog } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
+import {
+  buildOpenCodeRevertState,
+  type RevertStateMessage,
+} from "./revert-state.js";
 import { splitModelRef } from "./task-thread.js";
 import { runningSessionIdsFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
@@ -139,6 +147,38 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
   };
 }
 
+const REVERT_SETTLE_TIMEOUT_MS = 15_000;
+const REVERT_SETTLE_POLL_MS = 100;
+
+async function settleOpenCodeSession(
+  client: OpenCodeClient,
+  sessionId: string,
+): Promise<void> {
+  if (!(await client.sessionIsRunning(sessionId))) return;
+  await client.abort(sessionId);
+  const deadline = Date.now() + REVERT_SETTLE_TIMEOUT_MS;
+  while (await client.sessionIsRunning(sessionId)) {
+    if (Date.now() >= deadline) {
+      throw new Error("OpenCode session did not settle before revert");
+    }
+    await new Promise((resolve) => setTimeout(resolve, REVERT_SETTLE_POLL_MS));
+  }
+}
+
+export async function handleSettleSession(dataDir: string, sessionId: string) {
+  try {
+    const attached = await attachOrSpawn({ dataDir });
+    const client = acquire(attached.url);
+    await settleOpenCodeSession(client, sessionId);
+    return { ok: true, error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 export async function handleRevert(
   dataDir: string,
   sessionId: string,
@@ -146,6 +186,7 @@ export async function handleRevert(
 ) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
+  await settleOpenCodeSession(client, sessionId);
   const messages = (await client.sessionMessages(sessionId)) as Array<{
     info: { id?: string; role?: string };
     parts: Array<{ type?: string; text?: string }>;
@@ -157,7 +198,7 @@ export async function handleRevert(
     text: target?.text,
   });
   if (!messageID) {
-    return { ok: false, error: "Could not match that message" };
+    return { ok: false, error: "Could not uniquely match that message" };
   }
   await client.revert(sessionId, { messageID });
   return { ok: true, error: null };
@@ -166,8 +207,22 @@ export async function handleRevert(
 export async function handleUnrevert(dataDir: string, sessionId: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
+  await settleOpenCodeSession(client, sessionId);
   await client.unrevert(sessionId);
   return { ok: true, error: null };
+}
+
+export async function handleRevertState(dataDir: string, sessionId: string) {
+  const attached = await attachOrSpawn({ dataDir });
+  const client = acquire(attached.url);
+  const [session, messages] = await Promise.all([
+    client.getSession(sessionId),
+    client.sessionMessages(sessionId),
+  ]);
+  return buildOpenCodeRevertState({
+    revertMessageID: revertMessageIdOf(session),
+    messages: messages as RevertStateMessage[],
+  });
 }
 
 export async function handleListMessageMeta(dataDir: string, sessionId: string) {
