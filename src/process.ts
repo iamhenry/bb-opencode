@@ -185,6 +185,16 @@ export function reclaimStaleClaim(now = Date.now()): boolean {
   }
 }
 
+/** The bridge binds its private serve to loopback and does not send Basic auth. */
+export function openCodeServeEnvironment(
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const childEnv = { ...env };
+  delete childEnv.OPENCODE_SERVER_PASSWORD;
+  delete childEnv.OPENCODE_SERVER_USERNAME;
+  return childEnv;
+}
+
 export function resolveOpenCodeBinary(): string | undefined {
   const override = process.env.OPENCODE_BIN;
   if (override) {
@@ -288,7 +298,7 @@ export async function attachOrSpawn(args: {
       {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
+        env: openCodeServeEnvironment(),
         cwd: args.dataDir,
       },
     );

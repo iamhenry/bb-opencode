@@ -10,6 +10,7 @@ import {
   claimPath,
   isLockStale,
   lockPath,
+  openCodeServeEnvironment,
   readLock,
   reclaimIfStale,
   reclaimStaleClaim,
@@ -28,6 +29,18 @@ async function withHome<T>(fn: (home: string) => Promise<T> | T): Promise<T> {
     else process.env.HOME = previous;
   }
 }
+
+describe("OpenCode serve environment", () => {
+  it("does not inherit Basic-auth settings the bridge cannot answer", () => {
+    expect(
+      openCodeServeEnvironment({
+        HOME: "/tmp/home",
+        OPENCODE_SERVER_USERNAME: "user",
+        OPENCODE_SERVER_PASSWORD: "secret",
+      }),
+    ).toEqual({ HOME: "/tmp/home" });
+  });
+});
 
 describe("lock reclaim", () => {
   const originalFetch = globalThis.fetch;
