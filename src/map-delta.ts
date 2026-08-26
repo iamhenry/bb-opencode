@@ -29,6 +29,12 @@ export interface MapDeltaState {
   unknownTally: Map<string, number>;
   itemKeys: Map<string, { channel: string } | { providerItemId: string }>;
   emittedText: Map<string, string>;
+  textChannelByPart: Map<string, string>;
+  nextTextSeq: number;
+  /** Channel currently streaming; BB only keeps the newest text key resolvable. */
+  openTextChannel?: string;
+  closedTextChannels: Set<string>;
+  openedText: Set<string>;
   openedItems: Map<string, "command" | "tool">;
   closedItems: Set<string>;
   lastSnapshots: Map<string, string>;
@@ -41,6 +47,10 @@ export function createMapDeltaState(): MapDeltaState {
     unknownTally: new Map(),
     itemKeys: new Map(),
     emittedText: new Map(),
+    textChannelByPart: new Map(),
+    nextTextSeq: 0,
+    closedTextChannels: new Set(),
+    openedText: new Set(),
     openedItems: new Map(),
     closedItems: new Set(),
     lastSnapshots: new Map(),
@@ -81,6 +91,67 @@ export function openCommandItem(
       },
     },
   ];
+}
+
+/** Stable BB text channel. Persist ids alias onto the stream they duplicate. */
+export function resolveAgentTextChannel(
+  state: MapDeltaState,
+  partId: string,
+  fullText?: string,
+): string {
+  const mapped = state.textChannelByPart.get(partId);
+  if (mapped) return mapped;
+  if (fullText) {
+    for (const [channel, previous] of state.emittedText) {
+      if (channel.startsWith("reasoning:")) continue;
+      if (
+        previous === fullText ||
+        fullText.startsWith(previous) ||
+        previous.startsWith(fullText)
+      ) {
+        state.textChannelByPart.set(partId, channel);
+        return channel;
+      }
+    }
+  }
+  const channel = `assistant:${state.nextTextSeq}`;
+  state.nextTextSeq += 1;
+  state.textChannelByPart.set(partId, channel);
+  return channel;
+}
+
+function openAgentMessage(
+  state: MapDeltaState,
+  channel: string,
+  parentRef?: string,
+): ThreadDelta[] {
+  if (state.openedText.has(channel) || state.closedTextChannels.has(channel)) {
+    return [];
+  }
+  state.openedText.add(channel);
+  return [
+    {
+      kind: "item.open",
+      key: deltaKey({ providerItemId: channel }, parentRef),
+      item: { type: "agentMessage", text: "" },
+    },
+  ];
+}
+
+/** Close the streaming bubble before a different one opens, so its key still resolves. */
+export function sealOpenTextChannel(
+  state: MapDeltaState,
+  except?: string,
+  parentRef?: string,
+): ThreadDelta[] {
+  const open = state.openTextChannel;
+  if (!open || open === except) return [];
+  state.openTextChannel = undefined;
+  if (state.closedTextChannels.has(open)) return [];
+  const text = state.emittedText.get(open);
+  if (!text) return [];
+  state.closedTextChannels.add(open);
+  return closeText(open, text, parentRef);
 }
 
 function nextTextChunk(
@@ -235,23 +306,23 @@ export function mapPartDelta(args: {
   const parentRef = args.parentRef;
   if (type === "text" || type === "text-delta") {
     const partId = part.id ?? "anon";
-    // ponytail: OpenCode persist id ≠ SSE textID; same body must not open a second bubble
-    if (
-      typeof part.text === "string" &&
-      part.text.length > 0 &&
-      [...args.state.emittedText.entries()].some(
-        ([id, prev]) =>
-          id !== partId && !id.startsWith("reasoning:") && prev === part.text,
-      )
-    ) {
-      return [];
+    let channel = resolveAgentTextChannel(args.state, partId, part.text);
+    if (args.delta && args.state.closedTextChannels.has(channel)) {
+      channel = `assistant:${args.state.nextTextSeq++}`;
+      args.state.textChannelByPart.set(partId, channel);
     }
-    const chunk = nextTextChunk(args.state, partId, part.text, args.delta);
+    const chunk = nextTextChunk(args.state, channel, part.text, args.delta);
     if (!chunk) return [];
+    // ponytail: BB keeps only the newest text key resolvable; seal the previous bubble first
+    const sealed = sealOpenTextChannel(args.state, channel, parentRef);
+    args.state.openTextChannel = channel;
+    const opened = openAgentMessage(args.state, channel, parentRef);
     return [
+      ...sealed,
+      ...opened,
       {
         kind: "item.textDelta",
-        key: deltaKey({ channel: `text:${partId}` }, parentRef),
+        key: deltaKey({ providerItemId: channel }, parentRef),
         channel: "agentMessage",
         text: chunk,
       },
@@ -316,7 +387,9 @@ export function mapPartDelta(args: {
       const resolvedCommand = command ?? toolName;
       const output = bashCommandOutput(part.state);
       const cwd = bashCommandCwd(part.state?.input);
-      const deltas: ThreadDelta[] = [];
+      const deltas: ThreadDelta[] = alreadyOpen
+        ? []
+        : [...sealOpenTextChannel(args.state, undefined, parentRef)];
       if (!alreadyOpen) {
         deltas.push({
           kind: "item.open",
@@ -371,7 +444,9 @@ export function mapPartDelta(args: {
               icon: { glyph: isTask ? "Bot" : "Wrench" },
             };
     const item = coreToolItem(toolName, part);
-    const deltas: ThreadDelta[] = [];
+    const deltas: ThreadDelta[] = alreadyOpen
+      ? []
+      : [...sealOpenTextChannel(args.state, undefined, parentRef)];
     if (!alreadyOpen) {
       deltas.push({
         kind: "item.open",
@@ -441,7 +516,15 @@ export function mapSessionNextEvent(args: {
       parentRef: args.parentRef,
       part: { id, type: "text", text },
     });
-    return [...leftover, ...closeText(id, text, args.parentRef)];
+    const channel = resolveAgentTextChannel(args.state, id, text || undefined);
+    const final = text.trim() ? text : (args.state.emittedText.get(channel) ?? "");
+    // ponytail: empty ended releases the BB key; later persist then mints a new item
+    if (!final.trim() || args.state.closedTextChannels.has(channel)) return leftover;
+    args.state.closedTextChannels.add(channel);
+    if (args.state.openTextChannel === channel) {
+      args.state.openTextChannel = undefined;
+    }
+    return [...leftover, ...closeText(channel, final, args.parentRef)];
   }
   if (args.type === "session.next.reasoning.delta") {
     const id =
@@ -523,12 +606,13 @@ export function closeText(
   text: string,
   parentRef?: string,
 ): ThreadDelta[] {
+  // ponytail: named item.close, not textClose — stream keys die after other items
   return [
     {
-      kind: "item.textClose",
-      key: deltaKey({ channel: `text:${partId}` }, parentRef),
-      channel: "agentMessage",
-      text,
+      kind: "item.close",
+      key: deltaKey({ providerItemId: partId }, parentRef),
+      status: "completed",
+      item: { type: "agentMessage", text },
     },
   ];
 }

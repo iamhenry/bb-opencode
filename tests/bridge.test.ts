@@ -1031,17 +1031,17 @@ describe("provider bridge", () => {
     const kinds = messages.flatMap((message) => {
       if (message.method !== "thread/delta") return [];
       return (
-        (message.params as { deltas?: Array<{ kind: string; text?: string; key?: { channel?: string } }> })
+        (message.params as { deltas?: Array<{ kind: string; text?: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }> })
           ?.deltas ?? []
       )
         .filter(
           (delta) =>
-            delta.kind === "item.textDelta" || delta.kind === "item.textClose",
+            delta.kind === "item.textDelta" || delta.kind === "item.close" || delta.kind === "item.textClose",
         )
-        .map((delta) => `${delta.kind}:${delta.key?.channel ?? ""}:${delta.text ?? ""}`);
+        .map((delta) => `${delta.kind}:${delta.key?.providerItemId ?? delta.key?.channel ?? ""}:${delta.item?.text ?? delta.text ?? ""}`);
     });
     expect(kinds.some((row) => row.includes("persist_1"))).toBe(false);
-    expect(kinds.filter((row) => row === "item.textClose:text:sse_1:LIVE")).toHaveLength(1);
+    expect(kinds.filter((row) => row === "item.close:assistant:0:LIVE")).toHaveLength(1);
   });
 
   it("closes message.part text-delta when persist id differs", async () => {
@@ -1089,13 +1089,67 @@ describe("provider bridge", () => {
     const closes = messages.flatMap((message) => {
       if (message.method !== "thread/delta") return [];
       return (
-        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string } }> })
+        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }> })
           ?.deltas ?? []
       )
-        .filter((delta) => delta.kind === "item.textClose")
-        .map((delta) => delta.key?.channel);
+        .filter((delta) => delta.kind === "item.close" || delta.kind === "item.textClose")
+        .map((delta) => delta.key?.providerItemId ?? delta.key?.channel);
     });
-    expect(closes).toEqual(["text:sse_1"]);
+    expect(closes).toEqual(["assistant:0"]);
+  });
+
+  it("does not remint FIRST after an empty text.ended", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_1", delta: "FIRST" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.ended",
+      properties: { sessionID: "ses_1", textID: "sse_1", text: "" },
+    });
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "persist_1", type: "text", text: "FIRST" }],
+      },
+    ]);
+    await ingestOpenCodeEvent({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "ses_1",
+        part: { id: "persist_1", type: "text", text: "FIRST" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const closes = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.close" || delta.kind === "item.textClose")
+        .map((delta) => `${delta.key?.providerItemId ?? delta.key?.channel}:${delta.item?.text ?? delta.text ?? ""}`);
+    });
+    expect(closes).toEqual(["assistant:0:FIRST"]);
   });
 
   it("does not close ended streamed text again at idle", async () => {
@@ -1143,13 +1197,282 @@ describe("provider bridge", () => {
     const closes = messages.flatMap((message) => {
       if (message.method !== "thread/delta") return [];
       return (
-        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string } }> })
+        (message.params as { deltas?: Array<{ kind: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }> })
           ?.deltas ?? []
       )
-        .filter((delta) => delta.kind === "item.textClose")
-        .map((delta) => delta.key?.channel);
+        .filter((delta) => delta.kind === "item.close" || delta.kind === "item.textClose")
+        .map((delta) => delta.key?.providerItemId ?? delta.key?.channel);
     });
-    expect(closes).toEqual(["text:sse_1"]);
+    expect(closes).toEqual(["assistant:0"]);
+  });
+
+  it("closes a 3-message turn on streamed ids when only FIRST lacks ended", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_first", delta: "FIRST" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_mid", delta: "MIDDLE" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.ended",
+      properties: { sessionID: "ses_1", textID: "sse_mid", text: "MIDDLE" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_final", delta: "FINAL" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.ended",
+      properties: { sessionID: "ses_1", textID: "sse_final", text: "FINAL" },
+    });
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [{ id: "persist_first", type: "text", text: "FIRST" }],
+      },
+      {
+        info: { id: "a2", role: "assistant" },
+        parts: [{ id: "persist_mid", type: "text", text: "MIDDLE" }],
+      },
+      {
+        info: { id: "a3", role: "assistant" },
+        parts: [{ id: "persist_final", type: "text", text: "FINAL" }],
+      },
+    ]);
+    for (const [id, text] of [
+      ["persist_first", "FIRST"],
+      ["persist_mid", "MIDDLE"],
+      ["persist_final", "FINAL"],
+    ] as const) {
+      await ingestOpenCodeEvent({
+        type: "message.part.updated",
+        properties: {
+          sessionID: "ses_1",
+          part: { id, type: "text", text },
+        },
+      });
+    }
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const closes = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as { deltas?: Array<{ kind: string; text?: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }> })
+          ?.deltas ?? []
+      )
+        .filter((delta) => delta.kind === "item.close" || delta.kind === "item.textClose")
+        .map((delta) => `${delta.key?.providerItemId ?? delta.key?.channel}:${delta.item?.text ?? delta.text ?? ""}`);
+    });
+    expect(closes.filter((row) => row.includes("persist_"))).toEqual([]);
+    expect(closes.filter((row) => row.startsWith("assistant:0:"))).toEqual([
+      "assistant:0:FIRST",
+    ]);
+    expect(closes.filter((row) => row.startsWith("assistant:1:"))).toEqual([
+      "assistant:1:MIDDLE",
+    ]);
+    expect(closes.filter((row) => row.startsWith("assistant:2:"))).toEqual([
+      "assistant:2:FINAL",
+    ]);
+  });
+
+  it("closes a streamed text bubble before the next item opens", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_first", delta: "FIRST" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.tool.called",
+      properties: {
+        sessionID: "ses_1",
+        callID: "call_1",
+        tool: "read",
+        input: { filePath: "package.json" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_mid", delta: "MIDDLE" },
+    });
+    await flush();
+    const timeline = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as {
+          deltas?: Array<{ kind: string; key?: { channel?: string; providerItemId?: string }; item?: { text?: string } }>;
+        })?.deltas ?? []
+      ).map((delta) => `${delta.kind}:${delta.key?.providerItemId ?? delta.key?.channel ?? "item"}`);
+    });
+    const first = timeline.indexOf("item.close:assistant:0");
+    const tool = timeline.findIndex(
+      (row) => row.startsWith("item.open:") && !row.includes("assistant:"),
+    );
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(tool).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThan(tool);
+  });
+
+  it("closes FIRST on its opened id when the tool starts first", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "session.next.tool.called",
+      properties: {
+        sessionID: "ses_1",
+        callID: "call_1",
+        tool: "read",
+        input: { filePath: "package.json" },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_first", delta: "FIRST" },
+    });
+    fake.messages.set("ses_1", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [
+          { id: "persist_1", type: "text", text: "FIRST" },
+          { id: "persist_2", type: "text", text: "MIDDLE" },
+        ],
+      },
+    ]);
+    await ingestOpenCodeEvent({
+      type: "session.next.text.delta",
+      properties: { sessionID: "ses_1", textID: "sse_mid", delta: "MIDDLE" },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    await flush();
+    const closes = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (
+          message.params as {
+            deltas?: Array<{
+              kind: string;
+              key?: { providerItemId?: string };
+              item?: { text?: string };
+            }>;
+          }
+        )?.deltas ?? []
+      )
+        .filter(
+          (delta) =>
+            delta.kind === "item.close" &&
+            String(delta.key?.providerItemId ?? "").startsWith("assistant:"),
+        )
+        .map((delta) => `${delta.key?.providerItemId}:${delta.item?.text ?? ""}`);
+    });
+    expect(closes.sort()).toEqual(["assistant:0:FIRST", "assistant:1:MIDDLE"]);
+  });
+
+  it("moves resumed chunked text to a fresh item after interleaving", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
+    });
+    await flush();
+    messages.length = 0;
+
+    const chunk = (textID: string, delta: string) =>
+      ingestOpenCodeEvent({
+        type: "session.next.text.delta",
+        properties: { sessionID: "ses_1", textID, delta },
+      });
+    const foreign = (reasoningID: string) =>
+      ingestOpenCodeEvent({
+        type: "session.next.reasoning.delta",
+        properties: { sessionID: "ses_1", reasoningID, delta: "thinking" },
+      });
+
+    // FIRST streams in chunks, a foreign item opens mid-stream, then FIRST resumes.
+    await chunk("sse_first", "FIR");
+    await chunk("sse_first", "S");
+    await foreign("r1");
+    await chunk("sse_first", "T");
+    await chunk("sse_mid", "MIDDLE");
+    await ingestOpenCodeEvent({
+      type: "session.next.text.ended",
+      properties: { sessionID: "ses_1", textID: "sse_mid", text: "MIDDLE" },
+    });
+    await flush();
+
+    const timeline = messages.flatMap((message) => {
+      if (message.method !== "thread/delta") return [];
+      return (
+        (message.params as {
+          deltas?: Array<{ kind: string; text?: string; key?: { channel?: string } }>;
+        })?.deltas ?? []
+      ).map((delta) => {
+        const key = delta.key as { providerItemId?: string; channel?: string };
+        const id = key?.providerItemId ?? key?.channel ?? "?";
+        return `${delta.kind}:${id}:${delta.text ?? ""}`;
+      });
+    });
+
+    expect(timeline).toEqual([
+      "item.open:assistant:0:",
+      "item.textDelta:assistant:0:FIR",
+      "item.textDelta:assistant:0:S",
+      "item.close:assistant:0:",
+      "item.textDelta:reasoning:r1:thinking",
+      "item.open:assistant:1:",
+      "item.textDelta:assistant:1:T",
+      "item.close:assistant:1:",
+      "item.open:assistant:2:",
+      "item.textDelta:assistant:2:MIDDLE",
+      "item.close:assistant:2:",
+    ]);
   });
 
   it("does not remint prior-turn text on a follow-up poll", async () => {
@@ -2940,8 +3263,8 @@ describe("provider bridge", () => {
     );
     expect(deltas).toContainEqual(
       expect.objectContaining({
-        kind: "item.textClose",
-        text: "partial",
+        kind: "item.close",
+        item: { type: "agentMessage", text: "partial" },
       }),
     );
     expect(deltas).toContainEqual(

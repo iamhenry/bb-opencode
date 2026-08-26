@@ -79,6 +79,8 @@ import {
   mapPartDelta,
   mapSessionNextEvent,
   openCommandItem,
+  resolveAgentTextChannel,
+  sealOpenTextChannel,
   tallyUnknown,
   type MapDeltaState,
   type ThreadDelta,
@@ -313,8 +315,53 @@ function notify(method: string, params: Record<string, unknown>): void {
   deps.write({ method, params });
 }
 
-function emitDeltas(threadId: string, deltas: ThreadDelta[]): void {
+/**
+ * BB only keeps the newest item's key resolvable, so a text bubble must be closed
+ * before any other item opens. This is the one choke point every delta passes.
+ */
+function sealTextBeforeForeignItems(
+  threadId: string,
+  deltas: ThreadDelta[],
+): ThreadDelta[] {
+  const live = liveTurns.get(threadId);
+  if (!live) return deltas;
+  const sealed: ThreadDelta[] = [];
+  for (const delta of deltas) {
+    const open = live.mapState.openTextChannel;
+    if (open) {
+      const key = delta.key as { channel?: unknown; providerItemId?: unknown } | undefined;
+      const itemId =
+        typeof key?.providerItemId === "string"
+          ? key.providerItemId
+          : typeof key?.channel === "string"
+            ? key.channel.replace(/^text:/, "")
+            : undefined;
+      const isAgentTextLifecycle =
+        itemId?.startsWith("assistant:") &&
+        (delta.kind === "item.textDelta" ||
+          delta.kind === "item.textClose" ||
+          delta.kind === "item.open" ||
+          delta.kind === "item.close");
+      if (!isAgentTextLifecycle) sealed.push(...sealOpenTextChannel(live.mapState));
+    }
+    sealed.push(delta);
+  }
+  return sealed;
+}
+
+function emitDeltas(threadId: string, input: ThreadDelta[]): void {
+  const deltas = sealTextBeforeForeignItems(threadId, input);
   if (deltas.length === 0) return;
+  for (const delta of deltas) {
+    if (delta.kind !== "item.textDelta" && delta.kind !== "item.textClose") {
+      continue;
+    }
+    debugLog(
+      `emit ${delta.kind} key=${JSON.stringify(delta.key)} text=${JSON.stringify(
+        String(delta.text ?? "").slice(0, 24),
+      )}`,
+    );
+  }
   notify(THREAD_DELTA_NOTIFICATION_METHOD, { threadId, deltas });
 }
 
@@ -468,10 +515,7 @@ function closeLiveTurn(
     return;
   }
   live.parentBoundaryEmitted = true;
-  const flushed: ThreadDelta[] = [];
-  for (const [id, text] of live.textBuffers) {
-    flushed.push(...closeText(id, text));
-  }
+  const flushed = closePendingAgentText(live);
   liveTurns.delete(threadId);
   emitDeltas(threadId, [
     ...flushed,
@@ -625,6 +669,22 @@ function hasStreamedAgentText(live: LiveTurn): boolean {
   return [...live.mapState.emittedText.keys()].some(
     (key) => !key.startsWith("reasoning:"),
   );
+}
+
+function closePendingAgentText(live: LiveTurn): ThreadDelta[] {
+  const deltas: ThreadDelta[] = [];
+  for (const [id, text] of live.textBuffers) {
+    if (live.mapState.closedTextChannels.has(id)) continue;
+    deltas.push(...closeText(id, text));
+    live.mapState.closedTextChannels.add(id);
+  }
+  live.textBuffers.clear();
+  for (const [id, text] of live.mapState.emittedText) {
+    if (id.startsWith("reasoning:") || live.mapState.closedTextChannels.has(id)) continue;
+    deltas.push(...closeText(id, text));
+    live.mapState.closedTextChannels.add(id);
+  }
+  return deltas;
 }
 
 export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
@@ -1324,16 +1384,29 @@ async function onOpenCodeEvent(event: {
         : undefined;
     const textId =
       typeof properties?.textID === "string" ? properties.textID : undefined;
-    if (textId && event.type === "session.next.text.delta") {
-      const text = live.mapState.emittedText.get(textId);
-      if (text) live.textBuffers.set(textId, text);
-    } else if (textId && event.type === "session.next.text.ended") {
-      live.textBuffers.delete(textId);
-    }
     if (textId) {
       debugLog(
-        `trace text-next type=${event.type} id=${textId} emitted=${[...live.mapState.emittedText.keys()].join(",")} buffered=${[...live.textBuffers.keys()].join(",")}`,
+        `sse ${event.type} textID=${textId} text=${JSON.stringify(
+          String((properties as { text?: unknown }).text ?? "").slice(0, 24),
+        )}`,
       );
+    }
+    if (textId && event.type === "session.next.text.delta") {
+      const channel = resolveAgentTextChannel(live.mapState, textId);
+      const text = live.mapState.emittedText.get(channel);
+      if (text && !live.mapState.closedTextChannels.has(channel)) live.textBuffers.set(channel, text);
+    } else if (textId && event.type === "session.next.text.ended") {
+      const endedText =
+        typeof (properties as { text?: unknown }).text === "string"
+          ? (properties as { text: string }).text
+          : undefined;
+      const channel = resolveAgentTextChannel(live.mapState, textId, endedText);
+      const final =
+        endedText?.trim() ? endedText : (live.mapState.emittedText.get(channel) ?? "");
+      if (final.trim()) {
+        live.textBuffers.delete(channel);
+        live.mapState.closedTextChannels.add(channel);
+      }
     }
     if (nextDeltas.length > 0) emitDeltas(threadId, nextDeltas);
     return;
@@ -1377,11 +1450,20 @@ async function onOpenCodeEvent(event: {
       }
       const typed = part as { id?: string; type?: string; text?: string };
       if ((typed.type === "text" || typed.type === "text-delta") && typed.id) {
-        const latest = live.mapState.emittedText.get(typed.id);
-        if (latest) live.textBuffers.set(typed.id, latest);
         debugLog(
-          `trace text-part type=${typed.type} id=${typed.id} emitted=${[...live.mapState.emittedText.keys()].join(",")} buffered=${[...live.textBuffers.keys()].join(",")}`,
+          `part ${event.type} id=${typed.id} text=${JSON.stringify(
+            String(typed.text ?? "").slice(0, 24),
+          )}`,
         );
+        const channel = resolveAgentTextChannel(
+          live.mapState,
+          typed.id,
+          typed.text,
+        );
+        const latest = live.mapState.emittedText.get(channel);
+        if (latest && !live.mapState.closedTextChannels.has(channel)) {
+          live.textBuffers.set(channel, latest);
+        }
       }
     }
     return;
@@ -1444,9 +1526,7 @@ async function onOpenCodeEvent(event: {
     }
     if (!live.parentBoundaryEmitted) {
       live.parentBoundaryEmitted = true;
-      for (const [id, text] of live.textBuffers) {
-        emitDeltas(threadId, closeText(id, text));
-      }
+      emitDeltas(threadId, closePendingAgentText(live));
       emitDeltas(threadId, [completedTurnBoundary()]);
       liveTurns.delete(threadId);
       if (live.mapState.unknownTally.size > 0) {
@@ -2545,12 +2625,28 @@ async function settleIssuedTurn(
   const leftovers: ThreadDelta[] = [];
   const streamedText = hasStreamedAgentText(liveAfter);
   debugLog(
-    `trace text-settle emitted=${[...liveAfter.mapState.emittedText.keys()].join(",")} buffered=${[...liveAfter.textBuffers.keys()].join(",")}`,
+    `settle streamed=${streamedText} emitted=${JSON.stringify([...liveAfter.mapState.emittedText].map(([k, v]) => `${k}=${v.slice(0, 12)}`))} closed=${JSON.stringify([...liveAfter.mapState.closedTextChannels])} buffers=${JSON.stringify([...liveAfter.textBuffers.keys()])}`,
   );
   for (const message of assistantsAfterLastUser(messages)) {
     for (const part of message.parts) {
       if (part.type === "text" || part.type === "text-delta") {
-        if (streamedText) continue;
+        if (streamedText) {
+          const body = part.text;
+          if (typeof body === "string" && body.length > 0) {
+            for (const [id, text] of liveAfter.mapState.emittedText) {
+              if (id.startsWith("reasoning:") || liveAfter.mapState.closedTextChannels.has(id)) {
+                continue;
+              }
+              if (text === body) {
+                leftovers.push(...closeText(id, text));
+                liveAfter.mapState.closedTextChannels.add(id);
+                liveAfter.textBuffers.delete(id);
+                break;
+              }
+            }
+          }
+          continue;
+        }
         leftovers.push(
           ...mapPartDelta({
             state: liveAfter.mapState,
@@ -2558,7 +2654,14 @@ async function settleIssuedTurn(
             sessionId,
           }),
         );
-        if (part.text && part.id) leftovers.push(...closeText(part.id, part.text));
+        if (part.text && part.id) {
+          leftovers.push(
+            ...closeText(
+              resolveAgentTextChannel(liveAfter.mapState, part.id, part.text),
+              part.text,
+            ),
+          );
+        }
         continue;
       }
       leftovers.push(
@@ -2570,9 +2673,7 @@ async function settleIssuedTurn(
       );
     }
   }
-  for (const [id, text] of liveAfter.textBuffers) {
-    leftovers.push(...closeText(id, text));
-  }
+  leftovers.push(...closePendingAgentText(liveAfter));
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   liveTurns.delete(threadId);

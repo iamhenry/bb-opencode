@@ -13,7 +13,7 @@ describe("map-delta", () => {
       sessionId: "s",
       part: { id: "t1", type: "text", text: "hello" },
     });
-    expect(deltas[0]).toMatchObject({
+    expect(deltas.find((delta) => delta.kind === "item.textDelta")).toMatchObject({
       kind: "item.textDelta",
       channel: "agentMessage",
       text: "hello",
@@ -181,8 +181,12 @@ describe("map-delta", () => {
       part: { id: "t1", type: "text", text: "Hello" },
       delta: "lo",
     });
-    expect(first[0]).toMatchObject({ text: "Hel" });
-    expect(second[0]).toMatchObject({ text: "lo" });
+    expect(first.find((delta) => delta.kind === "item.textDelta")).toMatchObject({
+      text: "Hel",
+    });
+    expect(second.find((delta) => delta.kind === "item.textDelta")).toMatchObject({
+      text: "lo",
+    });
     expect(
       mapPartDelta({
         state,
@@ -443,8 +447,36 @@ describe("map-delta", () => {
       state,
       sessionId: "s",
     });
-    expect(first[0]).toMatchObject({ text: "Hi" });
-    expect(second[0]).toMatchObject({ text: " there" });
+    expect(first.find((delta) => delta.kind === "item.textDelta")).toMatchObject({
+      text: "Hi",
+    });
+    expect(second.find((delta) => delta.kind === "item.textDelta")).toMatchObject({
+      text: " there",
+    });
+  });
+
+  it("closes empty text.ended with accumulated stream text", () => {
+    const state = createMapDeltaState();
+    mapSessionNextEvent({
+      type: "session.next.text.delta",
+      properties: { textID: "sse_1", delta: "FIRST" },
+      state,
+      sessionId: "s",
+    });
+    const ended = mapSessionNextEvent({
+      type: "session.next.text.ended",
+      properties: { textID: "sse_1", text: "" },
+      state,
+      sessionId: "s",
+    });
+    expect(ended).toMatchObject([
+      {
+        kind: "item.close",
+        key: { providerItemId: "assistant:0" },
+        status: "completed",
+        item: { type: "agentMessage", text: "FIRST" },
+      },
+    ]);
   });
 
   it("does not open a second bubble when persist id repeats the same text", () => {
