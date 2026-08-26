@@ -101,7 +101,6 @@ import {
   answersForOpenCode,
   isQuestionAskEvent,
   isQuestionToolName,
-  questionAskFromToolPart,
   toUserQuestionPayload,
   unwrapQuestionAsk,
   type BbUserQuestionPayload,
@@ -198,6 +197,7 @@ const pendingQuestion = new Map<
     sessionId: string;
     threadId: string;
     payload: BbUserQuestionPayload;
+    status: "pending" | "answering" | "settled";
   }
 >();
 
@@ -652,7 +652,6 @@ function startTitlePoller(): void {
         try {
           await syncSessionTitle(sessionId);
           await syncPendingPermissions(sessionId);
-          await syncPendingQuestions(sessionId);
           await syncLiveTurnParts(sessionId);
           await syncSessionRevert(sessionId);
           await syncSessionTodos(sessionId);
@@ -866,20 +865,6 @@ async function maybeFailUncardedWrite(
     threadId,
     "OpenCode write is waiting without a permission card",
   );
-}
-
-async function syncPendingQuestions(sessionId: string): Promise<void> {
-  if (!client) return;
-  const threadId = sessionToThread.get(sessionId);
-  if (!threadId) return;
-  try {
-    const pending = await client.listPendingQuestions(sessionId);
-    for (const ask of pending) {
-      await handleQuestionAsked(ask, sessionId);
-    }
-  } catch {
-    /* list is best-effort; SSE remains the primary path */
-  }
 }
 
 export async function syncSessionTodos(sessionId: string): Promise<boolean> {
@@ -1494,6 +1479,15 @@ async function onOpenCodeEvent(event: {
       return;
     }
     if (
+      [...pendingQuestion.values()].some(
+        (pending) =>
+          pending.threadId === threadId && pending.status !== "settled",
+      )
+    ) {
+      debugLog(`idle wait question ses=${sessionId}`);
+      return;
+    }
+    if (
       [...pendingPermission.values()].some(
         (pending) => pending.threadId === threadId,
       )
@@ -1774,11 +1768,18 @@ async function handleQuestionAsked(
   const ask = unwrapQuestionAsk(raw);
   const sessionId = ask?.sessionID ?? fallbackSessionId;
   const threadId = sessionToThread.get(sessionId);
+  const live = threadId ? liveTurns.get(threadId) : undefined;
   const requestId = ask?.id;
   const payload = ask ? toUserQuestionPayload(ask) : undefined;
-  if (!threadId || !requestId || !payload || !client) {
+  if (!threadId || !live || !requestId || !payload || !client) {
     if (client && requestId) {
-      await client.rejectQuestion({ requestID: requestId, sessionID: sessionId }).catch(() => undefined);
+      await client
+        .rejectQuestion({
+          requestID: requestId,
+          sessionID: sessionId,
+          directory: boundDirectory(sessionId),
+        })
+        .catch(() => undefined);
     }
     return;
   }
@@ -1789,6 +1790,7 @@ async function handleQuestionAsked(
     sessionId,
     threadId,
     payload,
+    status: "pending",
   });
   deps.write({
     id: existing,
@@ -1812,66 +1814,41 @@ async function maybeCardQuestionFromPart(
   )) {
     return;
   }
-  if (client) {
-    try {
-      const pending = await client.listPendingQuestions(sessionId);
-      if (pending.length > 0) {
-        for (const ask of pending) {
-          await handleQuestionAsked(ask, sessionId);
-        }
-        return;
-      }
-    } catch {
-      /* fall through to the tool snapshot */
-    }
-  }
-  const synthesized = questionAskFromToolPart(sessionId, part);
-  if (synthesized) {
-    await handleQuestionAsked(synthesized, sessionId);
-    return;
-  }
   const state =
     part.state && typeof part.state === "object"
-      ? (part.state as Record<string, unknown>)
+      ? (part.state as { status?: unknown })
       : undefined;
-  const input =
-    (state?.input && typeof state.input === "object"
-      ? (state.input as Record<string, unknown>)
-      : undefined) ??
-    (part.input && typeof part.input === "object"
-      ? (part.input as Record<string, unknown>)
-      : undefined);
-  if (!input || !Array.isArray(input.questions)) {
-    return;
+  if (state?.status !== "running") return;
+  if (!client) return;
+  try {
+    const pending = await client.listPendingQuestions(
+      sessionId,
+      boundDirectory(sessionId),
+    );
+    const asks = pending.flatMap((raw) => {
+      const ask = unwrapQuestionAsk(raw);
+      return ask ? [ask] : [];
+    });
+    const callID = typeof part.callID === "string" ? part.callID : undefined;
+    const messageID =
+      typeof part.messageID === "string" ? part.messageID : undefined;
+    const matched = asks.filter(
+      (ask) =>
+        (callID && ask.tool?.callID === callID) ||
+        (messageID && ask.tool?.messageID === messageID),
+    );
+    const candidates = matched.length > 0 ? matched : asks.length === 1 ? asks : [];
+    for (const ask of candidates) {
+      await handleQuestionAsked(ask, sessionId);
+    }
+  } catch {
+    /* polling retries; tool-part IDs are not provider question IDs */
   }
-  const requestId =
-    (typeof part.id === "string" && part.id) ||
-    (typeof part.callID === "string" && part.callID) ||
-    undefined;
-  const failKey = `oc-q-fail-${sessionId}:${requestId ?? "unknown"}`;
-  if (pendingQuestion.has(failKey)) return;
-  pendingQuestion.set(failKey, {
-    requestId: requestId ?? failKey,
-    sessionId,
-    threadId: sessionToThread.get(sessionId) ?? "",
-    payload: { kind: "user_question", questions: [] },
-  });
-  if (client && requestId) {
-    await client
-      .rejectQuestion({ requestID: requestId, sessionID: sessionId })
-      .catch(() => undefined);
-  }
-  const threadId = sessionToThread.get(sessionId);
-  if (threadId) {
-    emitDeltas(threadId, [
-      {
-        kind: "provider.warning",
-        category: "general",
-        summary: "Could not show OpenCode question",
-        details: "The ask never became a native picker",
-        vouchedTurn: true,
-      },
-    ]);
+}
+
+function forgetQuestions(threadId: string): void {
+  for (const [key, pending] of pendingQuestion) {
+    if (pending.threadId === threadId) pendingQuestion.delete(key);
   }
 }
 
@@ -1880,11 +1857,12 @@ async function rejectPendingQuestions(threadId: string): Promise<void> {
   for (const [key, pending] of [...pendingQuestion]) {
     if (pending.threadId !== threadId) continue;
     pendingQuestion.delete(key);
-    if (!active) continue;
+    if (!active || pending.status === "settled") continue;
     try {
       await active.rejectQuestion({
         requestID: pending.requestId,
         sessionID: pending.sessionId,
+        directory: boundDirectory(pending.sessionId),
       });
     } catch {
       /* fail closed */
@@ -2615,7 +2593,19 @@ async function settleIssuedTurn(
     return;
   }
   liveAfter.settling = true;
-  const messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+  let messages: HydrateMessage[];
+  try {
+    messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+  } catch (error) {
+    liveAfter.settling = false;
+    failIssuedTurn(
+      threadId,
+      `Could not finalize OpenCode turn: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
   const lateQueued = takeQueuedSteer(threadId, liveAfter);
   if (lateQueued) {
     liveAfter.settling = false;
@@ -2676,6 +2666,7 @@ async function settleIssuedTurn(
   leftovers.push(...closePendingAgentText(liveAfter));
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
+  forgetQuestions(threadId);
   liveTurns.delete(threadId);
   await rememberCatalogWindows(active);
   emitDeltas(threadId, [
@@ -3253,32 +3244,57 @@ export function handleLine(line: string): void {
   if (typeof method !== "string") {
     if (typeof id === "string" && pendingQuestion.has(id)) {
       const pending = pendingQuestion.get(id);
-      pendingQuestion.delete(id);
-      if (pending && client) {
-        const resolution =
-          result && typeof result === "object"
-            ? (result as {
-                kind?: unknown;
-                answers?: Record<string, { selected?: string[]; freeText?: string }>;
-              })
-            : undefined;
-        if (resolution?.kind === "user_answer") {
-          void client
-            .replyQuestion({
+      if (pending?.status !== "pending") return;
+      const active = client;
+      if (!active) {
+        pendingQuestion.delete(id);
+        failIssuedTurn(
+          pending.threadId,
+          "OpenCode disconnected before the question was answered",
+        );
+        return;
+      }
+      pending.status = "answering";
+      const resolution =
+        result && typeof result === "object"
+          ? (result as {
+              kind?: unknown;
+              answers?: Record<string, { selected?: string[]; freeText?: string }>;
+            })
+          : undefined;
+      const settle =
+        resolution?.kind === "user_answer"
+          ? active.replyQuestion({
               requestID: pending.requestId,
               sessionID: pending.sessionId,
               answers: answersForOpenCode(pending.payload, resolution),
+              directory: boundDirectory(pending.sessionId),
             })
-            .catch(() => undefined);
-        } else {
-          void client
+          : active.rejectQuestion({
+              requestID: pending.requestId,
+              sessionID: pending.sessionId,
+              directory: boundDirectory(pending.sessionId),
+            });
+      void settle
+        .then(() => {
+          pending.status = "settled";
+        })
+        .catch(async (cause) => {
+          pendingQuestion.delete(id);
+          await active
             .rejectQuestion({
               requestID: pending.requestId,
               sessionID: pending.sessionId,
+              directory: boundDirectory(pending.sessionId),
             })
             .catch(() => undefined);
-        }
-      }
+          failIssuedTurn(
+            pending.threadId,
+            `Could not answer OpenCode question: ${
+              cause instanceof Error ? cause.message : String(cause)
+            }`,
+          );
+        });
       return;
     }
     if (typeof id === "string" && pendingPermission.has(id)) {

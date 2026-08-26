@@ -23,9 +23,13 @@
 }
 
 @media (hover: hover) {
-  .oc-agent:hover {
+  .oc-agent:hover:not(:disabled) {
     color: var(--foreground, inherit);
   }
+}
+
+.oc-agent:disabled {
+  cursor: default;
 }
 
 .oc-agent[data-open="true"] {
@@ -234,5 +238,4 @@
   opacity: 1;
   transform: translateY(0);
 }
-
 

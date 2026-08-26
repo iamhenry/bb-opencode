@@ -2221,7 +2221,7 @@ describe("provider bridge", () => {
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
     await flush();
-    await ingestOpenCodeEvent({
+    const ask = {
       type: "question.v2.asked",
       properties: {
         id: "que_1",
@@ -2234,7 +2234,9 @@ describe("provider bridge", () => {
           },
         ],
       },
-    });
+    };
+    await ingestOpenCodeEvent(ask);
+    await ingestOpenCodeEvent(ask);
     const request = messages.find(
       (message) => message.method === "interaction/request",
     );
@@ -2254,15 +2256,47 @@ describe("provider bridge", () => {
         answers: { "que_1:q1": { selected: ["Yes"] } },
       },
     });
+    await ingestOpenCodeEvent(ask);
     await flush();
+    expect(
+      messages.filter((message) => message.method === "interaction/request"),
+    ).toHaveLength(1);
     expect(fake.calls.questionReply).toEqual([
       { requestID: "que_1", answers: [["Yes"]] },
     ]);
+    expect(fake.lastQuestionDirectory).toBe("/tmp/a");
   });
 
   it("cards a question tool part as native user_question", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
+    fake.client.listPendingQuestions = async (_sessionID, directory) => {
+      fake.lastQuestionDirectory = directory;
+      return [
+        {
+          id: "que_stale",
+          sessionID: "ses_1",
+          questions: [
+            {
+              question: "Old question?",
+              options: [{ label: "Old" }],
+            },
+          ],
+          tool: { messageID: "msg_old", callID: "call_old" },
+        },
+        {
+          id: "que_1",
+          sessionID: "ses_1",
+          questions: [
+            {
+              question: "Section name?",
+              options: [{ label: "A" }, { label: "B" }],
+            },
+          ],
+          tool: { messageID: "msg_q", callID: "call_q" },
+        },
+      ];
+    };
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
@@ -2274,6 +2308,8 @@ describe("provider bridge", () => {
         sessionID: "ses_1",
         part: {
           id: "prt_q",
+          messageID: "msg_q",
+          callID: "call_q",
           type: "tool",
           tool: "question",
           state: {
@@ -2294,14 +2330,17 @@ describe("provider bridge", () => {
       (message) => message.method === "interaction/request",
     );
     expect(request).toMatchObject({
-      id: "oc-q-prt_q",
+      id: "oc-q-que_1",
       params: {
         payload: {
           kind: "user_question",
-          questions: [{ id: "prt_q:q1", prompt: "Section name?" }],
+          questions: [{ id: "que_1:q1", prompt: "Section name?" }],
         },
       },
     });
+    expect(
+      messages.filter((message) => message.method === "interaction/request"),
+    ).toHaveLength(1);
     expect(
       messages.some((message) => {
         const deltas = (message.params as { deltas?: Array<{ kind?: string; tool?: string }> })
@@ -2309,6 +2348,56 @@ describe("provider bridge", () => {
         return deltas?.some((delta) => delta.tool === "question");
       }),
     ).toBe(false);
+    expect(fake.lastQuestionDirectory).toBe("/tmp/a");
+  });
+
+  it("fails the turn when an OpenCode question reply fails", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    fake.client.replyQuestion = async () => {
+      throw new Error("reply unavailable");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "question.v2.asked",
+      properties: {
+        id: "que_1",
+        sessionID: "ses_1",
+        questions: [
+          {
+            question: "Continue?",
+            options: [{ label: "Yes" }, { label: "No" }],
+          },
+        ],
+      },
+    });
+    send({
+      id: "oc-q-que_1",
+      result: {
+        kind: "user_answer",
+        answers: { "que_1:q1": { selected: ["Yes"] } },
+      },
+    });
+    await flush();
+    expect(fake.calls.questionReject).toEqual(["que_1"]);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        params: expect.objectContaining({
+          deltas: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "turn.boundary",
+              status: "failed",
+              error: {
+                message: "Could not answer OpenCode question: reply unavailable",
+              },
+            }),
+          ]),
+        }),
+      }),
+    );
   });
 
   it("routes a listed /command through session.command (ISC-81)", async () => {

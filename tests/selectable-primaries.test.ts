@@ -31,7 +31,7 @@ describe("selectable primaries", () => {
     ).toEqual({ status: "selected", agent: "plan" });
   });
 
-  it("defaults when last agent is hidden, system, or subagent", () => {
+  it("preserves a listed subagent but defaults hidden or system agents", () => {
     expect(
       hydratePickerAgent({ lastUserAgent: "title", agents: fixture }).agent,
     ).toBe("build");
@@ -39,8 +39,8 @@ describe("selectable primaries", () => {
       hydratePickerAgent({ lastUserAgent: "compaction", agents: fixture }).status,
     ).toBe("default");
     expect(
-      hydratePickerAgent({ lastUserAgent: "explore", agents: fixture }).agent,
-    ).toBe("build");
+      hydratePickerAgent({ lastUserAgent: "explore", agents: fixture }),
+    ).toEqual({ status: "selected", agent: "explore" });
     expect(
       hydratePickerAgent({ lastUserAgent: undefined, agents: fixture }).agent,
     ).toBe("build");

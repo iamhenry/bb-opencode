@@ -577,12 +577,24 @@ export default async function plugin(bb: BbPluginApi) {
   }, 0);
 
   let taskPollInFlight = false;
+  let taskPollDisposed = false;
+  let timer: ReturnType<typeof setInterval>;
+  const stopTaskPoll = () => {
+    taskPollDisposed = true;
+    clearInterval(timer);
+    taskPollTimers.delete(timer);
+  };
   const pollTaskChildren = () => {
-    if (taskPollInFlight) return;
+    if (taskPollDisposed || taskPollInFlight) return;
     taskPollInFlight = true;
     void ensureRunningTaskChildThreads(bb, host)
       .catch((error) => {
-        bb.log.warn(`OpenCode task-child bind failed: ${String(error)}`);
+        const message = String(error);
+        if (message.includes("PluginContextStaleError")) {
+          stopTaskPoll();
+          return;
+        }
+        bb.log.warn(`OpenCode task-child bind failed: ${message}`);
       })
       .finally(() => {
         taskPollInFlight = false;
@@ -590,12 +602,9 @@ export default async function plugin(bb: BbPluginApi) {
   };
   for (const previous of taskPollTimers) clearInterval(previous);
   taskPollTimers.clear();
-  const timer = setInterval(pollTaskChildren, 750);
+  timer = setInterval(pollTaskChildren, 750);
   taskPollTimers.add(timer);
-  bb.onDispose(() => {
-    clearInterval(timer);
-    taskPollTimers.delete(timer);
-  });
+  bb.onDispose(stopTaskPoll);
 
   bb.cli.register({
     name: "opencode",

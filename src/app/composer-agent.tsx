@@ -6,7 +6,11 @@ import {
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
-import { fetchComposerChrome, type ComposerChrome } from "./composer-chrome.js";
+import {
+  displayedComposerAgent,
+  fetchComposerChrome,
+  type ComposerChrome,
+} from "./composer-chrome.js";
 import {
   composerSurfaceWantsBanner,
   inspectLiveComposerProvider,
@@ -219,7 +223,8 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   }, [open]);
 
   const options = chrome?.options?.length ? chrome.options : FALLBACK_OPTIONS;
-  const selected = options.find((option) => option.name === agent) ?? options[0];
+  const selected = displayedComposerAgent(options, agent, chrome?.status);
+  const agentIsSelectable = options.some((option) => option.name === agent);
 
   return (
     <>
@@ -234,19 +239,20 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
             }
             data-opencode-agent-picker="true"
             data-layout={layout}
-            data-open={open ? "true" : "false"}
-            aria-haspopup="listbox"
-            aria-expanded={open}
+            data-open={open && agentIsSelectable ? "true" : "false"}
+            aria-haspopup={agentIsSelectable ? "listbox" : undefined}
+            aria-expanded={agentIsSelectable ? open : undefined}
             aria-label={`OpenCode agent: ${selected?.name ?? "build"}`}
             title={chrome?.error || selected?.description || "OpenCode agent"}
+            disabled={!agentIsSelectable}
             onClick={() => setOpen((value) => !value)}
           >
             <BotIcon />
             <span className="oc-agent__prefix">Agent</span>
             <span className="oc-agent__name">{selected?.name ?? "build"}</span>
-            <ChevronIcon />
+            {agentIsSelectable ? <ChevronIcon /> : null}
           </button>
-          {open
+          {open && agentIsSelectable
             ? createPortal(
                 <div
                   ref={menuRef}

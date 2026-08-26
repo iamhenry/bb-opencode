@@ -49,7 +49,12 @@ export function hydratePickerAgent(args: {
   if (!match) {
     return { status: "unknown", agent: args.lastUserAgent };
   }
-  if (isSelectablePrimary(match)) {
+  if (
+    isSelectablePrimary(match) ||
+    (match.mode === "subagent" &&
+      match.hidden !== true &&
+      !isSystemAgentName(match.name))
+  ) {
     return { status: "selected", agent: match.name };
   }
   return { status: "default", agent: fallback.name };

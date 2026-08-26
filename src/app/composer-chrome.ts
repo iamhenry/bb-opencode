@@ -6,6 +6,19 @@ export type ComposerChrome = {
   error: string | null;
 };
 
+export function displayedComposerAgent(
+  options: ComposerChrome["options"],
+  agent: string,
+  status: ComposerChrome["status"] | undefined,
+): ComposerChrome["options"][number] | undefined {
+  return (
+    options.find((option) => option.name === agent) ??
+    (status === "selected" && agent
+      ? { name: agent, description: null }
+      : options[0])
+  );
+}
+
 const inflight = new Map<string, Promise<ComposerChrome>>();
 
 export function composerChromeKey(

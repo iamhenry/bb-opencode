@@ -88,12 +88,14 @@ export interface OpenCodeClient {
     requestID: string;
     sessionID: string;
     answers?: string[][];
+    directory?: string;
   }): Promise<void>;
   rejectQuestion(args: {
     requestID: string;
     sessionID: string;
+    directory?: string;
   }): Promise<void>;
-  listPendingQuestions(sessionID: string): Promise<unknown[]>;
+  listPendingQuestions(sessionID: string, directory?: string): Promise<unknown[]>;
   sessionIsRunning(id: string, directory?: string): Promise<boolean>;
   sessionTodos(id: string): Promise<unknown[]>;
   summarize(
@@ -194,6 +196,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
   const rejectQuestion = async (args: {
     requestID: string;
     sessionID: string;
+    directory?: string;
   }): Promise<void> => {
     const paths = [
       `/api/session/${args.sessionID}/question/${args.requestID}/reject`,
@@ -201,7 +204,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
     ];
     for (const path of paths) {
       const response = await fetchTimed(
-        `${url}${path}`,
+        `${url}${path}${directoryQuery(args.directory)}`,
         { method: "POST" },
         OPENCODE_REPLY_MS,
       );
@@ -281,7 +284,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       return unwrap<OpenCodeSession[]>(result) ?? [];
     },
     async sessionMessages(id) {
-      const result = await sdk.session.messages({ path: { id } });
+      const result = await withTimeout(
+        sdk.session.messages({ path: { id } }),
+        OPENCODE_SETUP_MS,
+        "session.messages",
+      );
       return (
         unwrap<
           Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
@@ -292,11 +299,15 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       const query = directoryQuery(directory);
       debugLog(`prompt ses=${id} dir=${directory || "-"}`);
       const send = (payload: Record<string, unknown>) =>
-        fetch(`${url}/session/${id}/message${query}`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
+        fetchTimed(
+          `${url}/session/${id}/message${query}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(payload),
+          },
+          OPENCODE_REPLY_MS,
+        );
       let response = await send(body);
       if (!response.ok && response.status === 400 && "variant" in body) {
         const { variant: _variant, thinking: _thinking, ...rest } = body;
@@ -340,7 +351,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       }
     },
     async abort(id) {
-      await sdk.session.abort({ path: { id } });
+      await withTimeout(
+        sdk.session.abort({ path: { id } }),
+        OPENCODE_REPLY_MS,
+        "session.abort",
+      );
     },
     async revert(id, body) {
       const result = await sdk.session.revert({
@@ -480,9 +495,9 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       }
       return scopedAsks;
     },
-    async replyQuestion({ requestID, sessionID, answers }) {
+    async replyQuestion({ requestID, sessionID, answers, directory }) {
       if (!answers) {
-        await rejectQuestion({ requestID, sessionID });
+        await rejectQuestion({ requestID, sessionID, directory });
         return;
       }
       const paths = [
@@ -492,7 +507,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       ];
       for (const path of paths) {
         const response = await fetchTimed(
-          `${url}${path}`,
+          `${url}${path}${directoryQuery(directory)}`,
           {
             method: "POST",
             headers: { "content-type": "application/json" },
@@ -510,9 +525,9 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       throw new Error("question.reply not available");
     },
     rejectQuestion,
-    async listPendingQuestions(sessionID) {
+    async listPendingQuestions(sessionID, directory) {
       const response = await fetchTimed(
-        `${url}/api/session/${sessionID}/question`,
+        `${url}/api/session/${sessionID}/question${directoryQuery(directory)}`,
         {},
         OPENCODE_SETUP_MS,
       );
@@ -542,10 +557,14 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       return runningSessionIdsFromStatus(body).has(id);
     },
     async summarize(id, body) {
-      const result = await sdk.session.summarize({
-        path: { id },
-        body,
-      });
+      const result = await withTimeout(
+        sdk.session.summarize({
+          path: { id },
+          body,
+        }),
+        OPENCODE_REPLY_MS,
+        "session.summarize",
+      );
       return Boolean(unwrap<boolean>(result));
     },
     async subscribe(handler, directory) {

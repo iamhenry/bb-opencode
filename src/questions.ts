@@ -20,6 +20,7 @@ export interface OpenCodeQuestionAsk {
   id: string;
   sessionID: string;
   questions: OpenCodeQuestionInfo[];
+  tool?: { messageID?: string; callID?: string };
 }
 
 export interface BbUserQuestionOption {
@@ -48,40 +49,6 @@ export function isQuestionAskEvent(type: string): boolean {
 
 export function isQuestionToolName(name: string | undefined): boolean {
   return name === "question" || name === "Question";
-}
-
-export function questionAskFromToolPart(
-  sessionId: string,
-  part: Record<string, unknown>,
-): OpenCodeQuestionAsk | undefined {
-  const tool =
-    typeof part.tool === "string"
-      ? part.tool
-      : typeof (part as { name?: unknown }).name === "string"
-        ? (part as { name: string }).name
-        : undefined;
-  if (!isQuestionToolName(tool)) return undefined;
-  const state =
-    part.state && typeof part.state === "object"
-      ? (part.state as Record<string, unknown>)
-      : undefined;
-  const input =
-    (state?.input && typeof state.input === "object"
-      ? (state.input as Record<string, unknown>)
-      : undefined) ??
-    (part.input && typeof part.input === "object"
-      ? (part.input as Record<string, unknown>)
-      : undefined);
-  const id =
-    (typeof part.id === "string" && part.id) ||
-    (typeof part.callID === "string" && part.callID) ||
-    undefined;
-  if (!id || !input) return undefined;
-  return unwrapQuestionAsk({
-    id,
-    sessionID: sessionId,
-    questions: input.questions,
-  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -135,7 +102,15 @@ export function unwrapQuestionAsk(raw: unknown): OpenCodeQuestionAsk | undefined
     return parsed ? [parsed] : [];
   });
   if (questions.length === 0) return undefined;
-  return { id, sessionID, questions };
+  const rawTool = asRecord(record.tool);
+  const tool = rawTool
+    ? {
+        messageID:
+          typeof rawTool.messageID === "string" ? rawTool.messageID : undefined,
+        callID: typeof rawTool.callID === "string" ? rawTool.callID : undefined,
+      }
+    : undefined;
+  return { id, sessionID, questions, ...(tool ? { tool } : {}) };
 }
 
 export function toUserQuestionPayload(

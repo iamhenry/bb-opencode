@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  displayedComposerAgent,
   fetchComposerChrome,
   resetComposerChromeInflight,
 } from "../src/app/composer-chrome.js";
@@ -29,5 +30,15 @@ describe("fetchComposerChrome", () => {
     ]);
     expect(calls).toBe(1);
     expect(a).toBe(b);
+  });
+
+  it("displays an inherited session agent outside the primary options", () => {
+    expect(
+      displayedComposerAgent(
+        [{ name: "build", description: null }],
+        "atlas",
+        "selected",
+      ),
+    ).toEqual({ name: "atlas", description: null });
   });
 });

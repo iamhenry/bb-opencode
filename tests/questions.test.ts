@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   answersForOpenCode,
   isQuestionAskEvent,
-  questionAskFromToolPart,
   toUserQuestionPayload,
   unwrapQuestionAsk,
 } from "../src/questions.js";
@@ -15,6 +14,7 @@ describe("questions", () => {
         data: {
           id: "que_1",
           sessionID: "ses_1",
+          tool: { messageID: "msg_1", callID: "call_1" },
           questions: [
             {
               question: "Is the plugin done?",
@@ -29,7 +29,11 @@ describe("questions", () => {
           ],
         },
       }),
-    ).toMatchObject({ id: "que_1", sessionID: "ses_1" });
+    ).toMatchObject({
+      id: "que_1",
+      sessionID: "ses_1",
+      tool: { messageID: "msg_1", callID: "call_1" },
+    });
   });
 
   it("maps OpenCode questions onto the native BB card payload", () => {
@@ -66,26 +70,4 @@ describe("questions", () => {
       }),
     ).toEqual([["Yes"]]);
   });
-
-  it("rebuilds an ask from a question tool part",
-    () => {
-      expect(
-        questionAskFromToolPart("ses_1", {
-          id: "prt_q",
-          tool: "question",
-          state: {
-            status: "running",
-            input: {
-              questions: [
-                {
-                  question: "Ship it?",
-                  options: [{ label: "Yes" }, { label: "No" }],
-                },
-              ],
-            },
-          },
-        }),
-      ).toMatchObject({ id: "prt_q", sessionID: "ses_1" });
-    },
-  );
 });

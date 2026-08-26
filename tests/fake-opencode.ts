@@ -38,6 +38,7 @@ export interface FakeOpenCode {
   lastPrompt?: { id: string; body: Record<string, unknown> };
   lastRevert?: { id: string; body: Record<string, unknown> };
   lastPermissionDirectory?: string;
+  lastQuestionDirectory?: string;
   lastSubscribeDirectory?: string;
   pendingPermissions: unknown[];
   healthy: boolean;
@@ -191,13 +192,16 @@ export function createFakeOpenCode(): FakeOpenCode {
         fake.calls.command.push({ id, body });
         return {};
       },
-      async replyQuestion({ requestID, answers }) {
+      async replyQuestion({ requestID, answers, directory }) {
         fake.calls.questionReply.push({ requestID, answers });
+        fake.lastQuestionDirectory = directory;
       },
-      async rejectQuestion({ requestID }) {
+      async rejectQuestion({ requestID, directory }) {
         fake.calls.questionReject.push(requestID);
+        fake.lastQuestionDirectory = directory;
       },
-      async listPendingQuestions() {
+      async listPendingQuestions(_sessionID, directory) {
+        fake.lastQuestionDirectory = directory;
         return [];
       },
       async replyPermission({ requestID, reply, directory }) {
