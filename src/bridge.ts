@@ -364,7 +364,18 @@ function publicErrorMessage(error: unknown): string {
 }
 
 async function ensureClient(): Promise<OpenCodeClient> {
-  if (client) return client;
+  if (client) {
+    // Cheap liveness probe: the serve may have died and come back on a
+    // different port (lock file updated); a cached client pointing at the
+    // old URL never heals on its own. Drop it and re-attach from the lock.
+    try {
+      await client.health();
+      return client;
+    } catch {
+      dropSubscriptions();
+      client = undefined;
+    }
+  }
   if (!dataDir) throw new Error("bridge dataDir is not set");
   try {
     const attached = await deps.attach(dataDir);
