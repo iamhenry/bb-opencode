@@ -83,6 +83,32 @@ export function removeLock(dataDir: string): void {
   if (existsSync(path)) unlinkSync(path);
 }
 
+/** Kill the locked serve and drop the lock. Next attach respawns. */
+export async function stopServe(dataDir: string): Promise<boolean> {
+  const lock = readLock(dataDir);
+  if (!lock) return false;
+  if (pidAlive(lock.pid)) {
+    try {
+      process.kill(lock.pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    for (let i = 0; i < 30; i += 1) {
+      if (!pidAlive(lock.pid)) break;
+      await delay(100);
+    }
+    if (pidAlive(lock.pid)) {
+      try {
+        process.kill(lock.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  removeLock(dataDir);
+  return true;
+}
+
 export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);

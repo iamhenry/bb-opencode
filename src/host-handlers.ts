@@ -6,7 +6,7 @@ import {
   type HydrateMessage,
 } from "./hydrate.js";
 import { messageMetaFromInfo } from "./run-chip.js";
-import { attachOrSpawn, readLock, recentServeLog } from "./process.js";
+import { attachOrSpawn, readLock, recentServeLog, stopServe } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
@@ -32,6 +32,20 @@ export function evictClientsForTests(): void {
 
 export async function handleProbe(dataDir: string): Promise<ProbeResult> {
   return probeOpenCode({ dataDir, acquire });
+}
+
+export async function handleReload(
+  dataDir: string,
+): Promise<{ ok: boolean; error: string | null }> {
+  try {
+    await stopServe(dataDir);
+    return { ok: true, error: null };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export async function handleLogs(limit = 80): Promise<{ lines: string[] }> {

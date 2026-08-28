@@ -113,9 +113,16 @@ export function ImportControl() {
 
   return (
     <div data-opencode-import="true">
-      <button type="button" onClick={() => void load()} disabled={busy}>
-        Import OpenCode sessions
-      </button>
+      <div className="oc-settings__actions">
+        <button
+          type="button"
+          className="oc-settings__btn"
+          onClick={() => void load()}
+          disabled={busy}
+        >
+          Import OpenCode sessions
+        </button>
+      </div>
       {open ? (
         <div>
           {sessions.length === 0 ? <p>No sessions on this host.</p> : null}
@@ -146,11 +153,12 @@ export function ImportControl() {
             onChange={(event) => setPrompt(event.target.value)}
             aria-label="First message after import"
           />
-          <button type="button" onClick={() => void confirm()} disabled={busy}>
+          <button type="button" className="oc-settings__btn" onClick={() => void confirm()} disabled={busy}>
             Save pending adopt
           </button>
           <button
             type="button"
+            className="oc-settings__btn"
             onClick={() => void openSelected()}
             disabled={busy}
           >
@@ -158,6 +166,7 @@ export function ImportControl() {
           </button>
           <button
             type="button"
+            className="oc-settings__btn"
             onClick={() => void openSelected()}
             disabled={
               busy ||

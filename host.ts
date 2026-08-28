@@ -14,6 +14,7 @@ import {
   handleListSessions,
   handleLogs,
   handleProbe,
+  handleReload,
   handleRevert,
   handleRevertState,
   handleSessionSnapshot,
@@ -49,6 +50,9 @@ export default experimental_defineHostEntry({
     },
     async logs(input) {
       return handleLogs(input.limit);
+    },
+    async reload(_input, context) {
+      return handleReload(context.experimental_paths.dataDir);
     },
     async listSessions(input, context) {
       return handleListSessions(

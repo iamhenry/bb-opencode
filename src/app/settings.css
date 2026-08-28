@@ -1,0 +1,39 @@
+/* Settings-section action buttons: match BB's bordered secondary-button idiom. */
+.oc-settings__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+}
+
+.oc-settings__btn {
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  color: var(--foreground, inherit);
+  background: 0 0;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 16%, transparent);
+  border-radius: 0.45rem;
+  padding: 0.4rem 0.85rem;
+  line-height: 1.25;
+}
+
+.oc-settings__btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--foreground, currentColor) 6%, transparent);
+}
+
+.oc-settings__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.oc-settings__msg {
+  color: var(--muted-foreground, #a1a1aa);
+  font-size: 0.75rem;
+  margin: 0.5rem 0 0;
+}
+
+.oc-settings__msg[data-ok="false"] {
+  color: var(--destructive, #dc2626);
+}

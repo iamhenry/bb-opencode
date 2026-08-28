@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
 import { ImportControl } from "./import-control.js";
+import "./settings.css";
 
 type Probe = {
   binaryPath: string | null;
@@ -23,6 +24,8 @@ type Probe = {
 export function SettingsSection() {
   const rpc = useRpc<typeof rpcContract>();
   const [probe, setProbe] = useState<Probe | null>(null);
+  const [reloading, setReloading] = useState(false);
+  const [reloadMessage, setReloadMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +36,20 @@ export function SettingsSection() {
       cancelled = true;
     };
   }, [rpc]);
+
+  async function reload() {
+    setReloading(true);
+    setReloadMessage(null);
+    try {
+      const result = await rpc.call("reload", {});
+      setProbe(await rpc.call("probe", null));
+      setReloadMessage(result.ok ? "Reloaded." : (result.error ?? "Reload failed"));
+    } catch (error) {
+      setReloadMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setReloading(false);
+    }
+  }
 
   return (
     <section data-opencode-settings="true">
@@ -65,6 +82,21 @@ export function SettingsSection() {
       )}
       {probe?.authError ? <p>Auth: {probe.authError}</p> : null}
       {probe?.error ? <p>{probe.error}</p> : null}
+      <div className="oc-settings__actions">
+        <button
+          type="button"
+          className="oc-settings__btn"
+          disabled={reloading}
+          onClick={() => void reload()}
+        >
+          {reloading ? "Reloading…" : "Reload OpenCode"}
+        </button>
+      </div>
+      {reloadMessage ? (
+        <p className="oc-settings__msg" data-ok={reloadMessage === "Reloaded."}>
+          {reloadMessage}
+        </p>
+      ) : null}
       <ImportControl />
     </section>
   );

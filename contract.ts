@@ -44,6 +44,10 @@ export const hostContract = defineRpcContract({
     input: z.object({}).strict(),
     output: probeOutput,
   },
+  reload: {
+    input: z.object({}).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
   logs: {
     input: z.object({ limit: z.number().int().positive().max(200).optional() }).strict(),
     output: z.object({ lines: z.array(z.string()) }).strict(),
@@ -183,6 +187,10 @@ export const rpcContract = defineRpcContract({
   probe: {
     input: z.null(),
     output: probeOutput,
+  },
+  reload: {
+    input: z.object({}).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
   stampAgent: {
     input: z

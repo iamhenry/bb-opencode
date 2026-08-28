@@ -11,10 +11,12 @@ import {
   isLockStale,
   lockPath,
   openCodeServeEnvironment,
+  pidAlive,
   readLock,
   reclaimIfStale,
   reclaimStaleClaim,
   sharedLockDir,
+  stopServe,
   writeLock,
 } from "../src/process.js";
 
@@ -162,5 +164,43 @@ describe("lock reclaim", () => {
   it("uses one host-wide lock path (ISC-50, ISC-62)", () => {
     expect(lockPath("/tmp/a")).toBe(lockPath("/tmp/b"));
     expect(lockPath("/tmp/a").startsWith(sharedLockDir())).toBe(true);
+  });
+});
+
+describe("stopServe", () => {
+  it("returns false when there is no lock", async () => {
+    await withHome(async (home) => {
+      expect(await stopServe(join(home, "data"))).toBe(false);
+    });
+  });
+
+  it("kills the locked pid and removes the lock", async () => {
+    await withHome(async (home) => {
+      const { spawn } = await vi.importActual<typeof import("node:child_process")>(
+        "node:child_process",
+      );
+      const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+        stdio: "ignore",
+      });
+      const pid = child.pid;
+      try {
+        expect(pid).toBeDefined();
+        const dir = join(home, "data");
+        writeLock(dir, {
+          pid: pid!,
+          port: 1,
+          startedAt: new Date().toISOString(),
+        });
+        expect(await stopServe(dir)).toBe(true);
+        expect(readLock(dir)).toBeUndefined();
+        expect(pidAlive(pid!)).toBe(false);
+      } finally {
+        try {
+          if (pid) process.kill(pid, "SIGKILL");
+        } catch {
+          /* already dead */
+        }
+      }
+    });
   });
 });

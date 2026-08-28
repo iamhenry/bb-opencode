@@ -225,6 +225,11 @@ export default async function plugin(bb: BbPluginApi) {
       }
       return result;
     },
+    async reload() {
+      const hostId = await firstHostId(bb);
+      if (!hostId) return { ok: false, error: "No enrolled host" };
+      return host.call("reload", {}, { hostId });
+    },
     async stampAgent(input) {
       if (input.threadId) {
         stampAgent(stamps, {
@@ -672,26 +677,26 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "opencode",
-    summary: "OpenCode operator surface",
+    summary: "Check and manage the OpenCode server",
     commands: [
       {
         name: "status",
-        summary: "Show binary, version, attach state, port, range",
+        summary: "Show whether OpenCode is running and how to reach it",
         usage: "bb opencode status",
       },
       {
         name: "version",
-        summary: "Print SDK pin and attached server version",
+        summary: "Show which OpenCode version is connected",
         usage: "bb opencode version",
       },
       {
         name: "logs",
-        summary: "Print recent plugin / OpenCode event tally lines",
+        summary: "Show recent OpenCode activity and errors",
         usage: "bb opencode logs",
       },
       {
         name: "commands",
-        summary: "List OpenCode slash commands for a directory",
+        summary: "List the slash commands OpenCode offers",
         usage: "bb opencode commands [directory]",
       },
     ],

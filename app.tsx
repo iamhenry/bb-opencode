@@ -70,7 +70,7 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "opencode",
     title: "OpenCode",
-    description: "Detached OpenCode server used by BB threads.",
+    description: "Runs your threads with OpenCode. Restart it here after config changes.",
     component: SettingsSection,
   });
 });

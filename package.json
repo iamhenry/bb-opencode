@@ -2,7 +2,7 @@
   "name": "bb-plugin-opencode",
   "version": "0.1.0",
   "license": "MIT",
-  "description": "First-class OpenCode provider for BB.",
+    "description": "Use OpenCode to run BB threads — with import, agents, and a restart control.",
   "type": "module",
   "engines": {
     "bb": ">=0.39",
