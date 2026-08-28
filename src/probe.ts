@@ -75,10 +75,13 @@ export async function probeOpenCode(args: {
   }
 
   try {
+    // ponytail: probe now spawns an idle serve at bb startup so the
+    // needs-configuration badge doesn't stick on a transient "not attached".
+    // If a resident idle serve becomes a problem, gate behind a plugin setting.
     const attached = await attachOrSpawn({
       dataDir: args.dataDir,
       binary: binaryPath,
-      spawn: false,
+      spawn: true,
     });
     const client = args.acquire(attached.url);
     const health = await client.health();

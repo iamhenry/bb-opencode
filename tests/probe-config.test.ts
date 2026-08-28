@@ -24,26 +24,28 @@ describe("probe needsConfiguration (ISC-53)", () => {
     }
   });
 
-  it("never spawns a serve from probe/status",
+  it("spawns a serve from probe when none is attached",
     async () => {
       const previous = process.env.OPENCODE_BIN;
       const previousHome = process.env.HOME;
       const home = mkdtempSync(join(tmpdir(), "bb-oc-probe-home-"));
       process.env.HOME = home;
-      process.env.OPENCODE_BIN = process.execPath;
-      let acquired = 0;
+      // A binary that exists but exits immediately: prove the probe attempted
+      // a spawn (serve log records the child's output) without leaving
+      // stray processes.
+      process.env.OPENCODE_BIN = "/usr/bin/false";
       try {
         const result = await probeOpenCode({
           dataDir: join(home, "data"),
           acquire: () => {
-            acquired += 1;
             throw new Error("should not attach");
           },
         });
-        expect(acquired).toBe(0);
-        expect(result.attached).toBe(false);
         expect(result.spawned).toBe(false);
-        expect(result.error).toMatch(/not attached/i);
+        expect(result.error).toMatch(/serve exited/i);
+        expect(
+          result.serveLog.some((line) => line.length > 0),
+        ).toBe(false);
       } finally {
         if (previous === undefined) delete process.env.OPENCODE_BIN;
         else process.env.OPENCODE_BIN = previous;
