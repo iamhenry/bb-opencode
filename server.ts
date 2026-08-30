@@ -417,6 +417,7 @@ export default async function plugin(bb: BbPluginApi) {
           sessionId: input.sessionId,
           title: snapshot.title,
           bindOnly: true,
+          model: snapshot.model,
         });
         await bb.storage.kv.delete(
           pendingAdoptStorageKey({
@@ -1005,6 +1006,7 @@ type SessionSnapshot = {
   title: string | null;
   directory: string | null;
   parentID: string | null;
+  model: string | null;
 };
 
 const spawningTaskChildren = new Set<string>();
@@ -1039,6 +1041,7 @@ async function spawnBoundTaskChild(
     sessionId: string;
     title: string | null;
     bindOnly: boolean;
+    model?: string | null;
     prompt?: string;
   },
 ) {
@@ -1054,6 +1057,7 @@ async function spawnBoundTaskChild(
       providerId: PROVIDER_ID,
       parentThreadId: args.parentThreadId,
       title: taskChildThreadTitle(args.title),
+      ...(args.model ? { model: args.model } : {}),
       ...(args.prompt
         ? { prompt: args.prompt }
         : { input: taskChildBindInput() }),
@@ -1116,6 +1120,11 @@ async function ensureRunningTaskChildThreads(
     if (parent.providerId !== PROVIDER_ID || !parent.id || !parent.projectId) continue;
     spawningTaskChildren.add(live.childSessionId);
     try {
+      const snapshot = (await host.call(
+        "sessionSnapshot",
+        { sessionId: live.childSessionId },
+        { hostId },
+      )) as SessionSnapshot;
       const childThreadId = await spawnBoundTaskChild(bb, {
         projectId: parent.projectId,
         hostId,
@@ -1124,6 +1133,7 @@ async function ensureRunningTaskChildThreads(
         sessionId: live.childSessionId,
         title: live.title,
         bindOnly: true,
+        model: snapshot.model,
       });
       rememberBoundTaskChild(live.childSessionId, childThreadId);
       bb.log.info(
@@ -1232,6 +1242,7 @@ async function openTaskChildThread(
       sessionId: input.sessionId,
       title: snapshot.title,
       bindOnly: true,
+      model: snapshot.model,
     });
     return { threadId, created: true, error: null };
   } catch (error) {

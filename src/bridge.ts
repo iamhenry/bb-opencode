@@ -170,6 +170,7 @@ interface BoundSession {
   threadId: string;
   sessionId: string;
   cwd: string;
+  bindOnly?: boolean;
   permissionMode?: string;
   instructions?: string;
   disallowedTools: string[];
@@ -2211,6 +2212,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           threadId: parsed.data.threadId,
           sessionId,
           cwd: parsed.data.cwd,
+          bindOnly: options.bindOnly === true,
           permissionMode: permissionModeOf(parsed.data.options),
           ...sessionPolicy(parsed.data),
         };
@@ -2359,13 +2361,12 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         respondResult(id, {});
         openingTurns.add(parsed.data.threadId);
         try {
-          const live = liveTurns.get(parsed.data.threadId);
           // ponytail: agent-only bind seed must not become a second OpenCode prompt
           if (
-            live?.bindOnly &&
-            !live.promptIssued &&
+            bound.bindOnly &&
             firstTextPart(parsed.data.input ?? []).trim() === TASK_CHILD_BIND_TEXT
           ) {
+            bound.bindOnly = false;
             if (parsed.data.clientRequestId) {
               emitDeltas(parsed.data.threadId, [
                 {

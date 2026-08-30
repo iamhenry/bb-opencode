@@ -79,6 +79,7 @@ export const hostContract = defineRpcContract({
         directory: z.string().nullable(),
         parentID: z.string().nullable(),
         lastUserAgent: z.string().nullable(),
+        model: z.string().nullable(),
       })
       .strict(),
   },

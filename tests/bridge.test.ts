@@ -2936,6 +2936,59 @@ describe("provider bridge", () => {
     expect(fake.calls.promptAsync).toBe(0);
   });
 
+  it("bind-only does not re-prompt when the child becomes idle before BB starts its seed turn", async () => {
+    const fake = installFake();
+    fake.runningIds.add("child");
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "explore" }],
+      },
+      {
+        info: { id: "a1", role: "assistant" },
+        parts: [
+          {
+            id: "t1",
+            type: "text",
+            text: "done",
+            state: { status: "completed" },
+          },
+        ],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        threadId: "thr_child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "child", bindOnly: true },
+        },
+      }),
+    });
+    await flush();
+    fake.runningIds.delete("child");
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "child" },
+    });
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        threadId: "thr_child",
+        providerThreadId: "child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.promptAsync).toBe(0);
+  });
+
   it("follow-up on a subagent child keeps that agent's model", async () => {
     const fake = installFake();
     fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
@@ -2979,6 +3032,70 @@ describe("provider bridge", () => {
       agent: "explore",
       model: { providerID: "openai", modelID: "gpt-5.6-luna" },
       variant: "high",
+    });
+  });
+
+  it("follow-up on a bound build child uses its spawned custom model", async () => {
+    const fake = installFake();
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
+    fake.messages.set("child", [
+      {
+        info: {
+          id: "u1",
+          role: "user",
+          agent: "build",
+          model: { providerID: "opencode-go", modelID: "glm-5.3-flash" },
+        },
+        parts: [{ type: "text", text: "deliberate" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        threadId: "thr_child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "opencode-go/glm-5.3-flash",
+          providerOptions: { adoptSessionId: "child", bindOnly: true, agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "seed",
+      method: "turn/start",
+      params: turnParams({
+        threadId: "thr_child",
+        providerThreadId: "child",
+        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "opencode-go/glm-5.3-flash",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "followup",
+      method: "turn/start",
+      params: turnParams({
+        threadId: "thr_child",
+        providerThreadId: "child",
+        input: [{ type: "text", text: "continue", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "opencode-go/glm-5.3-flash",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "build",
+      model: { providerID: "opencode-go", modelID: "glm-5.3-flash" },
     });
   });
 

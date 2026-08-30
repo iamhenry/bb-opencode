@@ -1,5 +1,5 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
-import { configDefaultModelId } from "./catalog.js";
+import { configDefaultModelId, lastModelIdFromMessages } from "./catalog.js";
 import {
   lastUserAgent,
   revertMessageIdOf,
@@ -158,6 +158,7 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
     directory: session.directory ?? null,
     parentID: session.parentID ?? null,
     lastUserAgent: lastUserAgent(messages) ?? null,
+    model: lastModelIdFromMessages(messages) ?? null,
   };
 }
 
