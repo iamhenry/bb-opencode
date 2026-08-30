@@ -42,6 +42,25 @@ describe("prompt builder", () => {
     }
   });
 
+  it("warns every prompt against name-wide process termination", () => {
+    const built = buildPrompt({
+      agent: "build",
+      input: [{ type: "text", text: "run the benchmark" }],
+    });
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      expect(built.prompt.parts).toEqual([
+        { type: "text", text: "run the benchmark" },
+      ]);
+      expect(built.prompt.system).toContain(
+        "Never terminate processes by name or pattern",
+      );
+      expect(built.prompt.system).toContain(
+        "a PID or process handle that you started",
+      );
+    }
+  });
+
   it("fails the whole send on an unsupported attachment (ISC-21)", () => {
     const built = buildPrompt({
       agent: "build",

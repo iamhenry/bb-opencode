@@ -28,6 +28,8 @@ export interface PromptInputLike {
 }
 
 const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
+const BB_SAFETY_INSTRUCTIONS = `[BB safety]
+Never terminate processes by name or pattern (for example pkill, killall, or ps/pgrep piped to kill). Only stop a process using a PID or process handle that you started in the current task.`;
 
 export function mapAttachment(input: PromptInputLike): AttachmentMapResult {
   if (input.type === "text") {
@@ -80,10 +82,14 @@ export function buildPrompt(args: {
     if (!mapped.ok) return mapped;
     parts.push(mapped.part);
   }
-  const prompt: BuiltPrompt = { agent: args.agent, parts };
+  const prompt: BuiltPrompt = {
+    agent: args.agent,
+    parts,
+    system: BB_SAFETY_INSTRUCTIONS,
+  };
   const instructions = args.instructions?.trim();
   if (instructions) {
-    prompt.system = `[BB project instructions]\n${instructions}`;
+    prompt.system += `\n\n[BB project instructions]\n${instructions}`;
   }
   if (args.model) {
     const split = args.model.split("/");
