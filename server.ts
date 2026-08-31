@@ -137,7 +137,7 @@ export default async function plugin(bb: BbPluginApi) {
       supportsThreadArchive: false,
       supportsThreadRename: true,
       permissionModes: ["accept-edits", "auto", "full"],
-      reasoningLevels: ["low", "medium", "high"],
+      reasoningLevels: ["none", "low", "medium", "high"],
     },
     composerActions: [],
     experimental_visibility: "always",
