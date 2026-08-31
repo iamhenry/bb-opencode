@@ -77,6 +77,19 @@ npm install
 bb plugin install .
 ```
 
+## Update
+
+For the local-path install above:
+
+```sh
+git pull --ff-only
+npm install
+bb plugin build
+bb plugin reload opencode
+```
+
+If you installed from a tracking Git URL instead, run `bb plugin update opencode`.
+
 ## Operator commands
 
 ```sh
