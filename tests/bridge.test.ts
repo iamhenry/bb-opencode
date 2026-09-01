@@ -1178,9 +1178,10 @@ describe("provider bridge", () => {
       params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
     await flush();
+    const currentUserId = String(fake.lastPrompt?.body.messageID);
     fake.messages.set("ses_1", [
       {
-        info: { id: "u1", role: "user" },
+        info: { id: currentUserId, role: "user" },
         parts: [{ type: "text", text: "go" }],
       },
       {
@@ -1736,9 +1737,10 @@ describe("provider bridge", () => {
       params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
     await flush();
+    const firstUserId = String(fake.lastPrompt?.body.messageID);
     fake.messages.set("ses_1", [
       {
-        info: { id: "u1", role: "user" },
+        info: { id: firstUserId, role: "user" },
         parts: [{ type: "text", text: "go" }],
       },
       {
@@ -1761,6 +1763,7 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
+    const secondUserId = String(fake.lastPrompt?.body.messageID);
     messages.length = 0;
     expect(await syncLiveTurnParts("ses_1")).toBe(false);
     const stale = messages.flatMap((message) => {
@@ -1775,7 +1778,7 @@ describe("provider bridge", () => {
     expect(stale).not.toContain("OLD_ANSWER");
     fake.messages.set("ses_1", [
       {
-        info: { id: "u1", role: "user" },
+        info: { id: firstUserId, role: "user" },
         parts: [{ type: "text", text: "go" }],
       },
       {
@@ -1783,7 +1786,7 @@ describe("provider bridge", () => {
         parts: [{ id: "t1", type: "text", text: "OLD_ANSWER" }],
       },
       {
-        info: { id: "u2", role: "user" },
+        info: { id: secondUserId, role: "user" },
         parts: [{ type: "text", text: "again" }],
       },
       {
@@ -1803,6 +1806,67 @@ describe("provider bridge", () => {
     });
     expect(next).toContain("NEW_ANSWER");
     expect(next).not.toContain("OLD_ANSWER");
+  });
+
+  it("does not replay an old tool-heavy turn when bounded history omits its user", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    const oldHistory = [
+      {
+        info: { id: "old-user", role: "user" },
+        parts: [{ type: "text", text: "old prompt" }],
+      },
+      ...Array.from({ length: 101 }, (_, index) => ({
+        info: { id: `old-assistant-${index}`, role: "assistant" },
+        parts: [
+          {
+            id: `old-tool-${index}`,
+            type: "tool",
+            tool: "bash",
+            state: { status: "completed", output: `OLD_${index}` },
+          },
+        ],
+      })),
+    ];
+    fake.messages.set("ses_1", oldHistory);
+    fake.client.sessionMessages = async (id, limit) => {
+      const history = fake.messages.get(id) ?? [];
+      return limit ? history.slice(-limit) : history;
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "new prompt", mentions: [] }] }),
+    });
+    await flush();
+
+    messages.length = 0;
+    expect(await syncLiveTurnParts("ses_1")).toBe(false);
+    expect(messages).toEqual([]);
+
+    const currentUserId = String(fake.lastPrompt?.body.messageID);
+    fake.messages.set("ses_1", [
+      ...oldHistory,
+      {
+        info: { id: currentUserId, role: "user" },
+        parts: [{ type: "text", text: "new prompt" }],
+      },
+      {
+        info: { id: "current-assistant", role: "assistant" },
+        parts: [{ id: "current-text", type: "text", text: "CURRENT" }],
+      },
+    ]);
+    expect(await syncLiveTurnParts("ses_1")).toBe(true);
+    const text = messages.flatMap((message) =>
+      message.method === "thread/delta"
+        ? ((message.params as { deltas?: Array<{ kind: string; text?: string }> })
+            .deltas ?? []).flatMap((delta) => delta.text ?? [])
+        : [],
+    );
+    expect(text).toContain("CURRENT");
+    expect(text.some((value) => value.startsWith("OLD_"))).toBe(false);
   });
 
   it("still polls current-turn text if the last-user snapshot fails", async () => {
@@ -1825,9 +1889,10 @@ describe("provider bridge", () => {
       params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
     await flush();
+    const currentUserId = String(fake.lastPrompt?.body.messageID);
     fake.messages.set("ses_1", [
       {
-        info: { id: "u1", role: "user" },
+        info: { id: currentUserId, role: "user" },
         parts: [{ type: "text", text: "go" }],
       },
       {
@@ -3540,9 +3605,10 @@ describe("provider bridge", () => {
       params: turnParams(),
     });
     await flush();
+    const currentUserId = String(fake.lastPrompt?.body.messageID);
     fake.messages.set("ses_1", [
       {
-        info: { role: "user", id: "u1" },
+        info: { role: "user", id: currentUserId },
         parts: [{ type: "text", text: "write" }],
       },
       {

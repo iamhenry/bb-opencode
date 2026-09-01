@@ -169,8 +169,8 @@ interface LiveTurn {
   retryWarned: Set<string>;
   userMessageIds: Set<string>;
   bindOnly?: boolean;
-  /** Skip poll remint until last-user advances past this id. Unset = not seeded. */
-  remapAfterUserId?: string | null;
+  /** The user message for the prompt currently owned by this BB turn. */
+  pollUserMessageId?: string;
   settling?: boolean;
   stopping?: boolean;
   steerRestart?: SteerRestart;
@@ -726,12 +726,14 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
         live.userMessageIds.add(message.info.id);
       }
     }
-    // ponytail: poller-only fence. SSE is fresh parts; this stops stale last-user remint.
+    // Poll only after OpenCode has persisted the exact user message dispatched
+    // for this BB turn. A bounded tail may contain only assistant step messages,
+    // so inferring this boundary from prior history can remint an older turn.
     if (
       live.promptIssued &&
       !live.bindOnly &&
-      (live.remapAfterUserId === undefined ||
-        lastUserMessageId(messages) === live.remapAfterUserId)
+      (!live.pollUserMessageId ||
+        lastUserMessageId(messages) !== live.pollUserMessageId)
     ) {
       return false;
     }
@@ -2782,6 +2784,39 @@ function takeQueuedSteer(
   return next;
 }
 
+let lastMessageIdTimestamp = 0;
+let messageIdCounter = 0;
+
+/** OpenCode Identifier.ascending wire format for client-owned prompt boundaries. */
+function nextMessageId(): string {
+  const now = Date.now();
+  if (now !== lastMessageIdTimestamp) {
+    lastMessageIdTimestamp = now;
+    messageIdCounter = 0;
+  }
+  messageIdCounter += 1;
+  const value = BigInt(now) * 0x1000n + BigInt(messageIdCounter);
+  const hex = (value & 0xffffffffffffn).toString(16).padStart(12, "0");
+  const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let random = "";
+  for (let index = 0; index < 14; index += 1) {
+    random += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return `msg_${hex}${random}`;
+}
+
+function promptForLiveTurn(
+  active: OpenCodeClient,
+  sessionId: string,
+  live: LiveTurn,
+  body: Record<string, unknown>,
+  directory?: string,
+): Promise<void> {
+  const messageID = nextMessageId();
+  live.pollUserMessageId = messageID;
+  return active.promptAsync(sessionId, { ...body, messageID }, directory);
+}
+
 async function flushSteerBody(
   threadId: string,
   sessionId: string,
@@ -2790,7 +2825,13 @@ async function flushSteerBody(
   queued: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await active.promptAsync(sessionId, queued, boundDirectory(sessionId));
+    await promptForLiveTurn(
+      active,
+      sessionId,
+      live,
+      queued,
+      boundDirectory(sessionId),
+    );
   } catch (error) {
     live.parentBoundaryEmitted = true;
     liveTurns.delete(threadId);
@@ -2902,8 +2943,10 @@ async function runSteer(args: {
       await active.abort(args.sessionId);
       aborted = true;
       if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-      await active.promptAsync(
+      await promptForLiveTurn(
+        active,
         args.sessionId,
+        live,
         built.body,
         boundDirectory(args.sessionId),
       );
@@ -3177,12 +3220,8 @@ async function runPrompt(args: {
       args.sessionId,
       PROMPT_HISTORY_LIMIT,
     )) as HydrateMessage[];
-    if (!live.bindOnly) {
-      live.remapAfterUserId = lastUserMessageId(priorMessages) ?? null;
-    }
   } catch {
-    // ponytail: "" fail-open — remint rather than stall the poller forever
-    if (!live.bindOnly) live.remapAfterUserId = "";
+    /* history is best-effort */
   }
   const options = providerOptions(args.options);
   const requested =
@@ -3263,8 +3302,10 @@ async function runPrompt(args: {
     const prompt = system
       ? { ...built.prompt, system }
       : built.prompt;
-    await active.promptAsync(
+    await promptForLiveTurn(
+      active,
       args.sessionId,
+      live,
       {
         ...prompt,
         ...(variant ? { variant } : {}),
