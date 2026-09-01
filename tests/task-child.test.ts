@@ -45,4 +45,10 @@ describe("task child", () => {
     expect(taskResultSummary("<task id=\"ses_1\" state=\"completed\"></task>")).toBeUndefined();
     expect(taskResultSummary("plain")).toBe("plain");
   });
+
+  it("bounds duplicated task output retained in delegation summaries", () => {
+    const summary = taskResultSummary(`<task_result>${"x".repeat(20_000)}</task_result>`);
+    expect(summary?.length).toBeLessThan(4_200);
+    expect(summary).toContain("truncated");
+  });
 });

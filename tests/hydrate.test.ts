@@ -122,6 +122,25 @@ describe("hydrate", () => {
     ])).toBe("plan");
   });
 
+  it("hydrates thousands of messages with exact source-order checkpoints", () => {
+    const messages = Array.from({ length: 2_000 }, (_, index) =>
+      index % 2 === 0
+        ? {
+            info: { id: `u${index}`, role: "user" },
+            parts: [{ id: `ut${index}`, type: "text", text: `prompt ${index}` }],
+          }
+        : {
+            info: { id: `a${index}`, role: "assistant" },
+            parts: [{ id: `at${index}`, type: "text", text: `answer ${index}` }],
+          },
+    );
+    const boundaries = hydrateDeltas({ sessionId: "s", messages }).filter(
+      (delta) => delta.kind === "turn.boundary",
+    );
+    expect(boundaries).toHaveLength(1_000);
+    expect(boundaries.at(-1)?.providerCheckpointId).toBe("a1999");
+  });
+
   it("hides the revert cursor and everything after it, like OpenChamber",
     () => {
       expect(revertMessageIdOf({ revert: { messageID: "u1" } })).toBe("u1");

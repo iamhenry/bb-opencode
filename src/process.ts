@@ -83,13 +83,32 @@ export function removeLock(dataDir: string): void {
   if (existsSync(path)) unlinkSync(path);
 }
 
-/** Kill the locked serve and drop the lock. Next attach respawns. */
+function removeLockIfOwned(dataDir: string, expected: OpenCodeLock): void {
+  const current = readLock(dataDir);
+  if (current?.pid !== expected.pid || current.port !== expected.port) return;
+  removeLock(dataDir);
+}
+
+/** Detached OpenCode serves lead their own process group. */
+function signalServe(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      /* older/non-detached serve; fall back to the leader */
+    }
+  }
+  process.kill(pid, signal);
+}
+
+/** Kill the locked serve and drop only the lock still owned by that serve. */
 export async function stopServe(dataDir: string): Promise<boolean> {
   const lock = readLock(dataDir);
   if (!lock) return false;
   if (pidAlive(lock.pid)) {
     try {
-      process.kill(lock.pid, "SIGTERM");
+      signalServe(lock.pid, "SIGTERM");
     } catch {
       /* already gone */
     }
@@ -99,13 +118,13 @@ export async function stopServe(dataDir: string): Promise<boolean> {
     }
     if (pidAlive(lock.pid)) {
       try {
-        process.kill(lock.pid, "SIGKILL");
+        signalServe(lock.pid, "SIGKILL");
       } catch {
         /* already gone */
       }
     }
   }
-  removeLock(dataDir);
+  removeLockIfOwned(dataDir, lock);
   return true;
 }
 
@@ -351,13 +370,16 @@ export async function attachOrSpawn(args: {
         `OpenCode serve did not become healthy${tail ? `: ${tail}` : ""}`,
       );
     }
-    writeLock(args.dataDir, {
+    const publishedLock: OpenCodeLock = {
       pid: child.pid,
       port,
       startedAt: new Date().toISOString(),
       cwd: args.dataDir,
-    });
+    };
+    child.once("exit", () => removeLockIfOwned(args.dataDir, publishedLock));
+    writeLock(args.dataDir, publishedLock);
     lockPublished = true;
+    if (child.exitCode !== null) removeLockIfOwned(args.dataDir, publishedLock);
     return {
       url: `http://127.0.0.1:${port}`,
       pid: child.pid,

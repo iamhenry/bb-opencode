@@ -21,6 +21,8 @@ import {
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
 import { createSdkClient, type OpenCodeClient } from "./client.js";
 import { debugLog, recentDebugLog, resetDebugLogForTests } from "./debug-log.js";
+import { OrderedEventPump } from "./event-pump.js";
+import { readCompleteHistory } from "./history-pages.js";
 import {
   firstVisibleUserText,
   greetingSessionTitle,
@@ -136,6 +138,9 @@ import {
 type JsonRpcId = string | number;
 
 const PROMPT_HISTORY_LIMIT = 100;
+/** SSE is authoritative; polling only reconciles a bounded recent tail. */
+const RECONCILE_HISTORY_LIMIT = 150;
+const TITLE_HISTORY_LIMIT = 50;
 
 export interface BridgeDeps {
   acquire(url: string): OpenCodeClient;
@@ -216,6 +221,8 @@ let unknownLogLines: string[] = [];
 let titleTimer: ReturnType<typeof setInterval> | undefined;
 let titleWatchEpoch = 0;
 const pollInFlight = new Set<string>();
+const lastHistoryMetricAt = new Map<string, number>();
+const lastHistoryRssMb = new Map<string, number>();
 const emptyAskStreak = new Map<string, number>();
 const lastPermissionCount = new Map<string, number>();
 const lastTitles = new Map<string, string>();
@@ -228,6 +235,7 @@ const modelContextWindows = new Map<string, number>();
 const lastPromptedModels = new Map<string, string>();
 let lastPromptedModel: string | undefined;
 let reconnecting = false;
+let subscriptionGeneration = 0;
 let deps: BridgeDeps = {
   acquire: createSdkClient,
   attach: async (dir) => attachOrSpawn({ dataDir: dir }),
@@ -241,6 +249,7 @@ export function getCreateCount(): number {
 }
 
 export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
+  dropSubscriptions();
   sessions.clear();
   sessionToThread.clear();
   liveTurns.clear();
@@ -258,6 +267,8 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   compactInFlight.clear();
   pollInFlight.clear();
   emptyAskStreak.clear();
+  lastHistoryMetricAt.clear();
+  lastHistoryRssMb.clear();
 
   lastPermissionCount.clear();
   resetDebugLogForTests();
@@ -270,7 +281,6 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
     titleTimer = undefined;
   }
   client = undefined;
-  subscriptions.clear();
   createCount = 0;
   unknownLogLines = [];
   dataDir = "/tmp/bb-oc-bridge-test";
@@ -283,6 +293,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
       ((message) => {
         process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
       }),
+    now: next?.now,
   };
 }
 
@@ -412,7 +423,61 @@ function boundDirectory(sessionId: string): string | undefined {
   return cwd && cwd.length > 0 ? cwd : undefined;
 }
 
+const HISTORY_METRIC_INTERVAL_MS = 30_000;
+const HISTORY_ESTIMATE_MAX_BYTES = 16 * 1024 * 1024;
+
+function estimateHistoryBytes(messages: readonly HydrateMessage[]): number {
+  let bytes = 0;
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown, depth: number): void => {
+    if (bytes >= HISTORY_ESTIMATE_MAX_BYTES || value == null) return;
+    if (typeof value === "string") {
+      bytes += Buffer.byteLength(value);
+      return;
+    }
+    if (depth > 6 || typeof value !== "object" || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    for (const item of Object.values(value as Record<string, unknown>)) {
+      visit(item, depth + 1);
+    }
+  };
+  visit(messages, 0);
+  return Math.min(bytes, HISTORY_ESTIMATE_MAX_BYTES);
+}
+
+async function readSessionMessages(
+  active: OpenCodeClient,
+  sessionId: string,
+  purpose: string,
+  limit?: number,
+): Promise<HydrateMessage[]> {
+  const startedAt = deps.now?.() ?? Date.now();
+  const messages = (await active.sessionMessages(sessionId, limit)) as HydrateMessage[];
+  const finishedAt = deps.now?.() ?? Date.now();
+  const durationMs = Math.max(0, finishedAt - startedAt);
+  const metricKey = `${purpose}:${sessionId}`;
+  const lastLoggedAt = lastHistoryMetricAt.get(metricKey) ?? 0;
+  const shouldLog =
+    limit === undefined || durationMs >= 250 || messages.length >= (limit ?? Infinity);
+  if (shouldLog && finishedAt - lastLoggedAt >= HISTORY_METRIC_INTERVAL_MS) {
+    lastHistoryMetricAt.set(metricKey, finishedAt);
+    const bytes = estimateHistoryBytes(messages);
+    const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
+    const rssDeltaMb = rssMb - (lastHistoryRssMb.get(metricKey) ?? rssMb);
+    lastHistoryRssMb.set(metricKey, rssMb);
+    debugLog(
+      `history purpose=${purpose} ses=${sessionId} count=${messages.length} limit=${limit ?? "all"} bytes~=${bytes} ms=${durationMs} rssMb=${rssMb} rssDeltaMb=${rssDeltaMb}`,
+    );
+  }
+  return messages;
+}
+
 function dropSubscriptions(): void {
+  subscriptionGeneration += 1;
   for (const sub of subscriptions.values()) {
     try {
       sub.unsubscribe();
@@ -599,29 +664,72 @@ async function ensureSubscribed(
 ): Promise<void> {
   const key = directory?.trim() ?? "";
   if (!key || subscriptions.has(key)) return;
-  subscriptions.set(key, {
+  const generation = subscriptionGeneration;
+  const pending = {
     unsubscribe() {
       /* pending */
     },
-  });
+  };
+  subscriptions.set(key, pending);
   try {
-    let eventQueue = Promise.resolve();
-    const sub = await active.subscribe((event) => {
-      // Provider events are ordered. Keep async settlement in that same order.
-      eventQueue = eventQueue.then(async () => {
+    let overloaded = false;
+    let lastMetricAt = 0;
+    const pump = new OrderedEventPump(
+      async (event) => {
         if (event.type === "server.disconnected") {
           await onStreamClosed("OpenCode event stream closed", key);
           return;
         }
         await onOpenCodeEvent(event);
-      }).catch((error) => {
-        unknownLogLines.push(`event-handler-error ${String(error)}`);
-      });
-    }, key);
-    subscriptions.set(key, sub);
+      },
+      {
+        onError(error) {
+          unknownLogLines.push(`event-handler-error ${String(error)}`);
+        },
+        onOverload(stats) {
+          overloaded = true;
+          debugLog(
+            `event backlog dir=${key} depth=${stats.peakDepth} handled=${stats.handled} coalesced=${stats.coalesced} dropped=${stats.dropped} maxAgeMs=${stats.maxQueueAgeMs}`,
+          );
+        },
+        async onIdle(stats) {
+          const now = deps.now?.() ?? Date.now();
+          if (now - lastMetricAt >= HISTORY_METRIC_INTERVAL_MS) {
+            lastMetricAt = now;
+            debugLog(
+              `event metrics dir=${key} enqueued=${stats.enqueued} handled=${stats.handled} peakDepth=${stats.peakDepth} maxAgeMs=${stats.maxQueueAgeMs} maxHandlerMs=${stats.maxHandlerMs} coalesced=${stats.coalesced} dropped=${stats.dropped}`,
+            );
+          }
+          if (!overloaded) return;
+          overloaded = false;
+          const sessionIds = [...liveTurns.values()]
+            .filter(
+              (live) =>
+                !live.parentBoundaryEmitted && boundDirectory(live.sessionId) === key,
+            )
+            .map((live) => live.sessionId);
+          debugLog(
+            `event reconcile dir=${key} sessions=${sessionIds.length}`,
+          );
+          await Promise.all(sessionIds.map(reconcileActiveSession));
+        },
+      },
+    );
+    const sub = await active.subscribe((event) => pump.enqueue(event), key);
+    if (generation !== subscriptionGeneration) {
+      pump.close();
+      sub.unsubscribe();
+      return;
+    }
+    subscriptions.set(key, {
+      unsubscribe() {
+        pump.close();
+        sub.unsubscribe();
+      },
+    });
     debugLog(`sse on dir=${key}`);
   } catch (error) {
-    subscriptions.delete(key);
+    if (subscriptions.get(key) === pending) subscriptions.delete(key);
     throw error;
   }
 }
@@ -666,24 +774,37 @@ function bindSession(threadId: string, session: BoundSession): void {
   }
 }
 
+async function reconcileActiveSession(sessionId: string): Promise<void> {
+  if (pollInFlight.has(sessionId)) return;
+  pollInFlight.add(sessionId);
+  try {
+    await syncSessionTitle(sessionId);
+    await syncPendingPermissions(sessionId);
+    await syncLiveTurnParts(sessionId);
+    await syncSessionRevert(sessionId);
+    await syncSessionTodos(sessionId);
+  } finally {
+    pollInFlight.delete(sessionId);
+  }
+}
+
 function startTitlePoller(): void {
   if (titleTimer) return;
   titleTimer = setInterval(() => {
-    void Promise.all(
-      [...sessionToThread.keys()].map(async (sessionId) => {
-        if (pollInFlight.has(sessionId)) return;
-        pollInFlight.add(sessionId);
-        try {
-          await syncSessionTitle(sessionId);
-          await syncPendingPermissions(sessionId);
-          await syncLiveTurnParts(sessionId);
-          await syncSessionRevert(sessionId);
-          await syncSessionTodos(sessionId);
-        } finally {
-          pollInFlight.delete(sessionId);
-        }
-      }),
+    // SSE drives idle sessions. Poll only active/recovering turns as a bounded
+    // watchdog for missed provider events.
+    const activeSessionIds = new Set(
+      [...liveTurns.values()]
+        .filter((live) => !live.parentBoundaryEmitted)
+        .map((live) => live.sessionId),
     );
+    for (const pending of pendingPermission.values()) {
+      activeSessionIds.add(pending.sessionId);
+    }
+    for (const pending of pendingQuestion.values()) {
+      activeSessionIds.add(pending.sessionId);
+    }
+    void Promise.all([...activeSessionIds].map(reconcileActiveSession));
   }, 800);
   titleTimer.unref?.();
 }
@@ -692,6 +813,32 @@ function hasStreamedAgentText(live: LiveTurn): boolean {
   return [...live.mapState.emittedText.keys()].some(
     (key) => !key.startsWith("reasoning:"),
   );
+}
+
+function currentAssistantMessages(
+  live: LiveTurn,
+  messages: readonly HydrateMessage[],
+): HydrateMessage[] {
+  if (live.bindOnly) {
+    return messages.filter((message) => message.info.role === "assistant");
+  }
+  const userMessageId = live.pollUserMessageId;
+  if (!userMessageId) return assistantsAfterLastUser(messages);
+  const boundary = messages.findIndex(
+    (message) =>
+      message.info.role === "user" && message.info.id === userMessageId,
+  );
+  if (boundary < 0) return [];
+  if (
+    messages
+      .slice(boundary + 1)
+      .some((message) => message.info.role === "user")
+  ) {
+    return [];
+  }
+  return messages
+    .slice(boundary + 1)
+    .filter((message) => message.info.role === "assistant");
 }
 
 function closePendingAgentText(live: LiveTurn): ThreadDelta[] {
@@ -719,7 +866,12 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     return false;
   }
   try {
-    const messages = (await client.sessionMessages(sessionId)) as HydrateMessage[];
+    const messages = await readSessionMessages(
+      client,
+      sessionId,
+      "live",
+      RECONCILE_HISTORY_LIMIT,
+    );
     const leftovers: ThreadDelta[] = [];
     for (const message of messages) {
       if (message.info.role === "user" && typeof message.info.id === "string") {
@@ -737,9 +889,7 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     ) {
       return false;
     }
-    const assistantMessages = live.bindOnly
-      ? messages.filter((message) => message.info.role === "assistant")
-      : assistantsAfterLastUser(messages);
+    const assistantMessages = currentAssistantMessages(live, messages);
     // ponytail: SSE already painted this turn; persist part ids differ and remint new BB items
     const streamedText = hasStreamedAgentText(live);
     for (const message of assistantMessages) {
@@ -778,9 +928,12 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
           }
         }
         if (!live.childWork.has(child.id)) continue;
-        const childMessages = (await client.sessionMessages(
+        const childMessages = await readSessionMessages(
+          client,
           child.id,
-        )) as HydrateMessage[];
+          "child-live",
+          RECONCILE_HISTORY_LIMIT,
+        );
         leftovers.push(
           ...projectChildParts(
             live,
@@ -977,9 +1130,14 @@ async function replayHydrate(
   const session = await active.getSession(sessionId);
   const cursor = revertMessageIdOf(session) ?? null;
   lastRevertCursors.set(sessionId, cursor);
+  const startedAt = deps.now?.() ?? Date.now();
+  const complete = await readCompleteHistory(active, sessionId);
   const messages = filterMessagesByRevertPoint(
-    (await active.sessionMessages(sessionId)) as HydrateMessage[],
+    complete.messages,
     cursor ?? undefined,
+  );
+  debugLog(
+    `history hydrate-complete ses=${sessionId} count=${messages.length} pages=${complete.pages} paginated=${complete.paginated} durationMs=${Math.max(0, (deps.now?.() ?? Date.now()) - startedAt)} bytes~=${estimateHistoryBytes(messages)} rssMb=${Math.round(process.memoryUsage().rss / 1024 / 1024)}`,
   );
   await rememberCatalogWindows(active);
   emitDeltas(threadId, [
@@ -2081,10 +2239,12 @@ async function resolveSelectableAgent(args: {
   | { ok: false; reason: string }
 > {
   const agents = (await args.active.agents()) as OpenCodeAgent[];
-  const messages = (await args.active.sessionMessages(
+  const messages = await readSessionMessages(
+    args.active,
     args.sessionId,
+    "agent",
     PROMPT_HISTORY_LIMIT,
-  )) as HydrateMessage[];
+  );
   return resolveContinueAgent({
     requested: args.requested,
     lastUserAgent: lastUserAgent(messages),
@@ -2625,7 +2785,12 @@ async function settleIssuedTurn(
   liveAfter.settling = true;
   let messages: HydrateMessage[];
   try {
-    messages = (await active.sessionMessages(sessionId)) as HydrateMessage[];
+    messages = await readSessionMessages(
+      active,
+      sessionId,
+      "settle",
+      RECONCILE_HISTORY_LIMIT,
+    );
   } catch (error) {
     liveAfter.settling = false;
     failIssuedTurn(
@@ -2647,7 +2812,17 @@ async function settleIssuedTurn(
   debugLog(
     `settle streamed=${streamedText} emitted=${JSON.stringify([...liveAfter.mapState.emittedText].map(([k, v]) => `${k}=${v.slice(0, 12)}`))} closed=${JSON.stringify([...liveAfter.mapState.closedTextChannels])} buffers=${JSON.stringify([...liveAfter.textBuffers.keys()])}`,
   );
-  for (const message of assistantsAfterLastUser(messages)) {
+  const assistantMessages = currentAssistantMessages(liveAfter, messages);
+  if (
+    liveAfter.pollUserMessageId &&
+    assistantMessages.length === 0 &&
+    !messages.some((message) => message.info.id === liveAfter.pollUserMessageId)
+  ) {
+    debugLog(
+      `settle boundary outside bounded history ses=${sessionId} limit=${RECONCILE_HISTORY_LIMIT}`,
+    );
+  }
+  for (const message of assistantMessages) {
     for (const part of message.parts) {
       if (part.type === "text" || part.type === "text-delta") {
         if (streamedText) {
@@ -2744,7 +2919,12 @@ async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
     if (session.title && shouldPublishOpenCodeTitle(session.title)) {
       return syncSessionTitle(sessionId);
     }
-    const messages = await client.sessionMessages(sessionId);
+    const messages = await readSessionMessages(
+      client,
+      sessionId,
+      "title",
+      TITLE_HISTORY_LIMIT,
+    );
     const title = greetingSessionTitle(firstVisibleUserText(messages));
     if (!title) return false;
     debugLog(`title recover ses=${sessionId} ${title}`);
@@ -2998,7 +3178,12 @@ async function resolvePromptModel(
   if (preferSession) {
     try {
       const fromHistory = lastModelIdFromMessages(
-        await active.sessionMessages(sessionId, PROMPT_HISTORY_LIMIT),
+        await readSessionMessages(
+          active,
+          sessionId,
+          "model",
+          PROMPT_HISTORY_LIMIT,
+        ),
       );
       if (fromHistory) {
         rememberPromptedModel(sessionId, fromHistory);
@@ -3040,7 +3225,12 @@ async function resolvePromptModel(
   }
   try {
     const fromHistory = lastModelIdFromMessages(
-      await active.sessionMessages(sessionId, PROMPT_HISTORY_LIMIT),
+      await readSessionMessages(
+        active,
+        sessionId,
+        "model-fallback",
+        PROMPT_HISTORY_LIMIT,
+      ),
     );
     if (fromHistory) {
       rememberPromptedModel(sessionId, fromHistory);
@@ -3216,10 +3406,12 @@ async function runPrompt(args: {
   }
   let priorMessages: HydrateMessage[] | undefined;
   try {
-    priorMessages = (await active.sessionMessages(
+    priorMessages = await readSessionMessages(
+      active,
       args.sessionId,
+      "prompt",
       PROMPT_HISTORY_LIMIT,
-    )) as HydrateMessage[];
+    );
   } catch {
     /* history is best-effort */
   }
@@ -3261,10 +3453,12 @@ async function runPrompt(args: {
     const variant = resolved.inheritSession
       ? lastVariantFromMessages(
           priorMessages ??
-            ((await active.sessionMessages(
+            (await readSessionMessages(
+              active,
               args.sessionId,
+              "variant",
               PROMPT_HISTORY_LIMIT,
-            )) as HydrateMessage[]),
+            )),
         )
       : openCodeVariantFor(reasoningLevelOf(args.options));
     const slash = parseLeadingSlash(firstTextPart(args.input));
@@ -3432,9 +3626,44 @@ export function handleLine(line: string): void {
   handler(id, params);
 }
 
+function disposeBridgeRuntime(): void {
+  titleWatchEpoch += 1;
+  if (titleTimer) {
+    clearInterval(titleTimer);
+    titleTimer = undefined;
+  }
+  dropSubscriptions();
+  sessions.clear();
+  sessionToThread.clear();
+  liveTurns.clear();
+  openingTurns.clear();
+  parkedSteers.clear();
+  pendingPermission.clear();
+  pendingQuestion.clear();
+  lastTitles.clear();
+  userPinnedTitles.clear();
+  lastRevertCursors.clear();
+  lastTodos.clear();
+  compactIssued.clear();
+  compactInFlight.clear();
+  pollInFlight.clear();
+  emptyAskStreak.clear();
+  lastPermissionCount.clear();
+  lastHistoryMetricAt.clear();
+  lastHistoryRssMb.clear();
+  modelContextWindows.clear();
+  lastPromptedModels.clear();
+  lastPromptedModel = undefined;
+  reconnecting = false;
+  client = undefined;
+}
+
 export const experimental_providerBridge = experimental_defineProviderBridge({
   handleLine,
   start(context) {
     dataDir = context.dataDir;
   },
+  onClose: disposeBridgeRuntime,
+  onSigterm: disposeBridgeRuntime,
+  onSigint: disposeBridgeRuntime,
 });

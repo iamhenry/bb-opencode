@@ -131,16 +131,21 @@ export function hydrateDeltas(args: {
   const state = createMapDeltaState();
   const deltas: ThreadDelta[] = [{ kind: "session.reset" }];
   let turnOpen = false;
-  const closeTurn = (throughIndex: number) => {
+  let checkpoint: string | undefined;
+  const closeTurn = () => {
     if (!turnOpen) return;
-    deltas.push(completedTurnBoundary(args.messages.slice(0, throughIndex + 1)));
+    deltas.push({
+      kind: "turn.boundary",
+      status: "completed",
+      ...(checkpoint ? { providerCheckpointId: checkpoint } : {}),
+    });
     turnOpen = false;
   };
   for (let i = 0; i < args.messages.length; i += 1) {
     const message = args.messages[i];
     if (!message) continue;
     if (message.info.role === "user") {
-      closeTurn(i - 1);
+      closeTurn();
       const text = userText(message);
       if (args.skipUserInput) {
         if (text) {
@@ -150,11 +155,13 @@ export function hydrateDeltas(args: {
           }
           deltas.push({ kind: "input.provider", text });
         }
+        if (typeof message.info.id === "string") checkpoint = message.info.id;
         continue;
       }
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
       if (text) deltas.push({ kind: "input.provider", text });
+      if (typeof message.info.id === "string") checkpoint = message.info.id;
       continue;
     }
     if (!turnOpen) {
@@ -175,7 +182,8 @@ export function hydrateDeltas(args: {
         deltas.push(...closeReasoning(part.id ?? "anon", part.text));
       }
     }
+    if (typeof message.info.id === "string") checkpoint = message.info.id;
   }
-  if (!args.skipUserInput) closeTurn(args.messages.length - 1);
+  if (!args.skipUserInput) closeTurn();
   return deltas;
 }

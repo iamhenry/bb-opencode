@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  experimental_providerBridge,
   getCreateCount,
   handleLine,
   hydrateBoundSession,
@@ -723,10 +724,10 @@ describe("provider bridge", () => {
 
   it("settles Read/Task rows even if session.idle fires first (ISC-71)", async () => {
     const fake = installFake();
-    fake.promptImpl = async (id) => {
+    fake.promptImpl = async (id, body) => {
       fake.messages.set(id, [
         {
-          info: { role: "user" },
+          info: { id: body.messageID, role: "user" },
           parts: [{ type: "text", text: "read" }],
         },
         {
@@ -811,10 +812,10 @@ describe("provider bridge", () => {
       });
       return fake.messages.get(id) ?? [];
     };
-    fake.promptImpl = async (id) => {
+    fake.promptImpl = async (id, body) => {
       fake.messages.set(id, [
         {
-          info: { id: "u1", role: "user" },
+          info: { id: body.messageID, role: "user" },
           parts: [{ id: "user-text", type: "text", text: "ping" }],
         },
         {
@@ -1808,7 +1809,7 @@ describe("provider bridge", () => {
     expect(next).not.toContain("OLD_ANSWER");
   });
 
-  it("does not replay an old tool-heavy turn when bounded history omits its user", async () => {
+  it("does not replay a 5,000-message old tool-heavy turn when bounded history omits its user", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
     const oldHistory = [
@@ -1816,7 +1817,7 @@ describe("provider bridge", () => {
         info: { id: "old-user", role: "user" },
         parts: [{ type: "text", text: "old prompt" }],
       },
-      ...Array.from({ length: 101 }, (_, index) => ({
+      ...Array.from({ length: 5_000 }, (_, index) => ({
         info: { id: `old-assistant-${index}`, role: "assistant" },
         parts: [
           {
@@ -1846,6 +1847,20 @@ describe("provider bridge", () => {
     expect(await syncLiveTurnParts("ses_1")).toBe(false);
     expect(messages).toEqual([]);
 
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(JSON.stringify(messages)).not.toContain("OLD_");
+
+    // Start another turn to prove the exact boundary resumes reconciliation
+    // as soon as it appears in the bounded tail.
+    send({
+      id: "turn2",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "new prompt", mentions: [] }] }),
+    });
+    await flush();
     const currentUserId = String(fake.lastPrompt?.body.messageID);
     fake.messages.set("ses_1", [
       ...oldHistory,
@@ -1867,6 +1882,36 @@ describe("provider bridge", () => {
     );
     expect(text).toContain("CURRENT");
     expect(text.some((value) => value.startsWith("OLD_"))).toBe(false);
+  });
+
+  it("bounds live reconciliation and turn settlement history reads", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const currentUserId = String(fake.lastPrompt?.body.messageID);
+    fake.messages.set("ses_1", [
+      {
+        info: { id: currentUserId, role: "user" },
+        parts: [{ type: "text", text: "go" }],
+      },
+      {
+        info: { id: "current-assistant", role: "assistant" },
+        parts: [{ id: "current-text", type: "text", text: "DONE" }],
+      },
+    ]);
+
+    await syncLiveTurnParts("ses_1");
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+
+    const reads = fake.calls.messageReads.filter((read) => read.id === "ses_1");
+    expect(reads.some((read) => read.limit === 150)).toBe(true);
+    expect(reads.every((read) => read.limit !== undefined)).toBe(true);
   });
 
   it("still polls current-turn text if the last-user snapshot fails", async () => {
@@ -1992,6 +2037,7 @@ describe("provider bridge", () => {
     expect(fake.calls.update.some((call) => call.title === "Casual greeting")).toBe(
       true,
     );
+    expect(fake.calls.messageReads.some((read) => read.limit === 50)).toBe(true);
     expect(
       messages.some((message) => {
         const deltas = (message.params as { deltas?: Array<{ kind: string; name?: string }> })
@@ -3585,6 +3631,38 @@ describe("provider bridge", () => {
       },
     });
     expect(fake.todos.size).toBe(0);
+  });
+
+  it("discards a stale subscription that resolves after its generation closes", async () => {
+    const fake = installFake();
+    let release: (() => void) | undefined;
+    const subscribed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let unsubscribe = 0;
+    fake.client.subscribe = async () => {
+      await subscribed;
+      return { unsubscribe: () => { unsubscribe += 1; } };
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+
+    experimental_providerBridge.onClose?.();
+    release?.();
+    await flush();
+
+    expect(unsubscribe).toBe(1);
+  });
+
+  it("releases subscriptions when the BB bridge generation closes", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(fake.calls.subscribe).toBe(1);
+
+    experimental_providerBridge.onClose?.();
+
+    expect(fake.calls.unsubscribe).toBe(1);
   });
 
   it("subscribes to the bound project directory", async () => {

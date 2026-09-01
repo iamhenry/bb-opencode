@@ -174,6 +174,42 @@ describe("stopServe", () => {
     });
   });
 
+  it("signals the detached process group and preserves a replacement lock", async () => {
+    await withHome(async (home) => {
+      const dir = join(home, "data");
+      const original = {
+        pid: 12345,
+        port: 1,
+        startedAt: new Date().toISOString(),
+      };
+      writeLock(dir, original);
+      let alive = true;
+      const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+        if (signal === 0) {
+          if (alive) return true;
+          throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        }
+        if (pid === -original.pid && signal === "SIGTERM") {
+          alive = false;
+          writeLock(dir, {
+            pid: 54321,
+            port: 2,
+            startedAt: new Date().toISOString(),
+          });
+          return true;
+        }
+        return true;
+      }) as typeof process.kill);
+      try {
+        expect(await stopServe(dir)).toBe(true);
+        expect(kill).toHaveBeenCalledWith(-original.pid, "SIGTERM");
+        expect(readLock(dir)?.pid).toBe(54321);
+      } finally {
+        kill.mockRestore();
+      }
+    });
+  });
+
   it("kills the locked pid and removes the lock", async () => {
     await withHome(async (home) => {
       const { spawn } = await vi.importActual<typeof import("node:child_process")>(

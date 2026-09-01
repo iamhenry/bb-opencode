@@ -16,8 +16,11 @@ export interface FakeOpenCode {
     get: number;
     update: Array<{ id: string; title: string }>;
     messages: number;
+    messageReads: Array<{ id: string; limit?: number; before?: string }>;
     fork: Array<{ id: string; body: Record<string, unknown> }>;
     summarize: Array<{ id: string; body: Record<string, unknown> }>;
+    subscribe: number;
+    unsubscribe: number;
   };
   runningIds: Set<string>;
   todos: Map<string, unknown[]>;
@@ -62,8 +65,11 @@ export function createFakeOpenCode(): FakeOpenCode {
       get: 0,
       update: [],
       messages: 0,
+      messageReads: [],
       fork: [],
       summarize: [],
+      subscribe: 0,
+      unsubscribe: 0,
     },
     runningIds: new Set(),
     todos: new Map(),
@@ -121,9 +127,15 @@ export function createFakeOpenCode(): FakeOpenCode {
       async sessionChildren(id) {
         return [...fake.sessions.values()].filter((session) => session.parentID === id);
       },
-      async sessionMessages(id) {
+      async sessionMessages(id, limit, before) {
         fake.calls.messages += 1;
-        return fake.messages.get(id) ?? [];
+        fake.calls.messageReads.push({ id, limit, before });
+        let messages = fake.messages.get(id) ?? [];
+        if (before !== undefined) {
+          const boundary = messages.findIndex((message) => message.info.id === before);
+          messages = boundary < 0 ? [] : messages.slice(0, boundary);
+        }
+        return limit === undefined ? messages : messages.slice(-limit);
       },
       async promptAsync(id, body) {
         fake.calls.promptAsync += 1;
@@ -229,10 +241,12 @@ export function createFakeOpenCode(): FakeOpenCode {
         return true;
       },
       async subscribe(next, directory) {
+        fake.calls.subscribe += 1;
         fake.lastSubscribeDirectory = directory;
         handler = next;
         return {
           unsubscribe() {
+            fake.calls.unsubscribe += 1;
             handler = undefined;
           },
         };

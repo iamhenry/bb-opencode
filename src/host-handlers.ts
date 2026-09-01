@@ -6,6 +6,7 @@ import {
   type HydrateMessage,
 } from "./hydrate.js";
 import { messageMetaFromInfo } from "./run-chip.js";
+import { readCompleteHistory } from "./history-pages.js";
 import { attachOrSpawn, readLock, recentServeLog, stopServe } from "./process.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
@@ -147,11 +148,17 @@ export async function handleListAgents(dataDir: string) {
   };
 }
 
+const SNAPSHOT_HISTORY_LIMIT = 100;
+const RUN_CHIP_HISTORY_LIMIT = 500;
+
 export async function handleSessionSnapshot(dataDir: string, sessionId: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
   const session = await client.getSession(sessionId);
-  const messages = (await client.sessionMessages(sessionId)) as HydrateMessage[];
+  const messages = (await client.sessionMessages(
+    sessionId,
+    SNAPSHOT_HISTORY_LIMIT,
+  )) as HydrateMessage[];
   return {
     id: session.id,
     title: session.title ?? null,
@@ -202,7 +209,7 @@ export async function handleRevert(
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
   await settleOpenCodeSession(client, sessionId);
-  const messages = (await client.sessionMessages(sessionId)) as Array<{
+  const messages = (await readCompleteHistory(client, sessionId)).messages as Array<{
     info: { id?: string; role?: string };
     parts: Array<{ type?: string; text?: string }>;
   }>;
@@ -230,13 +237,13 @@ export async function handleUnrevert(dataDir: string, sessionId: string) {
 export async function handleRevertState(dataDir: string, sessionId: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
-  const [session, messages] = await Promise.all([
+  const [session, complete] = await Promise.all([
     client.getSession(sessionId),
-    client.sessionMessages(sessionId),
+    readCompleteHistory(client, sessionId),
   ]);
   return buildOpenCodeRevertState({
     revertMessageID: revertMessageIdOf(session),
-    messages: messages as RevertStateMessage[],
+    messages: complete.messages as RevertStateMessage[],
   });
 }
 
@@ -248,7 +255,9 @@ export async function handleListMessageMeta(dataDir: string, sessionId: string) 
     return { messages: [] };
   }
   const client = acquire(attached.url);
-  const messages = await client.sessionMessages(sessionId);
+  // BB paints at most two recent timeline pages, so older provider metadata
+  // cannot be matched and must not force a complete-session materialization.
+  const messages = await client.sessionMessages(sessionId, RUN_CHIP_HISTORY_LIMIT);
   return {
     messages: messages.flatMap((message) => {
       const meta = messageMetaFromInfo(message.info);

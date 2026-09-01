@@ -63,12 +63,19 @@ export function taskDelegationLabel(part: {
   return title || "Task";
 }
 
-/** OpenCode wraps Task output in <task>; BB should show the result only. */
+const MAX_TASK_RESULT_SUMMARY_CHARS = 4_096;
+
+function boundedTaskSummary(value: string): string {
+  if (value.length <= MAX_TASK_RESULT_SUMMARY_CHARS) return value;
+  return `${value.slice(0, MAX_TASK_RESULT_SUMMARY_CHARS)}\n… (truncated)`;
+}
+
+/** OpenCode wraps Task output in <task>; BB should show only a bounded result. */
 export function taskResultSummary(output: string | undefined): string | undefined {
   if (!output) return undefined;
   const result = output.match(/<task_result>\s*([\s\S]*?)\s*<\/task_result>/i);
-  if (result?.[1]) return result[1].trim();
+  if (result?.[1]) return boundedTaskSummary(result[1].trim());
   const trimmed = output.trim();
   if (trimmed.startsWith("<task")) return undefined;
-  return output;
+  return boundedTaskSummary(output);
 }
