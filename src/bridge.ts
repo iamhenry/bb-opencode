@@ -3658,12 +3658,20 @@ function disposeBridgeRuntime(): void {
   client = undefined;
 }
 
+function disposeBridgeRuntimeAndExit(): never {
+  disposeBridgeRuntime();
+  // BB's bridge bootstrap installs this callback as the signal handler. Once a
+  // handler is installed, Node no longer exits by default, so terminate after
+  // releasing subscriptions, timers, queues, and client references.
+  process.exit(0);
+}
+
 export const experimental_providerBridge = experimental_defineProviderBridge({
   handleLine,
   start(context) {
     dataDir = context.dataDir;
   },
   onClose: disposeBridgeRuntime,
-  onSigterm: disposeBridgeRuntime,
-  onSigint: disposeBridgeRuntime,
+  onSigterm: disposeBridgeRuntimeAndExit,
+  onSigint: disposeBridgeRuntimeAndExit,
 });
