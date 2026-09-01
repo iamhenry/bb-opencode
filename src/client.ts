@@ -39,7 +39,7 @@ export interface OpenCodeClient {
   updateSession(id: string, body: { title: string }): Promise<OpenCodeSession>;
   listSessions(): Promise<OpenCodeSession[]>;
   sessionChildren(id: string, directory?: string): Promise<OpenCodeSession[]>;
-  sessionMessages(id: string): Promise<
+  sessionMessages(id: string, limit?: number): Promise<
     Array<{ info: Record<string, unknown>; parts: Array<Record<string, unknown>> }>
   >;
   prompt(
@@ -285,9 +285,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       });
       return unwrap<OpenCodeSession[]>(result) ?? [];
     },
-    async sessionMessages(id) {
+    async sessionMessages(id, limit) {
       const result = await withTimeout(
-        sdk.session.messages({ path: { id } }),
+        sdk.session.messages({
+          path: { id },
+          ...(limit === undefined ? {} : { query: { limit } }),
+        }),
         OPENCODE_SETUP_MS,
         "session.messages",
       );

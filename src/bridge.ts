@@ -135,6 +135,8 @@ import {
 
 type JsonRpcId = string | number;
 
+const PROMPT_HISTORY_LIMIT = 100;
+
 export interface BridgeDeps {
   acquire(url: string): OpenCodeClient;
   attach(dataDir: string): Promise<{ url: string; pid: number; port: number }>;
@@ -146,6 +148,12 @@ interface ChildWork {
   parentItemId: string;
   mapState: MapDeltaState;
   turnOpened: boolean;
+}
+
+interface SteerRestart {
+  expectAbortError: boolean;
+  expectAbortIdle: boolean;
+  promptStarted: boolean;
 }
 
 interface LiveTurn {
@@ -164,6 +172,8 @@ interface LiveTurn {
   /** Skip poll remint until last-user advances past this id. Unset = not seeded. */
   remapAfterUserId?: string | null;
   settling?: boolean;
+  stopping?: boolean;
+  steerRestart?: SteerRestart;
 }
 
 interface BoundSession {
@@ -528,6 +538,17 @@ function closeLiveTurn(
       ...(status === "failed" && message ? { error: { message } } : {}),
     },
   ]);
+}
+
+function clearCompletedSteerRestart(live: LiveTurn): void {
+  const restart = live.steerRestart;
+  if (
+    restart?.promptStarted &&
+    !restart.expectAbortError &&
+    !restart.expectAbortIdle
+  ) {
+    live.steerRestart = undefined;
+  }
 }
 
 function serveLost(message: string): void {
@@ -1480,6 +1501,15 @@ async function onOpenCodeEvent(event: {
     }
     const idle = event.type === "session.idle" || status.kind === "idle";
     if (!idle) return;
+    if (
+      sessionId === live.sessionId &&
+      live.steerRestart?.expectAbortIdle
+    ) {
+      live.steerRestart.expectAbortIdle = false;
+      clearCompletedSteerRestart(live);
+      debugLog(`abort idle ignored for steer restart ses=${sessionId}`);
+      return;
+    }
     if (sessionId !== live.sessionId) {
       live.liveChildIds.delete(sessionId);
       return;
@@ -1546,6 +1576,19 @@ async function onOpenCodeEvent(event: {
     const described = describeSessionError(error);
     debugLog(`session error ses=${sessionId} ${described.status}`);
     if (sessionId === live.sessionId) {
+      const name =
+        error && typeof error === "object"
+          ? (error as { name?: unknown }).name
+          : undefined;
+      if (
+        name === "MessageAbortedError" &&
+        live.steerRestart?.expectAbortError
+      ) {
+        live.steerRestart.expectAbortError = false;
+        clearCompletedSteerRestart(live);
+        debugLog(`abort error ignored for steer restart ses=${sessionId}`);
+        return;
+      }
       closeLiveTurn(threadId, described.status, described.message);
     }
     return;
@@ -2038,6 +2081,7 @@ async function resolveSelectableAgent(args: {
   const agents = (await args.active.agents()) as OpenCodeAgent[];
   const messages = (await args.active.sessionMessages(
     args.sessionId,
+    PROMPT_HISTORY_LIMIT,
   )) as HydrateMessage[];
   return resolveContinueAgent({
     requested: args.requested,
@@ -2502,12 +2546,21 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       );
       return;
     }
+    let stoppingLive =
+      parsed.data.intent === "interrupt"
+        ? liveTurns.get(parsed.data.threadId)
+        : undefined;
+    if (stoppingLive) stoppingLive.stopping = true;
     void (async () => {
       try {
         if (parsed.data.intent === "interrupt") {
           const active = await ensureClient();
           await rejectPendingPermissions(parsed.data.threadId);
-          const live = liveTurns.get(parsed.data.threadId);
+          const live = stoppingLive ?? liveTurns.get(parsed.data.threadId);
+          if (live) {
+            live.stopping = true;
+            stoppingLive = live;
+          }
           const ids = new Set<string>([parsed.data.providerThreadId]);
           if (live) {
             for (const childId of live.liveChildIds) ids.add(childId);
@@ -2538,6 +2591,13 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         }
         respondResult(id, {});
       } catch (error) {
+        if (
+          stoppingLive &&
+          liveTurns.get(parsed.data.threadId) === stoppingLive &&
+          !stoppingLive.parentBoundaryEmitted
+        ) {
+          stoppingLive.stopping = false;
+        }
         respondError(
           id,
           BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
@@ -2751,7 +2811,12 @@ function usableSteerLive(
   sessionId: string,
 ): LiveTurn | undefined {
   const live = liveTurns.get(threadId);
-  if (!live || live.parentBoundaryEmitted || live.sessionId !== sessionId) {
+  if (
+    !live ||
+    live.parentBoundaryEmitted ||
+    live.stopping ||
+    live.sessionId !== sessionId
+  ) {
     return undefined;
   }
   return live;
@@ -2822,26 +2887,49 @@ async function runSteer(args: {
     usableSteerLive(args.threadId, args.sessionId)
   ) {
     const active = await ensureClient();
+    // Legacy OpenCode has no live steer primitive. Suppress the abort boundary,
+    // wait for its runner to release, then restart inside the current BB turn.
+    const live = usableSteerLive(args.threadId, args.sessionId);
+    if (!live) return;
+    const restart: SteerRestart = {
+      expectAbortError: true,
+      expectAbortIdle: true,
+      promptStarted: false,
+    };
+    live.steerRestart = restart;
+    let aborted = false;
     try {
+      await active.abort(args.sessionId);
+      aborted = true;
+      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
       await active.promptAsync(
         args.sessionId,
         built.body,
         boundDirectory(args.sessionId),
       );
+      if (usableSteerLive(args.threadId, args.sessionId) !== live) {
+        try {
+          await active.abort(args.sessionId);
+        } catch {
+          /* already idle */
+        }
+        return;
+      }
+      restart.promptStarted = true;
+      clearCompletedSteerRestart(live);
     } catch (error) {
-      try {
-        await active.prompt(
-          args.sessionId,
-          built.body,
-          boundDirectory(args.sessionId),
-        );
-      } catch {
+      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+      live.steerRestart = undefined;
+      const details = error instanceof Error ? error.message : String(error);
+      if (aborted) {
+        failIssuedTurn(args.threadId, `Could not start follow-up: ${details}`);
+      } else {
         emitDeltas(args.threadId, [
           {
             kind: "provider.warning",
             category: "general",
             summary: "Could not deliver follow-up",
-            details: error instanceof Error ? error.message : String(error),
+            details,
             vouchedTurn: true,
           },
         ]);
@@ -2867,7 +2955,7 @@ async function resolvePromptModel(
   if (preferSession) {
     try {
       const fromHistory = lastModelIdFromMessages(
-        await active.sessionMessages(sessionId),
+        await active.sessionMessages(sessionId, PROMPT_HISTORY_LIMIT),
       );
       if (fromHistory) {
         rememberPromptedModel(sessionId, fromHistory);
@@ -2909,7 +2997,7 @@ async function resolvePromptModel(
   }
   try {
     const fromHistory = lastModelIdFromMessages(
-      await active.sessionMessages(sessionId),
+      await active.sessionMessages(sessionId, PROMPT_HISTORY_LIMIT),
     );
     if (fromHistory) {
       rememberPromptedModel(sessionId, fromHistory);
@@ -3087,6 +3175,7 @@ async function runPrompt(args: {
   try {
     priorMessages = (await active.sessionMessages(
       args.sessionId,
+      PROMPT_HISTORY_LIMIT,
     )) as HydrateMessage[];
     if (!live.bindOnly) {
       live.remapAfterUserId = lastUserMessageId(priorMessages) ?? null;
@@ -3133,7 +3222,10 @@ async function runPrompt(args: {
     const variant = resolved.inheritSession
       ? lastVariantFromMessages(
           priorMessages ??
-            ((await active.sessionMessages(args.sessionId)) as HydrateMessage[]),
+            ((await active.sessionMessages(
+              args.sessionId,
+              PROMPT_HISTORY_LIMIT,
+            )) as HydrateMessage[]),
         )
       : openCodeVariantFor(reasoningLevelOf(args.options));
     const slash = parseLeadingSlash(firstTextPart(args.input));

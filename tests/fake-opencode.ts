@@ -35,6 +35,7 @@ export interface FakeOpenCode {
   }>;
   emit: (event: { type: string; properties?: unknown }) => void;
   promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
+  abortImpl?: (id: string) => Promise<void>;
   lastPrompt?: { id: string; body: Record<string, unknown> };
   lastRevert?: { id: string; body: Record<string, unknown> };
   lastPermissionDirectory?: string;
@@ -141,8 +142,9 @@ export function createFakeOpenCode(): FakeOpenCode {
         });
         return {};
       },
-      async abort() {
+      async abort(id) {
         fake.calls.abort += 1;
+        await fake.abortImpl?.(id);
       },
       async revert(id, body) {
         fake.calls.revert += 1;

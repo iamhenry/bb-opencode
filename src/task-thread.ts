@@ -39,14 +39,12 @@ export function isOpenCodeParentThread(thread: {
 export function taskChildBindInput(): Array<{
   type: "text";
   text: string;
-  visibility: "agent-only";
   mentions: [];
 }> {
   return [
     {
       type: "text",
       text: TASK_CHILD_BIND_TEXT,
-      visibility: "agent-only",
       mentions: [],
     },
   ];

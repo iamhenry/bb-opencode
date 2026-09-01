@@ -70,7 +70,7 @@ describe("provider bridge", () => {
     return fake;
   }
 
-  it("injects turn/steer when BB steer-on-Enter is on (ISC-20)", async () => {
+  it("interrupts and restarts turn/steer when BB steer-on-Enter is on (ISC-20)", async () => {
     const fake = installFake();
     fake.promptImpl = () => new Promise(() => undefined);
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -90,7 +90,7 @@ describe("provider bridge", () => {
       params: turnParams({
         expectedTurnId: "turn_1",
         clientRequestId: "req_steer",
-        input: [{ type: "text", text: "use the v2 API", mentions: [] }],
+        input: [{ type: "text", text: "change course", mentions: [] }],
         options: {
           ...fullOptions,
           providerOptions: { agent: "build", steerDelivery: "inject" },
@@ -110,11 +110,260 @@ describe("provider bridge", () => {
     });
     expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
     expect(fake.calls.prompt).toBe(prompts);
+    expect(fake.calls.abort).toBe(1);
     expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
-    expect(fake.lastPrompt?.body).toMatchObject({
-      agent: "build",
-      parts: [{ type: "text", text: "use the v2 API" }],
+    expect(fake.lastPrompt).toMatchObject({
+      id: "ses_1",
+      body: {
+        agent: "build",
+        parts: [{ type: "text", text: "change course" }],
+      },
     });
+  });
+
+  it("keeps delayed abort events inside the restarted BB turn", async () => {
+    const fake = installFake();
+    let promptCall = 0;
+    let releaseRestart: (() => void) | undefined;
+    fake.promptImpl = () => {
+      promptCall += 1;
+      if (promptCall === 1) return new Promise(() => undefined);
+      return new Promise((resolve) => {
+        releaseRestart = () => resolve({});
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_steer",
+        input: [{ type: "text", text: "change course", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+
+    await ingestOpenCodeEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "MessageAbortedError", data: { message: "aborted" } },
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []),
+      ).some((delta) => delta.kind === "turn.boundary"),
+    ).toBe(false);
+
+    releaseRestart?.();
+    await flush();
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string }>;
+          })?.deltas ?? []),
+      ),
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
+  });
+
+  it("fails an unexpected provider error while steering without restarting", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    let releaseAbort: (() => void) | undefined;
+    fake.abortImpl = () =>
+      new Promise((resolve) => {
+        releaseAbort = resolve;
+      });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const asyncPrompts = fake.calls.promptAsync;
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "session.error",
+      properties: {
+        sessionID: "ses_1",
+        error: { name: "APIError", data: { message: "provider 503" } },
+      },
+    });
+    releaseAbort?.();
+    await flush();
+
+    expect(fake.calls.promptAsync).toBe(asyncPrompts);
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string }>;
+          })?.deltas ?? []),
+      ),
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "failed" }));
+  });
+
+  it("fails the BB turn when the post-abort restart is rejected", async () => {
+    const fake = installFake();
+    let promptCall = 0;
+    fake.promptImpl = async () => {
+      promptCall += 1;
+      if (promptCall === 1) return new Promise(() => undefined);
+      throw new Error("restart rejected");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+      }),
+    });
+    await flush();
+
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string; error?: { message?: string } }>;
+          })?.deltas ?? []),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        kind: "turn.boundary",
+        status: "failed",
+        error: { message: "Could not start follow-up: restart rejected" },
+      }),
+    );
+  });
+
+  it("does not restart after thread/stop wins an in-flight steer abort", async () => {
+    const fake = installFake();
+    fake.promptImpl = () => new Promise(() => undefined);
+    let releaseAborts: (() => void) | undefined;
+    const abortsReleased = new Promise<void>((resolve) => {
+      releaseAborts = resolve;
+    });
+    fake.abortImpl = () => abortsReleased;
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const asyncPrompts = fake.calls.promptAsync;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+      }),
+    });
+    await flush();
+    send({
+      id: "stop",
+      method: "thread/stop",
+      params: {
+        threadId: "thr_1",
+        providerThreadId: "ses_1",
+        intent: "interrupt",
+      },
+    });
+    await flush();
+    expect(fake.calls.abort).toBe(2);
+
+    releaseAborts?.();
+    await flush();
+    expect(fake.calls.promptAsync).toBe(asyncPrompts);
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string }>;
+          })?.deltas ?? []),
+      ),
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "interrupted" }));
+  });
+
+  it("re-aborts a steer restart accepted after thread/stop", async () => {
+    const fake = installFake();
+    let promptCall = 0;
+    let releaseRestart: (() => void) | undefined;
+    fake.promptImpl = () => {
+      promptCall += 1;
+      if (promptCall === 1) return new Promise(() => undefined);
+      return new Promise((resolve) => {
+        releaseRestart = () => resolve({});
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.calls.abort).toBe(1);
+
+    send({
+      id: "stop",
+      method: "thread/stop",
+      params: {
+        threadId: "thr_1",
+        providerThreadId: "ses_1",
+        intent: "interrupt",
+      },
+    });
+    await flush();
+    expect(fake.calls.abort).toBe(2);
+
+    releaseRestart?.();
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.calls.abort).toBe(3);
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string }>;
+          })?.deltas ?? []),
+      ),
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "interrupted" }));
   });
 
   it("queues turn/steer until the live turn settles when steer-on-Enter is off", async () => {

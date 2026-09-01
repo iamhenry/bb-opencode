@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  TASK_CHILD_BIND_TEXT,
   isOpenCodeParentThread,
   isThreadNotFoundError,
   shouldAutoBindTaskChild,
   splitModelRef,
+  taskChildBindInput,
   taskChildThreadTitle,
 } from "../src/task-thread.js";
 
@@ -65,6 +67,16 @@ describe("task child threads", () => {
     expect(taskChildThreadTitle("Explore package.json")).toBe(
       "Explore package.json",
     );
+  });
+
+  it("exposes the hydrated Task prompt as a normal user message", () => {
+    expect(taskChildBindInput()).toEqual([
+      {
+        type: "text",
+        text: TASK_CHILD_BIND_TEXT,
+        mentions: [],
+      },
+    ]);
   });
 
   it("recognizes a missing BB thread without treating other errors as gone", () => {
