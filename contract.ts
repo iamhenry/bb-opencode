@@ -196,15 +196,12 @@ export const rpcContract = defineRpcContract({
   stampAgent: {
     input: z
       .object({
-        threadId: z.string().min(1).optional(),
-        projectId: z.string().min(1).optional(),
+        threadId: z.string().nullable().optional(),
+        projectId: z.string().nullable().optional(),
         agent: z.string().min(1),
         queued: z.boolean(),
       })
-      .strict()
-      .refine((value) => Boolean(value.threadId || value.projectId), {
-        message: "threadId or projectId is required",
-      }),
+      .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
   stampPermissionMode: {

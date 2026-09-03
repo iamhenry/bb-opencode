@@ -7,8 +7,14 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
 import {
+  composerAgentShouldArm,
   displayedComposerAgent,
   fetchComposerChrome,
+  lastArmedComposerAgent,
+  rememberComposerAgent,
+  resetLastArmedComposerAgent,
+  shouldApplyHydratedAgent,
+  shouldResetArmedComposerAgent,
   type ComposerChrome,
 } from "./composer-chrome.js";
 import {
@@ -54,7 +60,9 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     opencode: false,
   });
   const [chrome, setChrome] = useState<ComposerChrome | null>(null);
-  const [agent, setAgent] = useState("build");
+  const [agent, setAgent] = useState(() => lastArmedComposerAgent() || "build");
+  const userPicked = useRef(false);
+  const previousThreadId = useRef(threadId);
   const [open, setOpen] = useState(false);
   const [menuPos, setMenuPos] = useState({
     top: 0,
@@ -107,6 +115,14 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   }, [isNewThread, threadId, view.layout]);
 
   useEffect(() => {
+    if (shouldResetArmedComposerAgent(previousThreadId.current, threadId)) {
+      resetLastArmedComposerAgent();
+      userPicked.current = false;
+    }
+    previousThreadId.current = threadId;
+  }, [threadId]);
+
+  useEffect(() => {
     let cancelled = false;
     void fetchComposerChrome(
       (input) => rpc.call("composerChrome", input),
@@ -117,7 +133,17 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     ).then((result) => {
       if (cancelled) return;
       setChrome(result);
-      if (result.agent) setAgent(result.agent);
+      if (
+        shouldApplyHydratedAgent({
+          userPicked: userPicked.current,
+          chromeStatus: result.status,
+          chromeAgent: result.agent,
+          armedAgent: lastArmedComposerAgent(),
+        })
+      ) {
+        rememberComposerAgent(result.agent);
+        setAgent(result.agent);
+      }
     });
     return () => {
       cancelled = true;
@@ -136,16 +162,35 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const layoutMatch = layout === "compact" ? wantsBanner : !wantsBanner;
   const visible = layoutMatch && (boundOpenCode || newThreadOpenCode);
 
+  const stamp = (nextAgent: string, queued: boolean) => {
+    if (!nextAgent) return;
+    rememberComposerAgent(nextAgent);
+    void rpc
+      .call("stampAgent", {
+        threadId: threadId || null,
+        projectId: (scopeProjectId ?? projectId) || null,
+        agent: nextAgent,
+        queued,
+      })
+      .catch((error) => {
+        console.error("opencode stampAgent failed", error);
+      });
+  };
+
+  // Arm whatever the visible chip shows. New-thread has no threadId, so
+  // waiting for click or isSubmitting is too late for deriveProviderOptions.
+  // Compact vs expanded is exclusive via `visible`, so the sibling cannot
+  // overwrite with "build".
   useEffect(() => {
-    if (!visible) return;
-    if (!view.run.isSubmitting || !agentRef.current) return;
-    void rpc.call("stampAgent", {
-      threadId: threadId ?? undefined,
-      projectId: scopeProjectId ?? undefined,
-      agent: agentRef.current,
-      queued: Boolean(threadId && view.run.isRunning),
-    });
+    const nextAgent = agentRef.current;
+    if (!composerAgentShouldArm({ visible, agent: nextAgent })) return;
+    stamp(
+      nextAgent,
+      Boolean(threadId && view.run.isSubmitting && view.run.isRunning),
+    );
   }, [
+    agent,
+    projectId,
     rpc,
     scopeProjectId,
     threadId,
@@ -283,8 +328,11 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
                       }
                       title={option.description ?? option.name}
                       onClick={() => {
+                        userPicked.current = true;
+                        rememberComposerAgent(option.name);
                         setAgent(option.name);
                         setOpen(false);
+                        stamp(option.name, false);
                       }}
                     >
                       <span className="oc-agent-menu__item-name">

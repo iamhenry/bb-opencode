@@ -19,10 +19,11 @@ import {
 } from "./src/next-adopt.js";
 import {
   armNextAgent,
-  consumeNextAgent,
   createNextAgentStore,
+  peekNextAgent,
   resolveComposerProvider,
   resolvePromptAgent,
+  UNBOUND_NEXT_AGENT_KEY,
 } from "./src/next-agent.js";
 import {
   pendingAdoptStorageKey,
@@ -151,13 +152,17 @@ export default async function plugin(bb: BbPluginApi) {
     env: { passthrough: ["OPENCODE_BIN"] },
     deriveProviderOptions(ctx) {
       const stamped = peekAgent(stamps, ctx.threadId);
+      const next = stamped
+        ? undefined
+        : peekNextAgent(nextAgents, ctx.projectId);
       const agent = resolvePromptAgent({
         stamped,
-        next: stamped
-          ? undefined
-          : consumeNextAgent(nextAgents, ctx.projectId),
+        next,
         configured: configuredAgent,
       });
+      bb.log.info(
+        `agent.derive thread=${ctx.threadId} project=${ctx.projectId} stamped=${stamped ?? "-"} next=${next ?? "-"} agent=${agent}`,
+      );
       const isNewThread = !seenThreadIds.has(ctx.threadId);
       seenThreadIds.add(ctx.threadId);
       const adopt = consumeNextAdopt(nextAdopts, {
@@ -231,15 +236,24 @@ export default async function plugin(bb: BbPluginApi) {
       return host.call("reload", {}, { hostId });
     },
     async stampAgent(input) {
-      if (input.threadId) {
+      const threadId = input.threadId?.trim() || undefined;
+      const projectId = input.projectId?.trim() || undefined;
+      if (threadId) {
         stampAgent(stamps, {
-          threadId: input.threadId,
+          threadId,
           agent: input.agent,
           queued: input.queued,
         });
-      } else if (input.projectId) {
-        armNextAgent(nextAgents, input.projectId, input.agent);
+      } else {
+        armNextAgent(
+          nextAgents,
+          projectId ?? UNBOUND_NEXT_AGENT_KEY,
+          input.agent,
+        );
       }
+      bb.log.info(
+        `agent.stamp thread=${threadId ?? "-"} project=${projectId ?? "-"} agent=${input.agent} queued=${input.queued}`,
+      );
       return { ok: true };
     },
     async stampPermissionMode(input) {

@@ -1,3 +1,5 @@
+export const UNBOUND_NEXT_AGENT_KEY = "*";
+
 export function createNextAgentStore(): Map<string, string> {
   return new Map();
 }
@@ -22,9 +24,13 @@ export function consumeNextAgent(
 
 export function peekNextAgent(
   store: Map<string, string>,
-  projectId: string,
+  projectId?: string | null,
 ): string | undefined {
-  return store.get(projectId);
+  if (projectId) {
+    const hit = store.get(projectId);
+    if (hit) return hit;
+  }
+  return store.get(UNBOUND_NEXT_AGENT_KEY);
 }
 
 export function resolvePromptAgent(args: {

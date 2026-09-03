@@ -19,6 +19,58 @@ export function displayedComposerAgent(
   );
 }
 
+let lastArmed = "";
+
+export function rememberComposerAgent(agent: string): void {
+  const name = agent.trim();
+  if (name) lastArmed = name;
+}
+
+export function lastArmedComposerAgent(): string {
+  return lastArmed;
+}
+
+export function resetLastArmedComposerAgent(): void {
+  lastArmed = "";
+}
+
+/** Keep the pick across new-thread → first thread. Reset only on thread hops. */
+export function shouldResetArmedComposerAgent(
+  previousThreadId: string | null,
+  nextThreadId: string | null,
+): boolean {
+  return Boolean(
+    previousThreadId && nextThreadId && previousThreadId !== nextThreadId,
+  );
+}
+
+/** Chrome hydrate must not clobber a click, or a remount before lastUserAgent. */
+export function shouldApplyHydratedAgent(args: {
+  userPicked: boolean;
+  chromeStatus?: ComposerChrome["status"];
+  chromeAgent?: string;
+  armedAgent?: string;
+}): boolean {
+  if (args.userPicked) return false;
+  if (!args.chromeAgent) return false;
+  if (
+    args.chromeStatus === "default" &&
+    args.armedAgent &&
+    args.armedAgent !== args.chromeAgent
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** New-thread has no threadId; the visible chip must arm before send. */
+export function composerAgentShouldArm(args: {
+  visible: boolean;
+  agent: string;
+}): boolean {
+  return args.visible && args.agent.trim().length > 0;
+}
+
 const inflight = new Map<string, Promise<ComposerChrome>>();
 
 export function composerChromeKey(
