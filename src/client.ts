@@ -275,7 +275,11 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       return unwrap<OpenCodeSession>(result);
     },
     async listSessions() {
-      const result = await sdk.session.list();
+      const result = await withTimeout(
+        sdk.session.list(),
+        OPENCODE_SETUP_MS,
+        "session.list",
+      );
       return unwrap<OpenCodeSession[]>(result) ?? [];
     },
     async sessionChildren(id, directory) {

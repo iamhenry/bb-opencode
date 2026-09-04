@@ -19,7 +19,7 @@ import {
   turnSteerParamsSchema,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { PromptInput } from "@get-bb/plugin-sdk/provider-bridge";
-import { createSdkClient, type OpenCodeClient } from "./client.js";
+import { createSdkClient, type OpenCodeClient, type OpenCodeSession } from "./client.js";
 import { debugLog, recentDebugLog, resetDebugLogForTests } from "./debug-log.js";
 import { OrderedEventPump } from "./event-pump.js";
 import { readCompleteHistory } from "./history-pages.js";
@@ -104,6 +104,7 @@ import {
   type BbUserQuestionPayload,
 } from "./questions.js";
 import { attachOrSpawn, isAbortTimeout } from "./process.js";
+import { randomUUID } from "node:crypto";
 import { buildPrompt } from "./prompt-builder.js";
 import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
 import {
@@ -385,36 +386,210 @@ function publicErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function ensureClient(): Promise<OpenCodeClient> {
-  if (client) {
-    // Cheap liveness probe: the serve may have died and come back on a
-    // different port (lock file updated); a cached client pointing at the
-    // old URL never heals on its own. Drop it and re-attach from the lock.
-    try {
-      await client.health();
-      return client;
-    } catch {
-      dropSubscriptions();
-      client = undefined;
-    }
-  }
-  if (!dataDir) throw new Error("bridge dataDir is not set");
+/** Fixed startup stages; assigned at the operation boundary, never inferred from server output. */
+type StartupStage = "health" | "attach" | "session-create";
+
+const PERSISTENT_STALL_GUIDANCE =
+  "Inspect bb opencode status. Use Tools → OpenCode → Reload OpenCode only after confirming active work is safe to interrupt.";
+
+/**
+ * Exact production stall shapes only. `client.health()` wraps every failure as
+ * `…did not answer health (<detail>)`, and only the `(timed out)` detail is a
+ * real stall; HTTP/auth/parse details share the wrapper and must not retry.
+ * Attach matches the process layer's live-lock refusal and claim-race timeout
+ * verbatim (src/process.ts). Configuration, binary, validation, and
+ * version-window failures never retry.
+ */
+const RECOVERY_ELIGIBLE_SHAPES = [
+  /^OpenCode serve did not answer health \(timed out\)$/,
+  /^OpenCode serve on :\d+ did not answer in time\. Not spawning another\.$/,
+  /^Timed out waiting for the other worker to publish the OpenCode lock$/,
+];
+
+function isRecoveryEligibleStall(error: unknown): boolean {
+  return (
+    isAbortTimeout(error) ||
+    (error instanceof Error &&
+      RECOVERY_ELIGIBLE_SHAPES.some((shape) => shape.test(error.message)))
+  );
+}
+
+/**
+ * Privacy-safe fixed-literal diagnostics: stage, elapsed milliseconds, and
+ * bounded decision only. Never interpolate caught errors, URLs, ports, paths,
+ * session IDs, titles, or user input.
+ */
+function logRecoveryDecision(
+  stage: StartupStage,
+  elapsedMs: number,
+  decision: "recover" | "recovered" | "fail-closed" | "reconcile",
+  action: "none" | "inspect-status-and-reload-when-safe",
+): void {
+  debugLog(
+    `startup-recovery stage=${stage} elapsed_ms=${Math.max(0, Math.round(elapsedMs))} decision=${decision} action=${action}`,
+  );
+}
+
+function persistentStallMessage(stage: StartupStage, elapsedMs: number): string {
+  return `OpenCode startup stalled at stage=${stage} elapsed_ms=${Math.max(0, Math.round(elapsedMs))} decision=fail-closed. ${PERSISTENT_STALL_GUIDANCE}`;
+}
+
+/** Carries the operation boundary that actually failed, never inferred from messages. */
+type StagedError = Error & { startupStage?: StartupStage };
+
+async function attemptAttach(dataDir: string): Promise<void> {
+  // The candidate stays local until attach, health, and version validation
+  // all succeed; global `client` is never an unvalidated intermediate state.
+  let candidate: OpenCodeClient;
   try {
     const attached = await deps.attach(dataDir);
-    client = deps.acquire(attached.url);
-    const health = await client.health();
+    candidate = deps.acquire(attached.url);
+  } catch (error) {
+    throw Object.assign(error as StagedError, {
+      startupStage: "attach" as const,
+    });
+  }
+  try {
+    const health = await candidate.health();
     if (!isVersionInWindow(health.version)) {
       throw new Error(versionSkewMessage(health.version));
     }
   } catch (error) {
-    client = undefined;
-    throw new Error(publicErrorMessage(error));
+    throw Object.assign(error as StagedError, {
+      startupStage: "health" as const,
+    });
   }
-  void resubscribeBoundDirectories(client).catch((error) => {
+  client = candidate;
+}
+
+async function ensureClient(): Promise<OpenCodeClient> {
+  const startedAt = deps.now?.() ?? Date.now();
+  const elapsed = () => (deps.now?.() ?? Date.now()) - startedAt;
+
+  // One recovery budget shared by warm and cold starts: the first failed
+  // health/attach boundary may receive exactly one reattach — a cached probe
+  // plus one reattach is the ceiling, never a third health boundary.
+  let firstError: StagedError | undefined;
+  if (client) {
+    // Cheap liveness probe: the serve may have died and come back on a
+    // different port (lock file updated); a cached client pointing at the
+    // old URL never heals on its own. The probe is itself the first attempt.
+    try {
+      await client.health();
+      return client;
+    } catch (error) {
+      firstError = Object.assign(error as StagedError, {
+        startupStage: "health" as const,
+      });
+      dropSubscriptions();
+      client = undefined;
+    }
+  }
+  if (!firstError) {
+    if (!dataDir) throw new Error("bridge dataDir is not set");
+    try {
+      await attemptAttach(dataDir);
+    } catch (error) {
+      firstError = error as StagedError;
+      client = undefined;
+    }
+  }
+  if (!firstError) {
+    void resubscribeBoundDirectories(client!).catch((error) => {
+      unknownLogLines.push(`subscribe-error ${String(error)}`);
+      debugLog(`sse subscribe failed ${String(error)}`);
+    });
+    return client!;
+  }
+  // A warm cached non-timeout failure surfaces immediately for this startup
+  // call: no silent heal, no reattach, no recovery diagnostics.
+  if (!isRecoveryEligibleStall(firstError)) {
+    throw new Error(publicErrorMessage(firstError));
+  }
+  if (!dataDir) throw new Error("bridge dataDir is not set");
+  const stage = firstError.startupStage ?? "attach";
+  logRecoveryDecision(stage, elapsed(), "recover", "none");
+  try {
+    await attemptAttach(dataDir);
+    logRecoveryDecision(stage, elapsed(), "recovered", "none");
+  } catch (retryError) {
+    if (!isRecoveryEligibleStall(retryError)) {
+      throw new Error(publicErrorMessage(retryError));
+    }
+    // The reattach's own failing boundary decides the final reported stage.
+    const retryStage = (retryError as StagedError).startupStage ?? "attach";
+    logRecoveryDecision(retryStage, elapsed(), "fail-closed", "inspect-status-and-reload-when-safe");
+    throw new Error(persistentStallMessage(retryStage, elapsed()));
+  }
+  void resubscribeBoundDirectories(client!).catch((error) => {
     unknownLogLines.push(`subscribe-error ${String(error)}`);
     debugLog(`sse subscribe failed ${String(error)}`);
   });
-  return client;
+  return client!;
+}
+
+const CORRELATION_TITLE_PREFIX = "bb-thread-start ";
+/**
+ * Exact client timeout shapes only: `withTimeout`'s `${label} timed out after
+ * ${ms}ms` and transport-level aborts via the existing classifier. No broad
+ * text matching, so unrelated server errors never trigger reconciliation.
+ */
+const CREATE_TIMEOUT_PATTERN =
+  /^session\.create timed out after \d+ms$/;
+
+function isAmbiguousCreateTimeout(error: unknown): boolean {
+  return (
+    isAbortTimeout(error) ||
+    (error instanceof Error && CREATE_TIMEOUT_PATTERN.test(error.message))
+  );
+}
+
+/**
+ * session.create is structurally single-call: a POST is never replayed. The
+ * only recovery path after a recognized ambiguous timeout is one bounded,
+ * read-only listSessions reconciliation. The correlation title is an opaque
+ * request-local UUID; it is never logged or placed in an error.
+ */
+async function createOrReconcileSession(
+  active: OpenCodeClient,
+  directory: string,
+): Promise<string> {
+  const correlationTitle = `${CORRELATION_TITLE_PREFIX}${randomUUID()}`;
+  const startedAt = deps.now?.() ?? Date.now();
+  const elapsed = () => (deps.now?.() ?? Date.now()) - startedAt;
+  // Counted at the POST attempt: an ambiguous timeout still consumed a create.
+  createCount += 1;
+  try {
+    const created = await active.createSession({
+      directory,
+      title: correlationTitle,
+    });
+    return requireSessionId(created.id, "session.create");
+  } catch (error) {
+    if (!isAmbiguousCreateTimeout(error)) {
+      throw error;
+    }
+  }
+  logRecoveryDecision("session-create", elapsed(), "reconcile", "none");
+  let listed: OpenCodeSession[];
+  try {
+    listed = await active.listSessions();
+  } catch {
+    listed = [];
+  }
+  const matches = (Array.isArray(listed) ? listed : []).filter(
+    (session) =>
+      typeof session.id === "string" &&
+      session.id.length > 0 &&
+      session.title === correlationTitle &&
+      session.directory === directory,
+  );
+  if (matches.length !== 1) {
+    logRecoveryDecision("session-create", elapsed(), "fail-closed", "inspect-status-and-reload-when-safe");
+    throw new Error(persistentStallMessage("session-create", elapsed()));
+  }
+  logRecoveryDecision("session-create", elapsed(), "recovered", "none");
+  return matches[0]!.id;
 }
 
 function boundDirectory(sessionId: string): string | undefined {
@@ -982,7 +1157,10 @@ export async function syncSessionTitle(sessionId: string): Promise<boolean> {
   if (!threadId) return false;
   try {
     const session = await client.getSession(sessionId);
-    const title = session.title;
+    let title = session.title;
+    // A thread/start correlation placeholder is private plumbing, never a
+    // publishable thread name; OpenCode's title agent replaces it later.
+    if (title?.startsWith(CORRELATION_TITLE_PREFIX)) title = undefined;
     if (title && lastTitles.get(sessionId) !== title) {
       lastTitles.set(sessionId, title);
       if (!shouldPublishOpenCodeTitle(title)) return false;
@@ -1422,6 +1600,12 @@ async function onOpenCodeEvent(event: {
     }
     const title = sessionTitle(event.properties);
     if (title && threadId) {
+      // A correlation placeholder is never thread identity: do not cache it in
+      // title state, so a later legitimate title still publishes normally.
+      if (title.startsWith(CORRELATION_TITLE_PREFIX)) {
+        void syncSessionRevert(sessionId);
+        return;
+      }
       lastTitles.set(sessionId, title);
       if (shouldPublishOpenCodeTitle(title)) {
         emitDeltas(threadId, [{ kind: "thread.name", name: title }]);
@@ -2408,11 +2592,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
             : undefined;
         let sessionId = adoptId;
         if (!sessionId) {
-          const created = await active.createSession({
-            directory: parsed.data.cwd,
-          });
-          createCount += 1;
-          sessionId = requireSessionId(created.id, "session.create");
+          sessionId = await createOrReconcileSession(active, parsed.data.cwd);
         }
         const bound: BoundSession = {
           threadId: parsed.data.threadId,
@@ -2916,7 +3096,12 @@ async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
   try {
     const session = await client.getSession(sessionId);
     if (session.parentID) return false;
-    if (session.title && shouldPublishOpenCodeTitle(session.title)) {
+    const currentTitle = session.title;
+    if (
+      currentTitle &&
+      shouldPublishOpenCodeTitle(currentTitle) &&
+      !currentTitle.startsWith(CORRELATION_TITLE_PREFIX)
+    ) {
       return syncSessionTitle(sessionId);
     }
     const messages = await readSessionMessages(
