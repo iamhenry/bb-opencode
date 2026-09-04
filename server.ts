@@ -71,6 +71,7 @@ import {
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
+  pickerOptionsFromAgents,
   type OpenCodeAgent,
 } from "./src/selectable-primaries.js";
 
@@ -1337,7 +1338,20 @@ async function loadComposerChrome(
       composeKind: args.threadId ? "thread" : "new-thread",
     });
     if (providerId !== PROVIDER_ID) {
-      return { ...hidden, providerId };
+      // New-thread can already be on OpenCode via the live model chip while
+      // the project default is not. Keep providerId honest so Pi composers
+      // stay hidden; attach live primaries so a visible OpenCode picker is
+      // not the hardcoded fallback.
+      if (args.threadId) return { ...hidden, providerId };
+      const hostId = await resolveHostId(bb, environmentId);
+      const listed = hostId
+        ? await loadAgents(host, hostId).catch(() => [] as OpenCodeAgent[])
+        : [];
+      return {
+        ...hidden,
+        providerId,
+        options: pickerOptionsFromAgents(listed),
+      };
     }
     const hostId = await resolveHostId(bb, environmentId);
     const listed = hostId
@@ -1348,10 +1362,7 @@ async function loadComposerChrome(
         ? listed
         : fallbackSelectableAgents();
     const hydrated = hydratePickerAgent({ lastUserAgent, agents });
-    const options = listSelectablePrimaries(agents).map((agent) => ({
-      name: agent.name,
-      description: agent.description ?? null,
-    }));
+    const options = pickerOptionsFromAgents(agents);
     if (hydrated.status === "unknown") {
       return {
         providerId,

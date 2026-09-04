@@ -22,6 +22,15 @@ export function listSelectablePrimaries(
   return agents.filter(isSelectablePrimary);
 }
 
+export function pickerOptionsFromAgents(
+  agents: readonly OpenCodeAgent[],
+): Array<{ name: string; description: string | null }> {
+  return listSelectablePrimaries(agents).map((agent) => ({
+    name: agent.name,
+    description: agent.description ?? null,
+  }));
+}
+
 export function defaultPrimary(
   agents: readonly OpenCodeAgent[],
 ): OpenCodeAgent | undefined {

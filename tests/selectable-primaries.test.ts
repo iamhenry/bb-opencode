@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
+  pickerOptionsFromAgents,
   resolveContinueAgent,
   type OpenCodeAgent,
 } from "../src/selectable-primaries.js";
@@ -22,6 +23,27 @@ describe("selectable primaries", () => {
       "build",
       "plan",
       "custom",
+    ]);
+  });
+
+  it("maps live OpenCode primaries into picker options without a hardcoded list", () => {
+    expect(
+      pickerOptionsFromAgents([
+        ...fixture,
+        {
+          name: "bb-supervisor",
+          mode: "primary",
+          description: "Coordinate work across threads",
+        },
+      ]),
+    ).toEqual([
+      { name: "build", description: null },
+      { name: "plan", description: null },
+      { name: "custom", description: null },
+      {
+        name: "bb-supervisor",
+        description: "Coordinate work across threads",
+      },
     ]);
   });
 
