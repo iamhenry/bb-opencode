@@ -590,6 +590,966 @@ describe("provider bridge", () => {
     );
   });
 
+  it("bounded startup recovery retries one transient health stall then starts the thread once", async () => {
+    const fake = createFakeOpenCode();
+    let clock = 1000;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => ({ url: fake.client.url, pid: 1, port: 9 }),
+      write: (message) => {
+        messages.push(message);
+      },
+      now: () => clock,
+    });
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      clock += 120;
+      healthCalls += 1;
+      if (healthCalls === 1) {
+        throw Object.assign(
+          new Error("OpenCode serve did not answer health (timed out)"),
+          { name: "TimeoutError" },
+        );
+      }
+      return { healthy: true, version: "1.18.21" };
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: { providerThreadId: "ses_1" },
+        }),
+      ]),
+    );
+    expect(healthCalls).toBe(2);
+    expect(fake.calls.create).toBe(1);
+    expect(
+      messages.filter((message) => message.method === "thread/identity"),
+    ).toHaveLength(1);
+    const recovery = recentUnknownLogLines().filter((line) =>
+      line.startsWith("startup-recovery stage=health"),
+    );
+    expect(recovery).toHaveLength(2);
+    expect(recovery[0]).toContain("decision=recover");
+    expect(recovery[0]).toMatch(/elapsed_ms=120/);
+    expect(recovery[1]).toContain("decision=recovered");
+    expect(recovery[1]).toMatch(/elapsed_ms=240/);
+  });
+
+  it("bounded startup recovery reconciles an ambiguous session.create timeout without a second create", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    let listCalls = 0;
+    fake.client.createSession = async (args) => {
+      createCalls += 1;
+      // The server-side session lands before the client-visible timeout:
+      // an ambiguous failure, not a proven one.
+      fake.sessions.set("ses_1", {
+        id: "ses_1",
+        directory: args.directory,
+        title: args.title ?? "New session",
+      });
+      throw Object.assign(new Error("session.create timed out after 8000ms"), {
+        name: "TimeoutError",
+      });
+    };
+    fake.client.listSessions = async () => {
+      listCalls += 1;
+      return [...fake.sessions.values()];
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: { providerThreadId: "ses_1" },
+        }),
+      ]),
+    );
+    expect(listCalls).toBe(1);
+    expect(createCalls).toBe(1);
+    expect(
+      messages.filter((message) => message.method === "thread/identity"),
+    ).toHaveLength(1);
+  });
+
+  it("bounded startup recovery fails closed after one retry when the attach stall persists", async () => {
+    const fake = installFake();
+    let attachCalls = 0;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        throw new Error(
+          "OpenCode serve on :4242 did not answer in time. Not spawning another.",
+        );
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(attachCalls).toBe(2);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=attach"),
+        },
+      },
+    ]);
+    const error = (messages[0] as { error: { message: string } }).error.message;
+    expect(error).toContain("decision=fail-closed");
+    expect(error).toContain("Reload OpenCode only after confirming active work is safe to interrupt");
+    expect(error).not.toContain("4242");
+    expect(fake.calls.create).toBe(0);
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("bounded startup recovery fails closed after one retry when the health probe stalls", async () => {
+    const fake = installFake();
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      throw new Error("OpenCode serve did not answer health (timed out)");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(healthCalls).toBe(2);
+    expect(fake.calls.create).toBe(0);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("stage=health"),
+          }),
+        }),
+      ]),
+    );
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+  });
+
+  it("does not retry a non-timeout health failure wrapped in did-not-answer text", async () => {
+    const fake = installFake();
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      // Exactly what client.health() emits for an HTTP/auth failure: same
+      // wrapper, but the detail proves it was not a stall.
+      throw new Error("OpenCode serve did not answer health (OpenCode health failed: 401)");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(healthCalls).toBe(1);
+    expect(fake.calls.create).toBe(0);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: "OpenCode serve did not answer health (OpenCode health failed: 401)",
+        },
+      },
+    ]);
+    expect(
+      recentUnknownLogLines().filter((line) =>
+        line.startsWith("startup-recovery"),
+      ),
+    ).toHaveLength(0);
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("returns a healthy cached client without any recovery attempt", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(fake.client.health).toBeDefined();
+    // Second startup reuses the cache: exactly one more health probe, no
+    // reattach, no recovery diagnostics, no second create.
+    const created = fake.calls.create;
+    fake.calls.create = 0;
+    fake.calls.subscribe = 0;
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ threadId: "thr_warm" }),
+    });
+    await flush();
+    expect(fake.calls.create).toBe(1);
+    expect(
+      recentUnknownLogLines().filter((line) =>
+        line.startsWith("startup-recovery"),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("gives a warm cached eligible stall exactly one reattach and no third health boundary", async () => {
+    const fake = createFakeOpenCode();
+    let healthCalls = 0;
+    let attachCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      if (healthCalls === 2) {
+        // Warm cached probe stalls (attempt 1 of the shared budget).
+        throw new Error("OpenCode serve did not answer health (timed out)");
+      }
+      return { healthy: true, version: "1.18.21" };
+    };
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        return { url: fake.client.url, pid: 1, port: 9 };
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    // Start 1: cold attempt fills the cache (health 1, attach 1, create 1).
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(healthCalls).toBe(1);
+    expect(attachCalls).toBe(1);
+    messages.length = 0;
+    // Start 2: the cached probe stalls (health 2), and exactly one recovery
+    // reattach runs (attach 2, health 3). No third stall boundary is probed.
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ threadId: "thr_warm_recover" }),
+    });
+    await flush();
+    expect(healthCalls).toBe(3);
+    expect(attachCalls).toBe(2);
+    expect(fake.calls.create).toBe(2);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: { providerThreadId: "ses_2" },
+        }),
+      ]),
+    );
+  });
+
+  it("surfaces a warm cached non-timeout health failure immediately with no reattach", async () => {
+    const fake = createFakeOpenCode();
+    let healthCalls = 0;
+    let attachCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      if (healthCalls === 1) {
+        return { healthy: true, version: "1.18.21" };
+      }
+      // Warm cached probe: auth failure wrapped in the same envelope.
+      throw new Error("OpenCode serve did not answer health (OpenCode health failed: 401)");
+    };
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        return { url: fake.client.url, pid: 1, port: 9 };
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    // Start 1: cold attempt fills the cache (health 1, attach 1, create 1).
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(healthCalls).toBe(1);
+    expect(attachCalls).toBe(1);
+    const coldCreates = fake.calls.create;
+    messages.length = 0;
+    // Start 2: warm cached probe fails with a non-timeout error; the startup
+    // must surface it immediately — no reattach, no recovery diagnostics.
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ threadId: "thr_warm_bad" }),
+    });
+    await flush();
+    expect(healthCalls).toBe(2);
+    expect(attachCalls).toBe(1);
+    expect(fake.calls.create).toBe(coldCreates);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: "OpenCode serve did not answer health (OpenCode health failed: 401)",
+        },
+      },
+    ]);
+    expect(
+      recentUnknownLogLines().filter((line) =>
+        line.startsWith("startup-recovery"),
+      ),
+    ).toHaveLength(0);
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("does not reuse a failed recovery candidate; the next startup reattaches and resubscribes", async () => {
+    const fake = createFakeOpenCode();
+    let attachCalls = 0;
+    let acquireCalls = 0;
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      // First attempt + recovery retry both fail health after acquire.
+      // Under the leak, that acquired candidate would stay module-global.
+      if (healthCalls <= 2) {
+        throw new Error("OpenCode serve did not answer health (timed out)");
+      }
+      return { healthy: true, version: "1.18.21" };
+    };
+    resetBridgeForTests({
+      acquire: () => {
+        acquireCalls += 1;
+        return fake.client;
+      },
+      attach: async () => {
+        attachCalls += 1;
+        return { url: fake.client.url, pid: 1, port: 9 };
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(attachCalls).toBe(2);
+    expect(acquireCalls).toBe(2);
+    expect(healthCalls).toBe(2);
+    expect(fake.calls.create).toBe(0);
+    expect(fake.calls.subscribe).toBe(0);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=health"),
+        },
+      },
+    ]);
+    messages.length = 0;
+    // Next startup must not warm-probe the failed candidate: a fresh
+    // attach/acquire runs, health passes, and bind restores SSE subscribe.
+    send({
+      id: "start2",
+      method: "thread/start",
+      params: sessionParams({ threadId: "thr_after_fail" }),
+    });
+    await flush();
+    expect(attachCalls).toBe(3);
+    expect(acquireCalls).toBe(3);
+    expect(healthCalls).toBe(3);
+    expect(fake.calls.create).toBe(1);
+    expect(fake.calls.subscribe).toBe(1);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start2",
+          result: { providerThreadId: "ses_1" },
+        }),
+      ]),
+    );
+  });
+
+  it("bounded startup recovery fails closed with stage=health when every health probe stalls", async () => {
+    const fake = installFake();
+    fake.client.health = async () => {
+      throw new Error("OpenCode serve did not answer health (timed out)");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=health"),
+        },
+      },
+    ]);
+    const error = (messages[0] as { error: { message: string } }).error.message;
+    expect(error).toContain("decision=fail-closed");
+    expect(fake.calls.create).toBe(0);
+  });
+
+  it("does not retry version skew or other non-stall startup failures", async () => {
+    const fake = installFake();
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      return { healthy: true, version: "1.17.0" };
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(healthCalls).toBe(1);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("outside the pinned window"),
+          }),
+        }),
+      ]),
+    );
+    expect(fake.calls.create).toBe(0);
+  });
+
+  it("fails session reconciliation closed on zero matches without binding", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    fake.client.createSession = async () => {
+      createCalls += 1;
+      throw Object.assign(new Error("session.create timed out after 8000ms"), {
+        name: "TimeoutError",
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=session-create"),
+        },
+      },
+    ]);
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("fails session reconciliation closed on multiple matches without binding", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    fake.client.createSession = async (args) => {
+      createCalls += 1;
+      // Two servers recorded the same correlation title: ambiguous identity.
+      const first = {
+        id: "ses_dup_a",
+        directory: args.directory,
+        title: args.title ?? "New session",
+      };
+      const second = { ...first, id: "ses_dup_b" };
+      fake.sessions.set(first.id, first);
+      fake.sessions.set(second.id, second);
+      throw Object.assign(new Error("session.create timed out after 8000ms"), {
+        name: "TimeoutError",
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=session-create"),
+        },
+      },
+    ]);
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("fails session reconciliation closed when the list call itself errors", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    fake.client.createSession = async () => {
+      createCalls += 1;
+      throw Object.assign(new Error("session.create timed out after 8000ms"), {
+        name: "TimeoutError",
+      });
+    };
+    fake.client.listSessions = async () => {
+      throw new Error("list exploded");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=session-create"),
+        },
+      },
+    ]);
+  });
+
+  it("does not replay session.create when the failure is a proven no-id error", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    fake.client.createSession = async () => {
+      createCalls += 1;
+      return {} as never;
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("no session id"),
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps recovery diagnostics privacy-safe with sentinel exclusion", async () => {
+    const fake = installFake();
+    const secretDirectory = "/tmp/bb-private-sentinel";
+    const SENTINELS = {
+      prompt: "SENTINEL-prompt-text",
+      credential: "SENTINEL-credential-value",
+      rawError: "SENTINEL-raw-server-error",
+      sessionId: "SENTINEL-session-id",
+    };
+    fake.client.health = async () => {
+      const stall = new Error("OpenCode serve did not answer health (timed out)");
+      // Plan-required sentinel classes ride on non-message channels only:
+      // cause, stack, and extra properties on an otherwise exactly recognized
+      // timeout. Production logging must never surface them.
+      (stall as Error & { cause?: unknown; stack?: string }).cause = {
+        prompt: SENTINELS.prompt,
+        credential: SENTINELS.credential,
+        raw: SENTINELS.rawError,
+        sessionID: SENTINELS.sessionId,
+      };
+      stall.stack = `${SENTINELS.rawError}\n    at secret`;
+      throw stall;
+    };
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => ({
+        url: fake.client.url,
+        pid: 1,
+        port: 9,
+      }),
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ cwd: secretDirectory }),
+    });
+    await flush();
+    const logLines = recentUnknownLogLines()
+      .filter((line) => line.startsWith("startup-recovery"));
+    expect(logLines.length).toBeGreaterThan(0);
+    const forbidden = [
+      secretDirectory,
+      "timed out",
+      "ses_",
+      "bb-thread-start",
+      SENTINELS.prompt,
+      SENTINELS.credential,
+      SENTINELS.rawError,
+      SENTINELS.sessionId,
+      "http://",
+      ":9",
+      "thr_",
+    ];
+    for (const line of logLines) {
+      expect(line).toMatch(
+        /^startup-recovery stage=(health|attach|session-create) elapsed_ms=\d+ decision=(recover|recovered|fail-closed|reconcile) action=(none|inspect-status-and-reload-when-safe)$/,
+      );
+      for (const sentinel of forbidden) {
+        expect(line).not.toContain(sentinel);
+      }
+    }
+    const publicError = (messages[0] as { error: { message: string } }).error
+      .message;
+    for (const sentinel of forbidden) {
+      expect(publicError).not.toContain(sentinel);
+    }
+  });
+
+  it("reports the retry's own failing stage when attempts mix health and attach", async () => {
+    const fake = createFakeOpenCode();
+    let healthCalls = 0;
+    let attachCalls = 0;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        if (attachCalls === 1) {
+          return { url: fake.client.url, pid: 1, port: 9 };
+        }
+        throw new Error(
+          "Timed out waiting for the other worker to publish the OpenCode lock",
+        );
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    // First attempt: attach succeeds, health stalls (stage=health).
+    // Retry: attach itself now fails (stage=attach). Mixed outcome must
+    // report the retry's own boundary, not the first attempt's stage.
+    fake.client.health = async () => {
+      healthCalls += 1;
+      throw new Error("OpenCode serve did not answer health (timed out)");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(attachCalls).toBe(2);
+    expect(healthCalls).toBe(1);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=attach"),
+        },
+      },
+    ]);
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+  });
+
+  it("reports the retry's own failing stage when health recovers into an attach stall", async () => {
+    const fake = createFakeOpenCode();
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      if (healthCalls === 1) {
+        throw new Error("OpenCode serve did not answer health (timed out)");
+      }
+      return { healthy: true, version: "1.18.21" };
+    };
+    let attachCalls = 0;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        if (attachCalls === 1) {
+          return { url: fake.client.url, pid: 1, port: 9 };
+        }
+        throw new Error(
+          "Timed out waiting for the other worker to publish the OpenCode lock",
+        );
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(attachCalls).toBe(2);
+    expect(healthCalls).toBe(1);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=attach"),
+        },
+      },
+    ]);
+  });
+
+  it("reports stage=health when the retry's attach succeeds but health fails again", async () => {
+    const fake = createFakeOpenCode();
+    let healthCalls = 0;
+    fake.client.health = async () => {
+      healthCalls += 1;
+      throw new Error("OpenCode serve did not answer health (timed out)");
+    };
+    let attachCalls = 0;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => {
+        attachCalls += 1;
+        return { url: fake.client.url, pid: 1, port: 9 };
+      },
+      write: (message) => {
+        messages.push(message);
+      },
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(attachCalls).toBe(2);
+    expect(healthCalls).toBe(2);
+    expect(messages).toEqual([
+      {
+        id: "start",
+        error: {
+          code: -32000,
+          message: expect.stringContaining("stage=health"),
+        },
+      },
+    ]);
+  });
+
+  it("session-create reconciliation diagnostics carry injected-clock elapsed values", async () => {
+    const fake = createFakeOpenCode();
+    let clock = 5000;
+    let createCalls = 0;
+    let listCalls = 0;
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => ({ url: fake.client.url, pid: 1, port: 9 }),
+      write: (message) => {
+        messages.push(message);
+      },
+      now: () => clock,
+    });
+    fake.client.createSession = async (args) => {
+      createCalls += 1;
+      clock += 120;
+      fake.sessions.set("ses_1", {
+        id: "ses_1",
+        directory: args.directory,
+        title: args.title ?? "New session",
+      });
+      throw new Error("session.create timed out after 8000ms");
+    };
+    fake.client.listSessions = async () => {
+      listCalls += 1;
+      clock += 60;
+      return [...fake.sessions.values()];
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: { providerThreadId: "ses_1" },
+        }),
+      ]),
+    );
+    expect(createCalls).toBe(1);
+    expect(listCalls).toBe(1);
+    const recovery = recentUnknownLogLines().filter((line) =>
+      line.startsWith("startup-recovery stage=session-create"),
+    );
+    expect(recovery).toHaveLength(2);
+    expect(recovery[0]).toContain("decision=reconcile");
+    expect(recovery[0]).toMatch(/elapsed_ms=120/);
+    expect(recovery[1]).toContain("decision=recovered");
+    expect(recovery[1]).toMatch(/elapsed_ms=180/);
+  });
+
+  it("does not reconcile when session.create fails with an unrelated server error", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    let listCalls = 0;
+    fake.client.createSession = async () => {
+      createCalls += 1;
+      throw new Error("session.create failed with 500: server exploded");
+    };
+    fake.client.listSessions = async () => {
+      listCalls += 1;
+      return [...fake.sessions.values()];
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(listCalls).toBe(0);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("server exploded"),
+          }),
+        }),
+      ]),
+    );
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("does not reconcile when the only listed match has no valid id", async () => {
+    const fake = installFake();
+    fake.client.createSession = async (args) => {
+      fake.sessions.set("ses_broken", {
+        id: "",
+        directory: args.directory,
+        title: args.title ?? "New session",
+      });
+      throw new Error("session.create timed out after 8000ms");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("stage=session-create"),
+          }),
+        }),
+      ]),
+    );
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("does not reconcile when only the directory mismatches on an exact title", async () => {
+    const fake = installFake();
+    fake.client.createSession = async (args) => {
+      // Exact matching correlation title, wrong directory: identity is
+      // ambiguous on directory alone and must fail closed.
+      fake.sessions.set("ses_other", {
+        id: "ses_other",
+        directory: "/tmp/somewhere-else",
+        title: args.title ?? "New session",
+      });
+      throw new Error("session.create timed out after 8000ms");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          error: expect.objectContaining({
+            message: expect.stringContaining("stage=session-create"),
+          }),
+        }),
+      ]),
+    );
+    expect(
+      (messages[0] as { error: { message: string } }).error.message,
+    ).toContain("decision=fail-closed");
+    expect(
+      messages.some((message) => message.method === "thread/identity"),
+    ).toBe(false);
+  });
+
+  it("fails closed without extra side effects when reconciliation finds nothing usable", async () => {
+    const fake = installFake();
+    let createCalls = 0;
+    let listCalls = 0;
+    fake.client.createSession = async () => {
+      createCalls += 1;
+      throw new Error("session.create timed out after 8000ms");
+    };
+    fake.client.listSessions = async () => {
+      listCalls += 1;
+      return [];
+    };
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({ threadId: "thr_recon" }),
+    });
+    await flush();
+    expect(createCalls).toBe(1);
+    expect(listCalls).toBe(1);
+    expect(
+      messages.filter((message) => message.method === "thread/identity"),
+    ).toHaveLength(0);
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.promptAsync).toBe(0);
+  });
+
+  it("never publishes the correlation placeholder as a thread name and a later real title still lands", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    const placeholder = [...fake.sessions.values()].find((session) =>
+      session.title?.startsWith("bb-thread-start "),
+    );
+    expect(placeholder).toBeDefined();
+    // Simulate OpenCode echo events carrying the placeholder, then a real title.
+    await ingestOpenCodeEvent({
+      type: "session.updated",
+      properties: {
+        sessionID: "ses_1",
+        title: placeholder!.title,
+      },
+    });
+    await ingestOpenCodeEvent({
+      type: "session.updated",
+      properties: { sessionID: "ses_1", title: "Real thread name" },
+    });
+    const names = messages
+      .filter((message) => message.method === "thread/delta")
+      .flatMap(
+        (message) =>
+          (message.params as { deltas?: Array<{ kind: string; name?: string }> })
+            .deltas ?? [],
+      )
+      .filter((delta) => delta.kind === "thread.name")
+      .map((delta) => delta.name);
+    expect(names).toEqual(["Real thread name"]);
+  });
+
+  it("counts the session.create attempt even when creation times out ambiguously", async () => {
+    const fake = installFake();
+    fake.client.createSession = async () => {
+      throw new Error("session.create timed out after 8000ms");
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(getCreateCount()).toBe(1);
+  });
+
+  it("keeps recovery diagnostics privacy-safe with sentinel exclusion", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    expect(
+      recentUnknownLogLines().filter((line) =>
+        line.startsWith("startup-recovery"),
+      ),
+    ).toHaveLength(0);
+    expect(fake.calls.create).toBe(1);
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "start",
+          result: { providerThreadId: "ses_1" },
+        }),
+      ]),
+    );
+  });
+
   it("forks at a message checkpoint without session.create", async () => {
     const fake = installFake();
     fake.messages.set("ses_1", [
