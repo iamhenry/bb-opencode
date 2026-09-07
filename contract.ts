@@ -39,6 +39,32 @@ const probeOutput = z
   })
   .strict();
 
+const updateStatusOutput = z
+  .object({
+    binaryPath: z.string().nullable(),
+    diskVersion: z.string().nullable(),
+    runningVersion: z.string().nullable(),
+    latestVersion: z.string().nullable(),
+    targetVersion: z.string().nullable(),
+    method: z.string().nullable(),
+    eligible: z.boolean(),
+    canRestart: z.boolean(),
+    current: z.boolean(),
+    error: z.string().nullable(),
+  })
+  .strict();
+
+const mutationOutput = z
+  .object({
+    ok: z.boolean(),
+    error: z.string().nullable(),
+    diskVersion: z.string().nullable(),
+    targetVersion: z.string().nullable(),
+    runningVersion: z.string().nullable(),
+    pendingRestart: z.boolean(),
+  })
+  .strict();
+
 export const hostContract = defineRpcContract({
   probe: {
     input: z.object({}).strict(),
@@ -160,6 +186,14 @@ export const hostContract = defineRpcContract({
       .strict(),
     output: z.object({ ok: z.boolean() }).strict(),
   },
+  updateStatus: {
+    input: z.object({}).strict(),
+    output: updateStatusOutput,
+  },
+  restartToApply: {
+    input: z.object({}).strict(),
+    output: mutationOutput,
+  },
   listMessageMeta: {
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: z
@@ -192,6 +226,18 @@ export const rpcContract = defineRpcContract({
   reload: {
     input: z.object({}).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  updateStatus: {
+    input: z.object({ hostId: z.string().min(1).optional() }).strict(),
+    output: updateStatusOutput,
+  },
+  installUpdate: {
+    input: z.object({ hostId: z.string().min(1).optional() }).strict(),
+    output: mutationOutput,
+  },
+  restartToApply: {
+    input: z.object({ hostId: z.string().min(1).optional() }).strict(),
+    output: mutationOutput,
   },
   stampAgent: {
     input: z

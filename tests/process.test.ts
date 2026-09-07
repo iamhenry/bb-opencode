@@ -1,22 +1,24 @@
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.hoisted(() => vi.fn());
-vi.mock("node:child_process", () => ({ spawn: spawnMock }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, spawn: spawnMock };
+});
 import {
   attachOrSpawn,
   claimPath,
   isLockStale,
   lockPath,
   openCodeServeEnvironment,
-  pidAlive,
   readLock,
   reclaimIfStale,
   reclaimStaleClaim,
+  removeSpawnClaimIfOwned,
   sharedLockDir,
-  stopServe,
   writeLock,
 } from "../src/process.js";
 
@@ -98,32 +100,74 @@ describe("lock reclaim", () => {
     withHome(() => {
       writeFileSync(
         claimPath(),
-        `${JSON.stringify({ pid: 99999999, startedAt: "2000-01-01T00:00:00.000Z" })}\n`,
+        `${JSON.stringify({ pid: 99999999, token: "ab".repeat(16) })}\n`,
       );
       expect(reclaimStaleClaim()).toBe(true);
       expect(existsSync(claimPath())).toBe(false);
     });
   });
 
-  it("keeps a fresh claim while its owner pid is alive", () => {
+  it("does not delete a successor spawn claim when removing an old token", () => {
+    withHome(() => {
+      const oldToken = "aa".repeat(16);
+      const newToken = "bb".repeat(16);
+      writeFileSync(
+        claimPath(),
+        `${JSON.stringify({ pid: process.pid, token: newToken })}\n`,
+      );
+      removeSpawnClaimIfOwned(oldToken);
+      expect(JSON.parse(readFileSync(claimPath(), "utf8")).token).toBe(newToken);
+    });
+  });
+
+  it("keeps a live owner claim regardless of elapsed time", () => {
     withHome(() => {
       writeFileSync(
         claimPath(),
-        `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+        `${JSON.stringify({
+          pid: process.pid,
+          token: "cd".repeat(16),
+          startedAt: "2000-01-01T00:00:00.000Z",
+        })}\n`,
       );
       expect(reclaimStaleClaim()).toBe(false);
       expect(existsSync(claimPath())).toBe(true);
     });
   });
 
-  it("reclaims a live-pid claim after the 5s TTL", () => {
-    withHome(() => {
+  it("does not let a second spawn steal a live claim older than 5s", { timeout: 15_000 }, async () => {
+    await withHome(async (home) => {
+      const token = "ef".repeat(16);
       writeFileSync(
         claimPath(),
-        `${JSON.stringify({ pid: process.pid, startedAt: "2000-01-01T00:00:00.000Z" })}\n`,
+        `${JSON.stringify({
+          pid: process.pid,
+          token,
+          startedAt: "2000-01-01T00:00:00.000Z",
+        })}\n`,
       );
-      expect(reclaimStaleClaim()).toBe(true);
-      expect(existsSync(claimPath())).toBe(false);
+      const { spawn: realSpawn } = await vi.importActual<
+        typeof import("node:child_process")
+      >("node:child_process");
+      const thief = realSpawn(
+        process.execPath,
+        [
+          "-e",
+          `const fs=require("node:fs");const p=process.argv[1];try{fs.writeFileSync(p,"stolen",{flag:"wx"});process.exit(2)}catch{process.exit(0)}`,
+          claimPath(),
+        ],
+        { stdio: "ignore" },
+      );
+      await new Promise<void>((resolve, reject) => {
+        thief.on("exit", (code) => {
+          if (code === 0) resolve();
+          else reject(new Error(`thief exited ${code}`));
+        });
+      });
+      await expect(
+        attachOrSpawn({ dataDir: join(home, "data"), spawn: true }),
+      ).rejects.toThrow(/Timed out waiting for the other worker/i);
+      expect(JSON.parse(readFileSync(claimPath(), "utf8")).token).toBe(token);
     });
   });
 
@@ -142,11 +186,22 @@ describe("lock reclaim", () => {
       };
       spawnMock.mockReturnValue(child);
       globalThis.fetch = (async () => ({ ok: false })) as unknown as typeof fetch;
-
-      await expect(
-        attachOrSpawn({ dataDir: join(home, "data"), binary: "opencode" }),
-      ).rejects.toThrow(/exited during startup|exited with/i);
-      expect(child.kill).toHaveBeenCalledOnce();
+      const kill = vi.spyOn(process, "kill");
+      try {
+        await expect(
+          attachOrSpawn({ dataDir: join(home, "data"), binary: "opencode" }),
+        ).rejects.toThrow(/exited during startup|exited with/i);
+        expect(
+          kill.mock.calls.some(
+            ([pid, signal]) =>
+              (pid === 12345 || pid === -12345) &&
+              signal !== undefined &&
+              signal !== 0,
+          ),
+        ).toBe(true);
+      } finally {
+        kill.mockRestore();
+      }
     } finally {
       if (previous === undefined) delete process.env.HOME;
       else process.env.HOME = previous;
@@ -164,79 +219,5 @@ describe("lock reclaim", () => {
   it("uses one host-wide lock path (ISC-50, ISC-62)", () => {
     expect(lockPath("/tmp/a")).toBe(lockPath("/tmp/b"));
     expect(lockPath("/tmp/a").startsWith(sharedLockDir())).toBe(true);
-  });
-});
-
-describe("stopServe", () => {
-  it("returns false when there is no lock", async () => {
-    await withHome(async (home) => {
-      expect(await stopServe(join(home, "data"))).toBe(false);
-    });
-  });
-
-  it("signals the detached process group and preserves a replacement lock", async () => {
-    await withHome(async (home) => {
-      const dir = join(home, "data");
-      const original = {
-        pid: 12345,
-        port: 1,
-        startedAt: new Date().toISOString(),
-      };
-      writeLock(dir, original);
-      let alive = true;
-      const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
-        if (signal === 0) {
-          if (alive) return true;
-          throw Object.assign(new Error("gone"), { code: "ESRCH" });
-        }
-        if (pid === -original.pid && signal === "SIGTERM") {
-          alive = false;
-          writeLock(dir, {
-            pid: 54321,
-            port: 2,
-            startedAt: new Date().toISOString(),
-          });
-          return true;
-        }
-        return true;
-      }) as typeof process.kill);
-      try {
-        expect(await stopServe(dir)).toBe(true);
-        expect(kill).toHaveBeenCalledWith(-original.pid, "SIGTERM");
-        expect(readLock(dir)?.pid).toBe(54321);
-      } finally {
-        kill.mockRestore();
-      }
-    });
-  });
-
-  it("kills the locked pid and removes the lock", async () => {
-    await withHome(async (home) => {
-      const { spawn } = await vi.importActual<typeof import("node:child_process")>(
-        "node:child_process",
-      );
-      const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-        stdio: "ignore",
-      });
-      const pid = child.pid;
-      try {
-        expect(pid).toBeDefined();
-        const dir = join(home, "data");
-        writeLock(dir, {
-          pid: pid!,
-          port: 1,
-          startedAt: new Date().toISOString(),
-        });
-        expect(await stopServe(dir)).toBe(true);
-        expect(readLock(dir)).toBeUndefined();
-        expect(pidAlive(pid!)).toBe(false);
-      } finally {
-        try {
-          if (pid) process.kill(pid, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
-    });
   });
 });

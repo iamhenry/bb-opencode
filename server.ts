@@ -74,6 +74,11 @@ import {
   pickerOptionsFromAgents,
   type OpenCodeAgent,
 } from "./src/selectable-primaries.js";
+import {
+  emptyUpdateStatus,
+  exactPostInstall,
+  selectEnrolledHost,
+} from "./src/update.js";
 
 const stamps = createAgentStampStore();
 const nextAdopts = createNextAdoptStore();
@@ -130,7 +135,7 @@ export default async function plugin(bb: BbPluginApi) {
     id: PROVIDER_ID,
     displayName: PROVIDER_DISPLAY_NAME,
     icon: "./assets/icon.svg",
-    maintenance: { health: true, usage: true, installation: false },
+    maintenance: { health: true, usage: true, installation: true },
     capabilities: {
       supportsServiceTier: false,
       supportsNativeUserQuestion: true,
@@ -235,6 +240,78 @@ export default async function plugin(bb: BbPluginApi) {
       const hostId = await firstHostId(bb);
       if (!hostId) return { ok: false, error: "No enrolled host" };
       return host.call("reload", {}, { hostId });
+    },
+    async updateStatus(input) {
+      const selected = await enrolledHostId(bb, input.hostId);
+      if (!selected.ok) return emptyUpdateStatus(selected.error);
+      return host.call("updateStatus", {}, { hostId: selected.hostId });
+    },
+    async installUpdate(input) {
+      const selected = await enrolledHostId(bb, input.hostId);
+      if (!selected.ok) {
+        return {
+          ok: false,
+          error: selected.error,
+          diskVersion: null,
+          targetVersion: null,
+          runningVersion: null,
+          pendingRestart: false,
+        };
+      }
+      try {
+        const before = await host.call("updateStatus", {}, {
+          hostId: selected.hostId,
+        });
+        const events = await bb.sdk.hosts.installProviderCli({
+          hostId: selected.hostId,
+          provider: PROVIDER_ID,
+          actionKind: "update",
+        });
+        const after = await host.call("updateStatus", {}, {
+          hostId: selected.hostId,
+        });
+        const disk = exactPostInstall({
+          events,
+          expectedPath: before.binaryPath,
+          expectedTarget: before.targetVersion,
+          after,
+        });
+        if (!disk.ok) return disk;
+        const activated = await host.call("restartToApply", {}, {
+          hostId: selected.hostId,
+        });
+        if (activated.ok) {
+          return { ...activated, pendingRestart: false };
+        }
+        return {
+          ...disk,
+          pendingRestart: true,
+          error: activated.error ?? "Installed—restart pending",
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          diskVersion: null,
+          targetVersion: null,
+          runningVersion: null,
+          pendingRestart: false,
+        };
+      }
+    },
+    async restartToApply(input) {
+      const selected = await enrolledHostId(bb, input.hostId);
+      if (!selected.ok) {
+        return {
+          ok: false,
+          error: selected.error,
+          diskVersion: null,
+          targetVersion: null,
+          runningVersion: null,
+          pendingRestart: false,
+        };
+      }
+      return host.call("restartToApply", {}, { hostId: selected.hostId });
     },
     async stampAgent(input) {
       const threadId = input.threadId?.trim() || undefined;
@@ -941,6 +1018,14 @@ async function collectThreadReasoning(bb: BbPluginApi, threadId: string) {
 async function firstHostId(bb: BbPluginApi): Promise<string | undefined> {
   const hosts = await bb.sdk.hosts.list();
   return hosts[0]?.id;
+}
+
+async function enrolledHostId(
+  bb: BbPluginApi,
+  requested?: string,
+): Promise<{ ok: true; hostId: string } | { ok: false; error: string }> {
+  const hosts = await bb.sdk.hosts.list();
+  return selectEnrolledHost(hosts, requested);
 }
 
 async function resolveSessionId(

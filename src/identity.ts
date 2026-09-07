@@ -14,6 +14,17 @@ export function isVersionInWindow(version: string): boolean {
   return compareSemver(parsed, min) >= 0 && compareSemver(parsed, max) < 0;
 }
 
+/** Null when either side is not `x.y.z`. */
+export function compareVersionStrings(
+  left: string,
+  right: string,
+): number | null {
+  const parsedLeft = parseSemver(left);
+  const parsedRight = parseSemver(right);
+  if (!parsedLeft || !parsedRight) return null;
+  return compareSemver(parsedLeft, parsedRight);
+}
+
 export function versionSkewMessage(serverVersion: string): string {
   return `OpenCode server ${serverVersion} is outside the pinned window ${SERVER_VERSION_MIN}–<${SERVER_VERSION_MAX_EXCLUSIVE} (SDK ${SDK_PIN}).`;
 }
@@ -22,8 +33,13 @@ export function isSystemAgentName(name: string): boolean {
   return SYSTEM_AGENT_NAMES.has(name);
 }
 
+export function parseExactVersion(version: string): string | null {
+  const parsed = parseSemver(version);
+  return parsed ? `${parsed[0]}.${parsed[1]}.${parsed[2]}` : null;
+}
+
 function parseSemver(version: string): [number, number, number] | null {
-  const match = version.trim().match(/^(\d+)\.(\d+)\.(\d+)/);
+  const match = version.trim().replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
