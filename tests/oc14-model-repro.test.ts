@@ -107,3 +107,110 @@ describe("OC-14 repro: child-agent model selection", () => {
     expect(secondModel).toBeUndefined();
   });
 });
+describe("OC-14: modelIsExplicit consumption", () => {
+  const messages: Array<Record<string, unknown>> = [];
+
+  afterEach(() => {
+    resetBridgeForTests();
+    messages.length = 0;
+  });
+
+  function installFake() {
+    const fake = createFakeOpenCode();
+    resetBridgeForTests({
+      acquire: () => fake.client,
+      attach: async () => ({ url: fake.client.url, pid: 1, port: 9 }),
+      write: (message) => messages.push(message),
+    });
+    return fake;
+  }
+
+  function fullOptions(): Record<string, unknown> {
+    return {
+      permissionMode: "full",
+      permissionScope: "full",
+      approvalReviewer: null,
+      permissionEscalation: null,
+    };
+  }
+
+  it("omits the remembered default model so agent config applies", async () => {
+    const fake = installFake();
+    fake.agents.push({ name: "build", mode: "primary" });
+    send({
+      id: "start",
+      method: "thread/start",
+      params: { threadId: "thr_x", cwd: "/tmp/a", instructionMode: "append", options: fullOptions() },
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        threadId: "thr_x",
+        providerThreadId: "ses_1",
+        clientRequestId: "creq_test0001",
+        input: [{ type: "text", text: "hi", mentions: [] }],
+        options: {
+          ...fullOptions(),
+          model: "openai/gpt-5.6-sol",
+          modelIsExplicit: false,
+        },
+      },
+    });
+    await flush();
+    expect(fake.lastPrompt?.body.model).toBeUndefined();
+  });
+
+  it("pins an explicit user model", async () => {
+    const fake = installFake();
+    fake.agents.push({ name: "build", mode: "primary" });
+    send({
+      id: "start",
+      method: "thread/start",
+      params: { threadId: "thr_y", cwd: "/tmp/a", instructionMode: "append", options: fullOptions() },
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        threadId: "thr_y",
+        providerThreadId: "ses_1",
+        clientRequestId: "creq_test0002",
+        input: [{ type: "text", text: "hi", mentions: [] }],
+        options: {
+          ...fullOptions(),
+          model: "xai/grok-4.6",
+          modelIsExplicit: true,
+        },
+      },
+    });
+    await flush();
+    expect(fake.lastPrompt?.body.model).toEqual({ providerID: "xai", modelID: "grok-4.6" });
+  });
+
+  it("pins the model when legacy hosts never send modelIsExplicit", async () => {
+    const fake = installFake();
+    fake.agents.push({ name: "build", mode: "primary" });
+    send({
+      id: "start",
+      method: "thread/start",
+      params: { threadId: "thr_z", cwd: "/tmp/a", instructionMode: "append", options: fullOptions() },
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: {
+        threadId: "thr_z",
+        providerThreadId: "ses_1",
+        clientRequestId: "creq_test0003",
+        input: [{ type: "text", text: "hi", mentions: [] }],
+        options: { ...fullOptions(), model: "xai/grok-4.6" },
+      },
+    });
+    await flush();
+    expect(fake.lastPrompt?.body.model).toEqual({ providerID: "xai", modelID: "grok-4.6" });
+  });
+});
