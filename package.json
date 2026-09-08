@@ -12,6 +12,7 @@
     "name": "OpenCode",
     "description": "Run BB threads on a detached OpenCode server.",
     "branding": {
+      "icon": "./assets/icon.svg",
       "logo": {
         "light": "./assets/logo-light.svg",
         "dark": "./assets/logo-dark.svg"
