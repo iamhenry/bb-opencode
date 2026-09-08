@@ -80,6 +80,18 @@ export const hostContract = defineRpcContract({
         parentID: z.string().nullable(),
         lastUserAgent: z.string().nullable(),
         model: z.string().nullable(),
+        reasoningLevel: z
+          .enum([
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "ultracode",
+            "max",
+            "ultra",
+          ])
+          .nullable(),
       })
       .strict(),
   },

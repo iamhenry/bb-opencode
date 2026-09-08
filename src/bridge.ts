@@ -64,7 +64,7 @@ import {
   filterMessagesByRevertPoint,
   hydrateDeltas,
   lastAssistantSettled,
-  lastUserAgent,
+  lastAgent,
   lastUserMessageId,
   revertMessageIdOf,
   type HydrateMessage,
@@ -2431,7 +2431,7 @@ async function resolveSelectableAgent(args: {
   );
   return resolveContinueAgent({
     requested: args.requested,
-    lastUserAgent: lastUserAgent(messages),
+    lastUserAgent: lastAgent(messages),
     agents,
   });
 }

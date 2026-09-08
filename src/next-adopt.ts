@@ -5,6 +5,7 @@ export interface NextAdopt {
   hostId: string;
   opencodeSessionId: string;
   bindOnly?: boolean;
+  agent?: string;
   armedAt: number;
 }
 

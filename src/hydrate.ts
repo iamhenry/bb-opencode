@@ -78,6 +78,15 @@ export function lastUserAgent(messages: readonly HydrateMessage[]): string | und
   return undefined;
 }
 
+/** Latest effective agent, including assistant-only windows from long Task runs. */
+export function lastAgent(messages: readonly HydrateMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const agent = messages[i]?.info.agent;
+    if (typeof agent === "string" && agent) return agent;
+  }
+  return undefined;
+}
+
 export function lastAssistantSettled(
   messages: readonly HydrateMessage[],
 ): boolean {

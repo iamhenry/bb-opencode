@@ -15,11 +15,10 @@ describe("next adopt", () => {
       projectId: "p",
       hostId: "h",
       opencodeSessionId: "s",
+      agent: "general",
     });
-    expect(
-      consumeNextAdopt(store, { projectId: "p", isNewThread: true })
-        ?.opencodeSessionId,
-    ).toBe("s");
+    expect(consumeNextAdopt(store, { projectId: "p", isNewThread: true }))
+      .toMatchObject({ opencodeSessionId: "s", agent: "general" });
     expect(
       consumeNextAdopt(store, { projectId: "p", isNewThread: true }),
     ).toBeUndefined();
