@@ -4355,6 +4355,52 @@ describe("provider bridge", () => {
     });
   });
 
+  it("keeps a subagent from an assistant-only bounded history", async () => {
+    const fake = installFake();
+    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
+    fake.messages.set("ses_1", [
+      {
+        info: {
+          id: "a1",
+          role: "assistant",
+          agent: "explore",
+          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
+        },
+        parts: [{ type: "text", text: "working" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "ses_1" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "continue", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "explore",
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+      variant: "high",
+    });
+  });
+
   it("follow-up on a bound build child uses its spawned custom model", async () => {
     const fake = installFake();
     fake.sessions.set("child", { id: "child", directory: "/tmp/a" });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bbReasoningLevelForVariant,
   defaultReasoningEffortFor,
   openCodeVariantFor,
   reasoningLevelOf,
@@ -8,6 +9,10 @@ import {
 } from "../src/reasoning.js";
 
 describe("reasoning", () => {
+  it("keeps only variants BB can persist as reasoning levels", () => {
+    expect(bbReasoningLevelForVariant("high")).toBe("high");
+    expect(bbReasoningLevelForVariant("minimal")).toBeUndefined();
+  });
   it("maps BB reasoning levels onto OpenCode variants", () => {
     expect(openCodeVariantFor("low")).toBe("low");
     expect(openCodeVariantFor("medium")).toBe("medium");
