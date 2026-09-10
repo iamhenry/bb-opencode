@@ -3396,6 +3396,16 @@ async function resolvePromptModel(
     typeof (options as { model?: unknown })?.model === "string"
       ? ((options as { model: string }).model as string).trim()
       : undefined;
+  const modelIsExplicit =
+    (options as { modelIsExplicit?: unknown } | undefined)?.modelIsExplicit;
+  // A model that is not a deliberate user choice (BB remembered default) must
+  // not override the selected agent's configured model. Omit it so the
+  // OpenCode server applies agent config. Legacy hosts never send
+  // modelIsExplicit (undefined) and keep the old pinning behavior.
+  if (raw && modelIsExplicit === false) return { ok: true };
+  // No explicit model: omit it so the OpenCode server applies the agent's
+  // configured model. Injecting a remembered model here overrides agent config.
+  if (!raw) return { ok: true };
   const remembered = lastPromptedModels.get(sessionId) ?? lastPromptedModel;
   let providers: Array<{ id: string; models?: unknown }> = [];
   let configured: string | undefined;
