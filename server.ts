@@ -185,6 +185,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.events.on("thread.active", ({ thread }) => {
+    schedulePublishedTitlePersist(bb, thread);
+  });
   bb.events.on("thread.idle", ({ thread }) => {
     settleTurn(stamps, thread.id);
     schedulePublishedTitlePersist(bb, thread);
@@ -787,7 +790,7 @@ export default async function plugin(bb: BbPluginApi) {
 
 }
 
-// ponytail: OpenCode's title agent often lands after idle; 8s was too short.
+// ponytail: title agent is ~15–20s; retries cover that while the turn is still active.
 const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000, 20000, 40000];
 
 function schedulePublishedTitlePersist(
