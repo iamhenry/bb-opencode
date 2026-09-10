@@ -83,6 +83,7 @@ export function createFakeOpenCode(): FakeOpenCode {
       { name: "compaction", mode: "primary", hidden: true },
       { name: "title", mode: "primary", hidden: true },
       { name: "explore", mode: "subagent" },
+      { name: "general", mode: "subagent" },
     ],
     emit(event) {
       handler?.(event);

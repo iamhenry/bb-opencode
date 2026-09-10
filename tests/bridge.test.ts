@@ -3857,7 +3857,7 @@ describe("provider bridge", () => {
     expect(names).toContain("opencode/gpt-4.1");
   });
 
-  it("refuses a queued agent that is no longer selectable (ISC-29.5)", async () => {
+  it("runs a new root stamped with a subagent as the default primary", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
@@ -3867,12 +3867,29 @@ describe("provider bridge", () => {
       params: turnParams({
         options: {
           ...fullOptions,
-          providerOptions: { agent: "explore" },
+          providerOptions: { agent: "general" },
         },
       }),
     });
     await flush();
-    expect(fake.calls.prompt).toBe(0);
+    expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string; error?: { message?: string } }>;
+          })?.deltas ?? []),
+      ),
+    ).not.toContainEqual(
+      expect.objectContaining({
+        kind: "turn.boundary",
+        status: "failed",
+        error: {
+          message: "Unknown or non-selectable OpenCode agent: general",
+        },
+      }),
+    );
   });
 
   it("does not approve unknown permission asks under full (ISC-64)", async () => {
