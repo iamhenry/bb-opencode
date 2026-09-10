@@ -36,9 +36,6 @@ import {
   exactPostInstall,
   fetchLatestSupported,
   forwardGroupSignals,
-  GITHUB_MAX_PAGES,
-  GITHUB_PER_PAGE,
-  githubReleasesUrl,
   hostWrapEntry,
   LATEST_FAIL_CACHE_MS,
   pickHighestEligibleRelease,
@@ -136,17 +133,13 @@ function mockGithubPages(
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
-    const pageMatch = /[?&]page=(\d+)/.exec(url);
-    const page = pageMatch ? Number(pageMatch[1]) : 1;
     if (url.includes("api.github.com/repos/anomalyco/opencode/releases")) {
-      const tags = pages[page - 1] ?? [];
+      const item = pages[0]?.[0];
       return new Response(
-        JSON.stringify(
-          tags.map((item) => ({
-            tag_name: item.tag,
-            prerelease: item.prerelease === true,
-          })),
-        ),
+        JSON.stringify(item ? {
+          tag_name: item.tag,
+          prerelease: item.prerelease === true,
+        } : {}),
         { status: 200 },
       );
     }
@@ -247,15 +240,11 @@ describe("release selection", () => {
     ).toBe("1.18.29");
   });
 
-  it("paginates GitHub releases, caches success, and caches failures briefly", async () => {
-    const { calls } = mockGithubPages([
-      Array.from({ length: 30 }, () => ({ tag: "v1.18.20" })),
-      [{ tag: "v1.18.29" }],
-    ]);
-    expect(githubReleasesUrl(1)).toContain("page=1");
+  it("fetches GitHub's latest release and caches success and failures briefly", async () => {
+    const { calls } = mockGithubPages([[{ tag: "v1.18.29" }]]);
     expect(await fetchLatestSupported()).toBe("1.18.29");
-    expect(calls.filter((url) => url.includes("page=1"))).toHaveLength(1);
-    expect(calls.filter((url) => url.includes("page=2"))).toHaveLength(1);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/releases/latest");
     const after = calls.length;
     expect(await fetchLatestSupported()).toBe("1.18.29");
     expect(calls.length).toBe(after);
@@ -273,38 +262,18 @@ describe("release selection", () => {
     expect(fails).toBe(2);
   });
 
-  it("treats a failed later page as unknown and never current", async () => {
+  it("treats a failed latest-release request as unknown and never current", async () => {
     const { home, dataDir } = withHome();
     writeFakeBinary(home, "1.18.21");
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (!url.includes("api.github.com")) return originalFetch(input);
-      if (url.includes("page=1")) {
-        return new Response(
-          JSON.stringify(
-            Array.from({ length: 30 }, () => ({
-              tag_name: "v1.18.21",
-              prerelease: false,
-            })),
-          ),
-          { status: 200 },
-        );
-      }
       return new Response("nope", { status: 500 });
     }) as typeof fetch;
     expect(await fetchLatestSupported()).toBeNull();
     const status = await readUpdateStatus(dataDir);
     expect(status.latestVersion).toBeNull();
     expect(status.current).toBe(false);
-  });
-
-  it("treats a full final GitHub page as incomplete", async () => {
-    mockGithubPages(
-      Array.from({ length: GITHUB_MAX_PAGES }, () =>
-        Array.from({ length: GITHUB_PER_PAGE }, () => ({ tag: "v1.18.21" })),
-      ),
-    );
-    expect(await fetchLatestSupported()).toBeNull();
   });
 });
 
@@ -341,6 +310,20 @@ describe("provider installation contract", () => {
       expect.fail("expected an available update plan");
     }
     expect((await providerInstallationRun("install")).available).toBe(false);
+  });
+
+  it("offers an update while a normal thread start guard is active", async () => {
+    const { home, dataDir } = withHome();
+    writeFakeBinary(home, "1.18.21");
+    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    const token = acquireStartGuard();
+    expect(token).toBeTruthy();
+    expect(await readUpdateStatus(dataDir)).toMatchObject({
+      eligible: true,
+      targetVersion: "1.18.29",
+      error: "Running OpenCode version is unknown",
+    });
+    releaseStartGuard(token!);
   });
 
   it("wrapper acquires hold before mutation and loses to restart", async () => {
@@ -499,6 +482,25 @@ describe("provider installation contract", () => {
         },
       }).ok,
     ).toBe(false);
+    expect(
+      exactPostInstall({
+        events: [{ type: "completed", success: true, exitCode: 0 }],
+        expectedPath: "/remote-host/bin/opencode",
+        expectedTarget: "1.18.29",
+        after: {
+          binaryPath: "/remote-host/bin/opencode",
+          diskVersion: "1.18.29",
+          runningVersion: "1.18.28",
+          latestVersion: "1.18.29",
+          targetVersion: "1.18.29",
+          method: "curl",
+          eligible: false,
+          canRestart: false,
+          current: false,
+          error: null,
+        },
+      }).ok,
+    ).toBe(true);
   });
 
   it("summarizes daemon install events without claiming extra behavior", () => {
@@ -704,6 +706,9 @@ describe("restart exclusion", () => {
     expect(token).toBeTruthy();
     expect(acquireExclusive("restart")).toBeNull();
     expect(await restartToApply(dataDir)).toMatchObject({ ok: false });
+    await expect(attachOrSpawn({ dataDir, spawn: false })).rejects.toThrow(
+      /not attached/,
+    );
     releaseStartGuard(token!);
     const restartToken = acquireExclusive("restart");
     expect(restartToken).toBeTruthy();

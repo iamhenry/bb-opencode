@@ -14,6 +14,13 @@ describe("OpenCode provider mark", () => {
     const mask = readFileSync(join(root, "assets/icon.svg"), "utf8");
     expect(mask).toContain('fill="currentColor"');
 
+    // Settings sidebar compact icon must reuse the same currentColor mark
+    // (host masks it with currentColor), not the Zap bolt fallback.
+    const manifest = JSON.parse(
+      readFileSync(join(root, "package.json"), "utf8"),
+    ) as { bb: { branding: { icon?: string } } };
+    expect(manifest.bb.branding.icon).toBe("./assets/icon.svg");
+
     const light = readFileSync(join(root, "assets/logo-light.svg"), "utf8");
     const dark = readFileSync(join(root, "assets/logo-dark.svg"), "utf8");
     expect(light).toContain("#171717");

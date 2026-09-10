@@ -10,7 +10,7 @@ const BB_REASONING_ORDER = [
   "ultra",
 ] as const;
 
-type BbReasoningLevel = (typeof BB_REASONING_ORDER)[number];
+export type BbReasoningLevel = (typeof BB_REASONING_ORDER)[number];
 
 const BB_REASONING = new Set<string>(BB_REASONING_ORDER);
 
@@ -117,4 +117,12 @@ export function reasoningLevelOf(options: unknown): string | undefined {
   if (!options || typeof options !== "object") return undefined;
   const level = (options as { reasoningLevel?: unknown }).reasoningLevel;
   return typeof level === "string" && level.length > 0 ? level : undefined;
+}
+
+export function bbReasoningLevelForVariant(
+  variant: string | undefined,
+): BbReasoningLevel | undefined {
+  return variant && BB_REASONING.has(variant)
+    ? (variant as BbReasoningLevel)
+    : undefined;
 }

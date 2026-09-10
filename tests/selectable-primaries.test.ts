@@ -90,4 +90,21 @@ describe("selectable primaries", () => {
       }),
     ).toEqual({ ok: true, agent: "plan", inheritSession: false });
   });
+
+  it("runs a new root stamped with a subagent as the default primary", () => {
+    expect(
+      resolveContinueAgent({
+        requested: "general",
+        lastUserAgent: undefined,
+        agents: [...fixture, { name: "general", mode: "subagent" }],
+      }),
+    ).toEqual({ ok: true, agent: "build", inheritSession: false });
+    expect(
+      resolveContinueAgent({
+        requested: "explore",
+        lastUserAgent: "build",
+        agents: fixture,
+      }),
+    ).toEqual({ ok: true, agent: "build", inheritSession: false });
+  });
 });

@@ -15,6 +15,7 @@ import {
   acquireExclusive,
   adoptExclusive,
   holdBlockMessage,
+  inspectHold,
   processGroupAlive,
   releaseExclusive,
 } from "./hold.js";
@@ -33,16 +34,14 @@ import {
   stopServeIf,
   type OpenCodeLock,
 } from "./process.js";
-import { runningSessionIdsFromStatus } from "./session-status.js";
+import { sessionsIdleFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
 
-const GITHUB_RELEASES =
-  "https://api.github.com/repos/anomalyco/opencode/releases";
+const GITHUB_LATEST_RELEASE =
+  "https://api.github.com/repos/anomalyco/opencode/releases/latest";
 const VERSION_TIMEOUT_MS = 5_000;
 export const LATEST_OK_CACHE_MS = 5 * 60_000;
 export const LATEST_FAIL_CACHE_MS = 15_000;
-export const GITHUB_PER_PAGE = 30;
-export const GITHUB_MAX_PAGES = 5;
 
 export type UpgradeMethod = "curl" | "npm" | "unknown";
 
@@ -222,30 +221,21 @@ export function pickHighestEligibleRelease(
   return best;
 }
 
-export function githubReleasesUrl(page: number): string {
-  return `${GITHUB_RELEASES}?per_page=${GITHUB_PER_PAGE}&page=${page}`;
-}
-
 async function loadHighestEligibleRelease(): Promise<{
   value: string | null;
   ok: boolean;
 }> {
-  const collected: Array<{ tag_name?: unknown; prerelease?: unknown }> = [];
   try {
-    for (let page = 1; page <= GITHUB_MAX_PAGES; page += 1) {
-      const response = await fetch(githubReleasesUrl(page), {
-        headers: { accept: "application/vnd.github+json" },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!response.ok) return { value: null, ok: false };
-      const body = (await response.json()) as unknown;
-      if (!Array.isArray(body)) return { value: null, ok: false };
-      if (body.length === 0) break;
-      collected.push(...body);
-      if (body.length < GITHUB_PER_PAGE) break;
-      if (page === GITHUB_MAX_PAGES) return { value: null, ok: false };
-    }
-    return { value: pickHighestEligibleRelease(collected), ok: true };
+    const response = await fetch(GITHUB_LATEST_RELEASE, {
+      headers: { accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!response.ok) return { value: null, ok: false };
+    const body = (await response.json()) as {
+      tag_name?: unknown;
+      prerelease?: unknown;
+    };
+    return { value: pickHighestEligibleRelease([body]), ok: true };
   } catch {
     return { value: null, ok: false };
   }
@@ -292,7 +282,8 @@ const WINDOWS_INSTALL_MESSAGE =
   "OpenCode install from BB is not supported on Windows because process-group ownership cannot be proven.";
 
 export async function readUpdateStatus(dataDir: string): Promise<UpdateStatus> {
-  const blocked = holdBlockMessage();
+  const hold = inspectHold();
+  const blocked = hold.status === "clear" ? null : holdBlockMessage();
   const binaryPath = resolveOpenCodeBinary() ?? null;
   const method = binaryPath ? detectUpgradeMethod(binaryPath) : null;
   const diskVersion = binaryPath ? readCliVersion(binaryPath) : null;
@@ -712,12 +703,9 @@ export function exactPostInstall(args: {
   after: UpdateStatus;
 }): MutationResult {
   const summarized = summarizeInstallEvents(args.events);
-  const expectedPath = args.expectedPath
-    ? canonicalPath(args.expectedPath)
-    : undefined;
-  const afterPath = args.after.binaryPath
-    ? canonicalPath(args.after.binaryPath)
-    : undefined;
+  // The selected host canonicalizes both paths before returning status.
+  const expectedPath = args.expectedPath;
+  const afterPath = args.after.binaryPath;
   const disk = args.after.diskVersion;
   if (!summarized.ok) {
     return {
@@ -732,7 +720,7 @@ export function exactPostInstall(args: {
   if (!expectedPath || !afterPath || expectedPath !== afterPath) {
     return {
       ok: false,
-      error: "Install path changed or could not be resolved",
+      error: "Install path changed between status checks",
       diskVersion: disk,
       targetVersion: args.expectedTarget,
       runningVersion: args.after.runningVersion,
@@ -797,8 +785,8 @@ export async function bbSessionsIdle(
       signal: AbortSignal.timeout(800),
     });
     if (!response.ok) return "unknown";
-    const running = runningSessionIdsFromStatus(await response.json());
-    if (running.size > 0) return false;
+    const idle = sessionsIdleFromStatus(await response.json());
+    if (idle !== true) return idle ?? "unknown";
   } catch {
     return "unknown";
   }

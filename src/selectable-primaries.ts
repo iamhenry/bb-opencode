@@ -93,18 +93,13 @@ export function resolveContinueAgent(args: {
   if (last?.mode === "subagent") {
     return { ok: true, agent: last.name, inheritSession: true };
   }
-  if (args.requested) {
-    if (
-      listSelectablePrimaries(args.agents).some(
-        (agent) => agent.name === args.requested,
-      )
-    ) {
-      return { ok: true, agent: args.requested, inheritSession: false };
-    }
-    return {
-      ok: false,
-      reason: `Unknown or non-selectable OpenCode agent: ${args.requested}`,
-    };
+  if (
+    args.requested &&
+    listSelectablePrimaries(args.agents).some(
+      (agent) => agent.name === args.requested,
+    )
+  ) {
+    return { ok: true, agent: args.requested, inheritSession: false };
   }
   const hydrated = hydratePickerAgent({
     lastUserAgent: args.lastUserAgent,

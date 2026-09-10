@@ -80,7 +80,7 @@ describe("fetchComposerChrome", () => {
     expect(lastArmedComposerAgent()).toBe("orchestrator");
     expect(shouldResetArmedComposerAgent(null, "thr_1")).toBe(false);
     expect(shouldResetArmedComposerAgent("thr_1", "thr_2")).toBe(true);
-    expect(shouldResetArmedComposerAgent("thr_1", null)).toBe(false);
+    expect(shouldResetArmedComposerAgent("thr_1", null)).toBe(true);
     resetLastArmedComposerAgent();
     expect(lastArmedComposerAgent()).toBe("");
   });

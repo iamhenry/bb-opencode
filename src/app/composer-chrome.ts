@@ -34,14 +34,12 @@ export function resetLastArmedComposerAgent(): void {
   lastArmed = "";
 }
 
-/** Keep the pick across new-thread → first thread. Reset only on thread hops. */
+/** Keep the pick across new-thread → first thread. Reset when leaving a thread. */
 export function shouldResetArmedComposerAgent(
   previousThreadId: string | null,
   nextThreadId: string | null,
 ): boolean {
-  return Boolean(
-    previousThreadId && nextThreadId && previousThreadId !== nextThreadId,
-  );
+  return Boolean(previousThreadId && previousThreadId !== nextThreadId);
 }
 
 /** Chrome hydrate must not clobber a click, or a remount before lastUserAgent. */

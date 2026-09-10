@@ -186,7 +186,7 @@ describe("lock reclaim", () => {
       };
       spawnMock.mockReturnValue(child);
       globalThis.fetch = (async () => ({ ok: false })) as unknown as typeof fetch;
-      const kill = vi.spyOn(process, "kill");
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
       try {
         await expect(
           attachOrSpawn({ dataDir: join(home, "data"), binary: "opencode" }),

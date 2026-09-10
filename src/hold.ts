@@ -26,6 +26,11 @@ interface HoldState {
 
 const MUTEX_FILE = "opencode.hold.mutex";
 const STATE_FILE = "opencode.hold.json";
+const RELEASE_ATTEMPTS = 20;
+
+function wait(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
 
 function holdDir(): string {
   const dir = join(process.env.HOME ?? "/tmp", ".bb", "plugins", "opencode");
@@ -141,20 +146,8 @@ function acquireMutex(): boolean {
     writeFileSync(mutexPath(), `${process.pid}\n`, { flag: "wx" });
     return true;
   } catch {
-    if (!existsSync(mutexPath())) return false;
-    try {
-      const pid = Number(readFileSync(mutexPath(), "utf8").trim());
-      if (Number.isFinite(pid) && pidAlive(pid)) return false;
-      unlinkSync(mutexPath());
-    } catch {
-      return false;
-    }
-    try {
-      writeFileSync(mutexPath(), `${process.pid}\n`, { flag: "wx" });
-      return true;
-    } catch {
-      return false;
-    }
+    // Fail closed. Removing a stale-looking path can delete a successor's lock.
+    return false;
   }
 }
 
@@ -285,10 +278,17 @@ export function acquireStartGuard(): string | null {
   return result === true ? token : null;
 }
 
-export function releaseStartGuard(token: string): void {
-  withMutex((state) => {
-    delete state.starts[token];
-  });
+export function releaseStartGuard(token: string): boolean {
+  for (let attempt = 0; attempt < RELEASE_ATTEMPTS; attempt += 1) {
+    const released = withMutex((state) => {
+      delete state.starts[token];
+      return true;
+    });
+    if (released) return true;
+    wait(25);
+  }
+  console.error("OpenCode start guard could not be released");
+  return false;
 }
 
 export function resetHoldForTests(): void {

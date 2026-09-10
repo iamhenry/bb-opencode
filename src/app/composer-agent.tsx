@@ -118,6 +118,7 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     if (shouldResetArmedComposerAgent(previousThreadId.current, threadId)) {
       resetLastArmedComposerAgent();
       userPicked.current = false;
+      setAgent("build");
     }
     previousThreadId.current = threadId;
   }, [threadId]);

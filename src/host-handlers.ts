@@ -1,6 +1,11 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
-import { configDefaultModelId, lastModelIdFromMessages } from "./catalog.js";
 import {
+  configDefaultModelId,
+  lastModelIdFromMessages,
+  lastVariantFromMessages,
+} from "./catalog.js";
+import {
+  lastAgent,
   lastUserAgent,
   revertMessageIdOf,
   type HydrateMessage,
@@ -42,6 +47,7 @@ import {
   readUpdateStatus,
   restartToApply,
 } from "./update.js";
+import { bbReasoningLevelForVariant } from "./reasoning.js";
 
 const clients = new Map<string, OpenCodeClient>();
 
@@ -245,8 +251,10 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
     title: session.title ?? null,
     directory: session.directory ?? null,
     parentID: session.parentID ?? null,
-    lastUserAgent: lastUserAgent(messages) ?? null,
+    lastUserAgent: lastAgent(messages) ?? null,
     model: lastModelIdFromMessages(messages) ?? null,
+    reasoningLevel:
+      bbReasoningLevelForVariant(lastVariantFromMessages(messages)) ?? null,
   };
 }
 

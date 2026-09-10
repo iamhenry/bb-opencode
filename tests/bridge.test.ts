@@ -12,6 +12,7 @@ import {
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
+import { isDefaultOpenCodeTitle } from "../src/session-title.js";
 import { TASK_CHILD_BIND_TEXT } from "../src/task-thread.js";
 import { writeLivePermissionMode } from "../src/permission-mode-live.js";
 
@@ -671,6 +672,9 @@ describe("provider bridge", () => {
     );
     expect(listCalls).toBe(1);
     expect(createCalls).toBe(1);
+    expect(isDefaultOpenCodeTitle(fake.sessions.get("ses_1")?.title ?? "")).toBe(
+      true,
+    );
     expect(
       messages.filter((message) => message.method === "thread/identity"),
     ).toHaveLength(1);
@@ -1492,16 +1496,20 @@ describe("provider bridge", () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
-    const placeholder = [...fake.sessions.values()].find((session) =>
-      session.title?.startsWith("bb-thread-start "),
-    );
-    expect(placeholder).toBeDefined();
-    // Simulate OpenCode echo events carrying the placeholder, then a real title.
+    const session = fake.sessions.get("ses_1");
+    expect(isDefaultOpenCodeTitle(session?.title ?? "")).toBe(true);
+    expect(session?.title?.startsWith("bb-thread-start ")).toBe(false);
+    expect(
+      fake.calls.update.some(
+        (call) => call.id === "ses_1" && isDefaultOpenCodeTitle(call.title),
+      ),
+    ).toBe(true);
+    // A leftover correlation echo must still stay unpublished.
     await ingestOpenCodeEvent({
       type: "session.updated",
       properties: {
         sessionID: "ses_1",
-        title: placeholder!.title,
+        title: "bb-thread-start leftover-uuid",
       },
     });
     await ingestOpenCodeEvent({
@@ -3849,7 +3857,7 @@ describe("provider bridge", () => {
     expect(names).toContain("opencode/gpt-4.1");
   });
 
-  it("refuses a queued agent that is no longer selectable (ISC-29.5)", async () => {
+  it("runs a new root stamped with a subagent as the default primary", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
@@ -3859,12 +3867,29 @@ describe("provider bridge", () => {
       params: turnParams({
         options: {
           ...fullOptions,
-          providerOptions: { agent: "explore" },
+          providerOptions: { agent: "general" },
         },
       }),
     });
     await flush();
-    expect(fake.calls.prompt).toBe(0);
+    expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as {
+            deltas?: Array<{ kind: string; status?: string; error?: { message?: string } }>;
+          })?.deltas ?? []),
+      ),
+    ).not.toContainEqual(
+      expect.objectContaining({
+        kind: "turn.boundary",
+        status: "failed",
+        error: {
+          message: "Unknown or non-selectable OpenCode agent: general",
+        },
+      }),
+    );
   });
 
   it("does not approve unknown permission asks under full (ISC-64)", async () => {
@@ -4321,6 +4346,52 @@ describe("provider bridge", () => {
           model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
         },
         parts: [{ type: "text", text: "explore" }],
+      },
+    ]);
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: "ses_1" },
+        },
+      }),
+    });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "continue", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "xai/grok-4.6",
+          reasoningLevel: "medium",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "explore",
+      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
+      variant: "high",
+    });
+  });
+
+  it("keeps a subagent from an assistant-only bounded history", async () => {
+    const fake = installFake();
+    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
+    fake.messages.set("ses_1", [
+      {
+        info: {
+          id: "a1",
+          role: "assistant",
+          agent: "explore",
+          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
+        },
+        parts: [{ type: "text", text: "working" }],
       },
     ]);
     send({

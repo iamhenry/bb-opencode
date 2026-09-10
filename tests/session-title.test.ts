@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  defaultOpenCodeRootTitle,
   fallbackSessionTitle,
   firstVisibleUserText,
   isDefaultOpenCodeTitle,
@@ -21,6 +22,8 @@ describe("OpenCode default titles", () => {
     expect(shouldPublishOpenCodeTitle("New session - 2026-07-06T22:33:57.776Z")).toBe(
       false,
     );
+    expect(isDefaultOpenCodeTitle(defaultOpenCodeRootTitle())).toBe(true);
+    expect(shouldPublishOpenCodeTitle(defaultOpenCodeRootTitle())).toBe(false);
   });
 
   it("publishes generated, forked, and user titles", () => {

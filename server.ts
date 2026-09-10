@@ -36,6 +36,7 @@ import {
   persistPublishedOpenCodeTitle,
 } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
+import type { BbReasoningLevel } from "./src/reasoning.js";
 import {
   EMPTY_REVERT_STATE,
   OPENCODE_REVERT_CHANNEL,
@@ -157,24 +158,24 @@ export default async function plugin(bb: BbPluginApi) {
     },
     env: { passthrough: ["OPENCODE_BIN"] },
     deriveProviderOptions(ctx) {
+      const isNewThread = !seenThreadIds.has(ctx.threadId);
+      const adopt = consumeNextAdopt(nextAdopts, {
+        projectId: ctx.projectId,
+        isNewThread,
+      });
       const stamped = peekAgent(stamps, ctx.threadId);
       const next = stamped
         ? undefined
         : peekNextAgent(nextAgents, ctx.projectId);
       const agent = resolvePromptAgent({
         stamped,
-        next,
+        next: adopt?.agent ?? next,
         configured: configuredAgent,
       });
       bb.log.info(
         `agent.derive thread=${ctx.threadId} project=${ctx.projectId} stamped=${stamped ?? "-"} next=${next ?? "-"} agent=${agent}`,
       );
-      const isNewThread = !seenThreadIds.has(ctx.threadId);
       seenThreadIds.add(ctx.threadId);
-      const adopt = consumeNextAdopt(nextAdopts, {
-        projectId: ctx.projectId,
-        isNewThread,
-      });
       return {
         agent,
         ...(adopt
@@ -189,6 +190,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  bb.events.on("thread.active", ({ thread }) => {
+    schedulePublishedTitlePersist(bb, thread);
+  });
   bb.events.on("thread.idle", ({ thread }) => {
     settleTurn(stamps, thread.id);
     schedulePublishedTitlePersist(bb, thread);
@@ -510,6 +514,8 @@ export default async function plugin(bb: BbPluginApi) {
           title: snapshot.title,
           bindOnly: true,
           model: snapshot.model,
+          agent: snapshot.lastUserAgent,
+          reasoningLevel: snapshot.reasoningLevel,
         });
         await bb.storage.kv.delete(
           pendingAdoptStorageKey({
@@ -861,7 +867,8 @@ export default async function plugin(bb: BbPluginApi) {
 
 }
 
-const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000];
+// ponytail: title agent is ~15–20s; retries cover that while the turn is still active.
+const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000, 20000, 40000];
 
 function schedulePublishedTitlePersist(
   bb: BbPluginApi,
@@ -1107,6 +1114,8 @@ type SessionSnapshot = {
   directory: string | null;
   parentID: string | null;
   model: string | null;
+  lastUserAgent: string | null;
+  reasoningLevel: BbReasoningLevel | null;
 };
 
 const spawningTaskChildren = new Set<string>();
@@ -1142,6 +1151,8 @@ async function spawnBoundTaskChild(
     title: string | null;
     bindOnly: boolean;
     model?: string | null;
+    agent?: string | null;
+    reasoningLevel?: BbReasoningLevel | null;
     prompt?: string;
   },
 ) {
@@ -1150,6 +1161,7 @@ async function spawnBoundTaskChild(
     hostId: args.hostId,
     opencodeSessionId: args.sessionId,
     bindOnly: args.bindOnly,
+    ...(args.agent ? { agent: args.agent } : {}),
   });
   try {
     const thread = await bb.sdk.threads.spawn({
@@ -1158,6 +1170,7 @@ async function spawnBoundTaskChild(
       parentThreadId: args.parentThreadId,
       title: taskChildThreadTitle(args.title),
       ...(args.model ? { model: args.model } : {}),
+      ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
       ...(args.prompt
         ? { prompt: args.prompt }
         : { input: taskChildBindInput() }),
@@ -1234,6 +1247,8 @@ async function ensureRunningTaskChildThreads(
         title: live.title,
         bindOnly: true,
         model: snapshot.model,
+        agent: snapshot.lastUserAgent,
+        reasoningLevel: snapshot.reasoningLevel,
       });
       rememberBoundTaskChild(live.childSessionId, childThreadId);
       bb.log.info(
@@ -1343,6 +1358,8 @@ async function openTaskChildThread(
       title: snapshot.title,
       bindOnly: true,
       model: snapshot.model,
+      agent: snapshot.lastUserAgent,
+      reasoningLevel: snapshot.reasoningLevel,
     });
     return { threadId, created: true, error: null };
   } catch (error) {

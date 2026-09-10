@@ -7,6 +7,7 @@ import {
   retryFromPart,
   retryKey,
   runningSessionIdsFromStatus,
+  sessionsIdleFromStatus,
 } from "../src/session-status.js";
 
 describe("session status", () => {
@@ -28,6 +29,12 @@ describe("session status", () => {
         ses_retry: { type: "retry", attempt: 1 },
       })].sort(),
     ).toEqual(["ses_busy", "ses_retry"]);
+  });
+
+  it("fails closed when maintenance sees an unknown status", () => {
+    expect(sessionsIdleFromStatus({ one: { type: "idle" } })).toBe(true);
+    expect(sessionsIdleFromStatus({ one: { type: "busy" } })).toBe(false);
+    expect(sessionsIdleFromStatus({ one: { type: "unknown" } })).toBeNull();
   });
 
   it("extracts retry parts and session errors", () => {

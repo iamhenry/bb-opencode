@@ -17,6 +17,7 @@ import {
   acquireStartGuard,
   exclusiveKind,
   holdBlockMessage,
+  inspectHold,
   releaseStartGuard,
 } from "./hold.js";
 
@@ -711,9 +712,8 @@ export async function attachOrSpawn(args: {
   spawn?: boolean;
   during?: string;
 }): Promise<AttachResult> {
-  const blocked = holdBlockMessage();
-  if (blocked && args.during !== "restart") {
-    throw new Error(blocked);
+  if (args.during !== "restart" && inspectHold().status !== "clear") {
+    throw new Error(holdBlockMessage() ?? "OpenCode maintenance already in progress");
   }
   const busy = exclusiveKind();
   if (busy && busy !== args.during) {

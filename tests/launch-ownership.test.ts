@@ -400,7 +400,7 @@ describe("durable launch claim", () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("api.github.com")) {
-        return new Response(JSON.stringify([{ tag_name: "v1.18.29" }]), {
+        return new Response(JSON.stringify({ tag_name: "v1.18.29" }), {
           status: 200,
         });
       }

@@ -3,6 +3,7 @@ import {
   assistantsAfterLastUser,
   filterMessagesByRevertPoint,
   hydrateDeltas,
+  lastAgent,
   lastAssistantSettled,
   lastUserAgent,
   lastUserMessageId,
@@ -120,6 +121,9 @@ describe("hydrate", () => {
       { info: { role: "user", agent: "plan" }, parts: [] },
       { info: { role: "assistant" }, parts: [] },
     ])).toBe("plan");
+    expect(lastAgent([
+      { info: { role: "assistant", agent: "general" }, parts: [] },
+    ])).toBe("general");
   });
 
   it("hydrates thousands of messages with exact source-order checkpoints", () => {
