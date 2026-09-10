@@ -62,6 +62,17 @@ export function runningSessionIdsFromStatus(body: unknown): Set<string> {
   return ids;
 }
 
+/** Strict parser for maintenance decisions. Unknown rows are not idle. */
+export function sessionsIdleFromStatus(body: unknown): boolean | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  for (const value of Object.values(body as Record<string, unknown>)) {
+    const status = readSessionStatus(value);
+    if (!status.kind) return null;
+    if (status.kind !== "idle") return false;
+  }
+  return true;
+}
+
 export function retryKey(args: {
   sessionId: string;
   messageId?: string;

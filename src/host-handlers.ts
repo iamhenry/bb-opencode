@@ -12,7 +12,23 @@ import {
 } from "./hydrate.js";
 import { messageMetaFromInfo } from "./run-chip.js";
 import { readCompleteHistory } from "./history-pages.js";
-import { attachOrSpawn, readLock, recentServeLog, stopServe } from "./process.js";
+import {
+  attachOrSpawn,
+  launchGuardBlockMessage,
+  pidAlive,
+  portListening,
+  readLaunchClaim,
+  readLock,
+  recentServeLog,
+  spawnOwnership,
+  stopServeIf,
+} from "./process.js";
+import {
+  acquireExclusive,
+  exclusiveKind,
+  holdBlockMessage,
+  releaseExclusive,
+} from "./hold.js";
 import { probeOpenCode, type ProbeResult } from "./probe.js";
 import { recentUnknownLogLines } from "./bridge.js";
 import { resolveRevertMessageId } from "./revert-target.js";
@@ -25,6 +41,12 @@ import { runningSessionIdsFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
 import { writeLivePermissionMode } from "./permission-mode-live.js";
 import type { LivePermissionMode } from "./permission-mode.js";
+import {
+  bbSessionsIdle,
+  emptyUpdateStatus,
+  readUpdateStatus,
+  restartToApply,
+} from "./update.js";
 import { bbReasoningLevelForVariant } from "./reasoning.js";
 
 const clients = new Map<string, OpenCodeClient>();
@@ -45,8 +67,67 @@ export async function handleReload(
   dataDir: string,
 ): Promise<{ ok: boolean; error: string | null }> {
   try {
-    await stopServe(dataDir);
-    return { ok: true, error: null };
+    const blocked = holdBlockMessage();
+    if (blocked) {
+      return { ok: false, error: blocked };
+    }
+    const token = acquireExclusive("restart");
+    if (!token) {
+      return {
+        ok: false,
+        error: `OpenCode ${exclusiveKind() ?? "restart"} already in progress`,
+      };
+    }
+    try {
+      const guardMsg = launchGuardBlockMessage();
+      if (guardMsg) return { ok: false, error: guardMsg };
+      const lock = readLock(dataDir);
+      if (!lock) return { ok: false, error: "No BB-owned OpenCode lock" };
+      const claim = readLaunchClaim();
+      const owned = spawnOwnership(
+        lock.pid,
+        lock.port,
+        lock.startedAt,
+        claim?.token,
+      );
+      if (!owned.ok || !claim?.token) {
+        return { ok: false, error: owned.ok ? "OpenCode pid is not a BB-launched serve" : owned.error };
+      }
+      if (!pidAlive(lock.pid)) {
+        return { ok: false, error: "BB OpenCode lock pid is not alive" };
+      }
+      if (!(await portListening(lock.port))) {
+        return { ok: false, error: "BB OpenCode server health is unknown" };
+      }
+      const idle = await bbSessionsIdle(lock.port);
+      if (idle !== true) {
+        return {
+          ok: false,
+          error:
+            idle === false
+              ? "OpenCode sessions are busy"
+              : "BB session idleness is unknown",
+        };
+      }
+      const stop = await stopServeIf(dataDir, lock, claim.token);
+      if (stop !== "stopped") {
+        return {
+          ok: false,
+          error:
+            stop === "replaced"
+              ? "OpenCode lock was replaced; not signaling the new pid"
+              : stop === "unowned"
+                ? (launchGuardBlockMessage() ??
+                  "OpenCode pid is not a BB-launched serve")
+                : stop === "alive"
+                  ? "OpenCode serve did not exit"
+                  : "BB OpenCode lock disappeared before reload",
+        };
+      }
+      return { ok: true, error: null };
+    } finally {
+      releaseExclusive(token);
+    }
   } catch (error) {
     return {
       ok: false,
@@ -305,4 +386,18 @@ export function handleStampPermissionMode(
 ): { ok: boolean } {
   writeLivePermissionMode(dataDir, threadId, permissionMode);
   return { ok: true };
+}
+
+export async function handleUpdateStatus(dataDir: string) {
+  try {
+    return await readUpdateStatus(dataDir);
+  } catch (error) {
+    return emptyUpdateStatus(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+export async function handleRestartToApply(dataDir: string) {
+  return restartToApply(dataDir);
 }

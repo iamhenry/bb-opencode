@@ -9,10 +9,12 @@ import { runMessageUndo } from "./src/app/message-revert.js";
 import { mountRevertTimeline } from "./src/app/revert-timeline.js";
 import { mountPermissionModeWatch } from "./src/app/permission-mode-watch.js";
 import { mountRunChips } from "./src/app/run-chip.js";
+import { mountUpdateControl } from "./src/app/update-control.js";
 import { SettingsSection } from "./src/app/settings-section.js";
 import { PROVIDER_ID } from "./src/identity.js";
 import "./src/app/composer-agent.css";
 import "./src/app/run-chip.css";
+import "./src/app/update-control.css";
 
 export default definePluginApp((app) => {
   app.contentScripts.register({
@@ -31,6 +33,12 @@ export default definePluginApp((app) => {
     id: "opencode-permission-mode",
     mount({ signal }) {
       return mountPermissionModeWatch({ signal });
+    },
+  });
+  app.contentScripts.register({
+    id: "opencode-update-control",
+    mount({ pluginId, signal }) {
+      return mountUpdateControl({ pluginId, signal });
     },
   });
   app.slots.experimental_providerIcon({

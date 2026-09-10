@@ -22,9 +22,22 @@ import {
   handleStampPermissionMode,
   handleSummarize,
   handleUnrevert,
+  handleUpdateStatus,
+  handleRestartToApply,
 } from "./src/host-handlers.js";
 
 export { experimental_providerBridge } from "./src/bridge.js";
+
+const waitAt = process.argv.indexOf("--oc-install-wait");
+if (waitAt >= 0) {
+  const { runInstallWait } = await import("./src/update.js");
+  process.exit(await runInstallWait(process.argv.slice(waitAt + 1)));
+}
+const wrapAt = process.argv.indexOf("--oc-install-wrap");
+if (wrapAt >= 0) {
+  const { runInstallWrap } = await import("./src/update.js");
+  process.exit(await runInstallWrap(process.argv.slice(wrapAt + 1)));
+}
 
 export default experimental_defineHostEntry({
   contract: { ...hostContract, ...experimental_nativeRootsHostContract },
@@ -116,6 +129,12 @@ export default experimental_defineHostEntry({
         input.threadId,
         input.permissionMode,
       );
+    },
+    async updateStatus(_input, context) {
+      return handleUpdateStatus(context.experimental_paths.dataDir);
+    },
+    async restartToApply(_input, context) {
+      return handleRestartToApply(context.experimental_paths.dataDir);
     },
     async resolveNativeRoots(input) {
       if (input.providerId !== PROVIDER_ID) {

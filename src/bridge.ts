@@ -136,6 +136,11 @@ import {
   SERVER_VERSION_MIN,
   versionSkewMessage,
 } from "./identity.js";
+import { acquireStartGuard, exclusiveKind, releaseStartGuard } from "./hold.js";
+import {
+  providerInstallationRun,
+  providerInstallationStatus,
+} from "./update.js";
 
 type JsonRpcId = string | number;
 
@@ -181,6 +186,7 @@ interface LiveTurn {
   settling?: boolean;
   stopping?: boolean;
   steerRestart?: SteerRestart;
+  startGuard?: string;
 }
 
 interface BoundSession {
@@ -197,6 +203,22 @@ interface BoundSession {
 const sessions = new Map<string, BoundSession>();
 const sessionToThread = new Map<string, string>();
 const liveTurns = new Map<string, LiveTurn>();
+
+function dropLiveTurn(threadId: string): void {
+  const live = liveTurns.get(threadId);
+  if (live?.startGuard) releaseStartGuard(live.startGuard);
+  Map.prototype.delete.call(liveTurns, threadId);
+}
+
+function parkStartGuardOnLive(threadId: string, token: string): void {
+  const live = liveTurns.get(threadId);
+  if (live && !live.startGuard) {
+    live.startGuard = token;
+    return;
+  }
+  if (live?.startGuard === token) return;
+  releaseStartGuard(token);
+}
 const openingTurns = new Set<string>();
 const parkedSteers = new Map<string, Array<Record<string, unknown>>>();
 let configuredSkillRoots: SkillConfigureRoot[] = [];
@@ -254,7 +276,7 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   dropSubscriptions();
   sessions.clear();
   sessionToThread.clear();
-  liveTurns.clear();
+  for (const id of [...liveTurns.keys()]) dropLiveTurn(id);
   openingTurns.clear();
   parkedSteers.clear();
   pendingPermission.clear();
@@ -683,12 +705,12 @@ function failIssuedTurn(threadId: string, message: string): void {
     lastPermissionCount.delete(live.sessionId);
   }
   if (live?.parentBoundaryEmitted) {
-    liveTurns.delete(threadId);
+    dropLiveTurn(threadId);
     return;
   }
   if (live) {
     live.parentBoundaryEmitted = true;
-    liveTurns.delete(threadId);
+    dropLiveTurn(threadId);
   }
   emitDeltas(threadId, [
     {
@@ -777,12 +799,12 @@ function closeLiveTurn(
 ): void {
   const live = liveTurns.get(threadId);
   if (!live || live.parentBoundaryEmitted) {
-    liveTurns.delete(threadId);
+    dropLiveTurn(threadId);
     return;
   }
   live.parentBoundaryEmitted = true;
   const flushed = closePendingAgentText(live);
-  liveTurns.delete(threadId);
+  dropLiveTurn(threadId);
   emitDeltas(threadId, [
     ...flushed,
     {
@@ -1383,7 +1405,7 @@ function completeBindOnlyTurn(
     return false;
   }
   live.parentBoundaryEmitted = true;
-  liveTurns.delete(threadId);
+  dropLiveTurn(threadId);
   emitDeltas(threadId, [completedTurnBoundary(messages)]);
   return true;
 }
@@ -1915,7 +1937,7 @@ async function onOpenCodeEvent(event: {
       live.parentBoundaryEmitted = true;
       emitDeltas(threadId, closePendingAgentText(live));
       emitDeltas(threadId, [completedTurnBoundary()]);
-      liveTurns.delete(threadId);
+      dropLiveTurn(threadId);
       if (live.mapState.unknownTally.size > 0) {
         unknownLogLines.push(
           `unknown-events session=${sessionId} ${formatUnknownTally(live.mapState)}`,
@@ -2514,6 +2536,49 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     })();
   },
 
+  [BRIDGE_REQUEST_METHODS.providerInstallationStatus]: (id) => {
+    void (async () => {
+      try {
+        respondResult(id, await providerInstallationStatus());
+      } catch (error) {
+        respondError(
+          id,
+          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  },
+
+  [BRIDGE_REQUEST_METHODS.providerInstallationRun]: (id, params) => {
+    const action =
+      params &&
+      typeof params === "object" &&
+      ((params as { action?: unknown }).action === "install" ||
+        (params as { action?: unknown }).action === "update")
+        ? (params as { action: "install" | "update" }).action
+        : undefined;
+    if (!action) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
+        "Invalid params for provider/installation/run",
+      );
+      return;
+    }
+    void (async () => {
+      try {
+        respondResult(id, await providerInstallationRun(action));
+      } catch (error) {
+        respondError(
+          id,
+          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    })();
+  },
+
   [BRIDGE_REQUEST_METHODS.providerUsage]: (id) => {
     respondResult(id, {
       supported: true,
@@ -2594,6 +2659,15 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       );
       return;
     }
+    const startGuard = acquireStartGuard();
+    if (!startGuard) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        `OpenCode ${exclusiveKind() ?? "maintenance"} already in progress`,
+      );
+      return;
+    }
     void (async () => {
       let answered = false;
       try {
@@ -2654,6 +2728,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           return;
         }
         failIssuedTurn(parsed.data.threadId, message);
+      } finally {
+        parkStartGuardOnLive(parsed.data.threadId, startGuard);
       }
     })();
   },
@@ -2666,6 +2742,15 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
         "Invalid params for thread/resume",
         parsed.error.issues,
+      );
+      return;
+    }
+    const startGuard = acquireStartGuard();
+    if (!startGuard) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        `OpenCode ${exclusiveKind() ?? "maintenance"} already in progress`,
       );
       return;
     }
@@ -2693,6 +2778,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
           error instanceof Error ? error.message : String(error),
         );
+      } finally {
+        parkStartGuardOnLive(parsed.data.threadId, startGuard);
       }
     })();
   },
@@ -2705,6 +2792,15 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
         "Invalid params for thread/fork",
         parsed.error.issues,
+      );
+      return;
+    }
+    const startGuard = acquireStartGuard();
+    if (!startGuard) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        `OpenCode ${exclusiveKind() ?? "maintenance"} already in progress`,
       );
       return;
     }
@@ -2733,6 +2829,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
           error instanceof Error ? error.message : String(error),
         );
+      } finally {
+        parkStartGuardOnLive(parsed.data.threadId, startGuard);
       }
     })();
   },
@@ -2745,6 +2843,15 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         BRIDGE_JSON_RPC_ERRORS.INVALID_PARAMS,
         "Invalid params for turn/start",
         parsed.error.issues,
+      );
+      return;
+    }
+    const startGuard = acquireStartGuard();
+    if (!startGuard) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        `OpenCode ${exclusiveKind() ?? "maintenance"} already in progress`,
       );
       return;
     }
@@ -2791,6 +2898,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           parsed.data.threadId,
           error instanceof Error ? error.message : String(error),
         );
+      } finally {
+        parkStartGuardOnLive(parsed.data.threadId, startGuard);
       }
     })();
   },
@@ -2811,6 +2920,17 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       respondError(id, BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR, "Unknown thread");
       return;
     }
+    const startGuard = liveTurns.get(parsed.data.threadId)?.startGuard
+      ? undefined
+      : acquireStartGuard();
+    if (startGuard === null) {
+      respondError(
+        id,
+        BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
+        `OpenCode ${exclusiveKind() ?? "maintenance"} already in progress`,
+      );
+      return;
+    }
     bound.permissionMode = permissionModeOf(parsed.data.options);
     Object.assign(bound, sessionPolicy(parsed.data));
     /* Ack before delivery. A JSON-RPC error here becomes BB run.failed
@@ -2822,18 +2942,22 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       input: parsed.data.input,
       options: parsed.data.options,
       clientRequestId: parsed.data.clientRequestId,
-    }).catch((error) => {
-      unknownLogLines.push(`steer-error ${String(error)}`);
-      emitDeltas(parsed.data.threadId, [
-        {
-          kind: "provider.warning",
-          category: "general",
-          summary: "Could not deliver follow-up",
-          details: error instanceof Error ? error.message : String(error),
-          vouchedTurn: true,
-        },
-      ]);
-    });
+    })
+      .catch((error) => {
+        unknownLogLines.push(`steer-error ${String(error)}`);
+        emitDeltas(parsed.data.threadId, [
+          {
+            kind: "provider.warning",
+            category: "general",
+            summary: "Could not deliver follow-up",
+            details: error instanceof Error ? error.message : String(error),
+            vouchedTurn: true,
+          },
+        ]);
+      })
+      .finally(() => {
+        if (startGuard) parkStartGuardOnLive(parsed.data.threadId, startGuard);
+      });
   },
 
   [BRIDGE_REQUEST_METHODS.skillsConfigure]: (id, params) => {
@@ -2941,7 +3065,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
               ...closeOpenedItems(live.mapState),
               { kind: "turn.boundary", status: "interrupted" },
             ]);
-            liveTurns.delete(parsed.data.threadId);
+            dropLiveTurn(parsed.data.threadId);
           }
         }
         respondResult(id, {});
@@ -3065,7 +3189,7 @@ async function settleIssuedTurn(
   if (leftovers.length > 0) emitDeltas(threadId, leftovers);
   liveAfter.parentBoundaryEmitted = true;
   forgetQuestions(threadId);
-  liveTurns.delete(threadId);
+  dropLiveTurn(threadId);
   await rememberCatalogWindows(active);
   emitDeltas(threadId, [
     completedTurnBoundary(messages),
@@ -3212,7 +3336,7 @@ async function flushSteerBody(
     );
   } catch (error) {
     live.parentBoundaryEmitted = true;
-    liveTurns.delete(threadId);
+    dropLiveTurn(threadId);
     emitDeltas(threadId, [
       {
         kind: "turn.boundary",
@@ -3464,7 +3588,7 @@ async function runCompact(args: {
   if (!live) return;
   if (compactInFlight.has(args.sessionId)) {
     live.parentBoundaryEmitted = true;
-    liveTurns.delete(args.threadId);
+    dropLiveTurn(args.threadId);
     emitDeltas(args.threadId, [
       {
         kind: "provider.warning",
@@ -3514,7 +3638,7 @@ async function runCompact(args: {
       { kind: "context.compacted" },
     ]);
     live.parentBoundaryEmitted = true;
-    liveTurns.delete(args.threadId);
+    dropLiveTurn(args.threadId);
     emitDeltas(args.threadId, [completedTurnBoundary()]);
     await replayHydrate(args.threadId, args.sessionId, args.active);
   } catch (error) {
@@ -3536,13 +3660,13 @@ async function runCompact(args: {
         },
       ]);
       live.parentBoundaryEmitted = true;
-      liveTurns.delete(args.threadId);
+      dropLiveTurn(args.threadId);
       emitDeltas(args.threadId, [completedTurnBoundary()]);
       compactIssued.delete(args.sessionId);
       return;
     }
     live.parentBoundaryEmitted = true;
-    liveTurns.delete(args.threadId);
+    dropLiveTurn(args.threadId);
     compactIssued.delete(args.sessionId);
     emitDeltas(args.threadId, [
       {
@@ -3833,7 +3957,7 @@ function disposeBridgeRuntime(): void {
   dropSubscriptions();
   sessions.clear();
   sessionToThread.clear();
-  liveTurns.clear();
+  for (const id of [...liveTurns.keys()]) dropLiveTurn(id);
   openingTurns.clear();
   parkedSteers.clear();
   pendingPermission.clear();

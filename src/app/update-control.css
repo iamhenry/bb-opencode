@@ -1,0 +1,84 @@
+.oc-update-item {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+}
+
+.oc-update {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-height: 1.5rem;
+  height: auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0.12rem 0.4rem;
+  margin: 0;
+  border: 1px solid var(--sidebar-border, color-mix(in srgb, currentColor 16%, transparent));
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sidebar-foreground, inherit);
+  cursor: pointer;
+  white-space: normal;
+}
+
+.oc-update:hover:not(:disabled) {
+  background: var(--sidebar-accent, color-mix(in srgb, currentColor 6%, transparent));
+}
+
+.oc-update:focus-visible {
+  outline: 2px solid var(--sidebar-ring, currentColor);
+  outline-offset: 2px;
+}
+
+.oc-update:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.oc-update svg {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex: 0 0 auto;
+}
+
+.oc-update[data-state="failed"] {
+  border-color: var(--destructive, #dc2626);
+}
+
+.oc-update__label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+}
+
+.oc-update__detail {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+  line-height: 1.25;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.oc-update__detail:empty {
+  display: none;
+}
+
+.oc-update__live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
