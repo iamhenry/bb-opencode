@@ -787,7 +787,8 @@ export default async function plugin(bb: BbPluginApi) {
 
 }
 
-const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000];
+// ponytail: OpenCode's title agent often lands after idle; 8s was too short.
+const TITLE_PERSIST_MS = process.env.VITEST ? [0, 1] : [0, 1500, 4000, 8000, 20000, 40000];
 
 function schedulePublishedTitlePersist(
   bb: BbPluginApi,
