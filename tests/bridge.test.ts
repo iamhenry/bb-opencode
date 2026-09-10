@@ -12,6 +12,7 @@ import {
   syncSessionTitle,
 } from "../src/bridge.js";
 import { createFakeOpenCode } from "./fake-opencode.js";
+import { isDefaultOpenCodeTitle } from "../src/session-title.js";
 import { TASK_CHILD_BIND_TEXT } from "../src/task-thread.js";
 import { writeLivePermissionMode } from "../src/permission-mode-live.js";
 
@@ -671,6 +672,9 @@ describe("provider bridge", () => {
     );
     expect(listCalls).toBe(1);
     expect(createCalls).toBe(1);
+    expect(isDefaultOpenCodeTitle(fake.sessions.get("ses_1")?.title ?? "")).toBe(
+      true,
+    );
     expect(
       messages.filter((message) => message.method === "thread/identity"),
     ).toHaveLength(1);
@@ -1492,16 +1496,20 @@ describe("provider bridge", () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
-    const placeholder = [...fake.sessions.values()].find((session) =>
-      session.title?.startsWith("bb-thread-start "),
-    );
-    expect(placeholder).toBeDefined();
-    // Simulate OpenCode echo events carrying the placeholder, then a real title.
+    const session = fake.sessions.get("ses_1");
+    expect(isDefaultOpenCodeTitle(session?.title ?? "")).toBe(true);
+    expect(session?.title?.startsWith("bb-thread-start ")).toBe(false);
+    expect(
+      fake.calls.update.some(
+        (call) => call.id === "ses_1" && isDefaultOpenCodeTitle(call.title),
+      ),
+    ).toBe(true);
+    // A leftover correlation echo must still stay unpublished.
     await ingestOpenCodeEvent({
       type: "session.updated",
       properties: {
         sessionID: "ses_1",
-        title: placeholder!.title,
+        title: "bb-thread-start leftover-uuid",
       },
     });
     await ingestOpenCodeEvent({

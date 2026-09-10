@@ -24,6 +24,7 @@ import { debugLog, recentDebugLog, resetDebugLogForTests } from "./debug-log.js"
 import { OrderedEventPump } from "./event-pump.js";
 import { readCompleteHistory } from "./history-pages.js";
 import {
+  defaultOpenCodeRootTitle,
   firstVisibleUserText,
   greetingSessionTitle,
   shouldPublishOpenCodeTitle,
@@ -548,8 +549,16 @@ function isAmbiguousCreateTimeout(error: unknown): boolean {
  * session.create is structurally single-call: a POST is never replayed. The
  * only recovery path after a recognized ambiguous timeout is one bounded,
  * read-only listSessions reconciliation. The correlation title is an opaque
- * request-local UUID; it is never logged or placed in an error.
+ * request-local UUID used only for that match; it is never logged, published,
+ * or left on the session (OpenCode's title agent skips non-default titles).
  */
+async function restoreDefaultOpenCodeTitle(
+  active: OpenCodeClient,
+  sessionId: string,
+): Promise<void> {
+  await active.updateSession(sessionId, { title: defaultOpenCodeRootTitle() });
+}
+
 async function createOrReconcileSession(
   active: OpenCodeClient,
   directory: string,
@@ -564,7 +573,9 @@ async function createOrReconcileSession(
       directory,
       title: correlationTitle,
     });
-    return requireSessionId(created.id, "session.create");
+    const sessionId = requireSessionId(created.id, "session.create");
+    await restoreDefaultOpenCodeTitle(active, sessionId);
+    return sessionId;
   } catch (error) {
     if (!isAmbiguousCreateTimeout(error)) {
       throw error;
@@ -589,7 +600,9 @@ async function createOrReconcileSession(
     throw new Error(persistentStallMessage("session-create", elapsed()));
   }
   logRecoveryDecision("session-create", elapsed(), "recovered", "none");
-  return matches[0]!.id;
+  const sessionId = matches[0]!.id;
+  await restoreDefaultOpenCodeTitle(active, sessionId);
+  return sessionId;
 }
 
 function boundDirectory(sessionId: string): string | undefined {
@@ -1158,8 +1171,8 @@ export async function syncSessionTitle(sessionId: string): Promise<boolean> {
   try {
     const session = await client.getSession(sessionId);
     let title = session.title;
-    // A thread/start correlation placeholder is private plumbing, never a
-    // publishable thread name; OpenCode's title agent replaces it later.
+    // Correlation placeholders are private plumbing and are restored to a
+    // default title after create; never publish one if an echo still arrives.
     if (title?.startsWith(CORRELATION_TITLE_PREFIX)) title = undefined;
     if (title && lastTitles.get(sessionId) !== title) {
       lastTitles.set(sessionId, title);

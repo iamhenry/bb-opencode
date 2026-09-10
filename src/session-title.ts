@@ -6,6 +6,11 @@ export function isDefaultOpenCodeTitle(title: string): boolean {
   return DEFAULT_TITLE.test(title);
 }
 
+/** Root placeholder OpenCode's title agent will replace. */
+export function defaultOpenCodeRootTitle(now = new Date()): string {
+  return `New session - ${now.toISOString()}`;
+}
+
 /** OpenCode's first-turn title agent replaces this placeholder. Do not stamp it on BB. */
 export function shouldPublishOpenCodeTitle(title: string): boolean {
   return title.length > 0 && !isDefaultOpenCodeTitle(title);
