@@ -46,6 +46,7 @@ export interface FakeOpenCode {
   lastSubscribeDirectory?: string;
   pendingPermissions: unknown[];
   healthy: boolean;
+  emitIdleAfterPrompt: boolean;
 }
 
 export function createFakeOpenCode(): FakeOpenCode {
@@ -91,6 +92,7 @@ export function createFakeOpenCode(): FakeOpenCode {
     lastPrompt: undefined,
     pendingPermissions: [],
     healthy: true,
+    emitIdleAfterPrompt: true,
     client: {
       url: "http://127.0.0.1:9",
       async health() {
@@ -142,9 +144,11 @@ export function createFakeOpenCode(): FakeOpenCode {
         fake.calls.promptAsync += 1;
         fake.lastPrompt = { id, body };
         if (fake.promptImpl) await fake.promptImpl(id, body);
-        queueMicrotask(() => {
-          fake.emit({ type: "session.idle", properties: { sessionID: id } });
-        });
+        if (fake.emitIdleAfterPrompt) {
+          queueMicrotask(() => {
+            fake.emit({ type: "session.idle", properties: { sessionID: id } });
+          });
+        }
       },
       async prompt(id, body) {
         fake.calls.prompt += 1;

@@ -72,9 +72,9 @@ describe("provider bridge", () => {
     return fake;
   }
 
-  it("interrupts and restarts turn/steer when BB steer-on-Enter is on (ISC-20)", async () => {
+  it("steers a live legacy prompt without aborting it", async () => {
     const fake = installFake();
-    fake.promptImpl = () => new Promise(() => undefined);
+    fake.emitIdleAfterPrompt = false;
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({
@@ -83,7 +83,6 @@ describe("provider bridge", () => {
       params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
     });
     await flush();
-    const prompts = fake.calls.prompt;
     const asyncPrompts = fake.calls.promptAsync;
     messages.length = 0;
     send({
@@ -92,7 +91,15 @@ describe("provider bridge", () => {
       params: turnParams({
         expectedTurnId: "turn_1",
         clientRequestId: "req_steer",
-        input: [{ type: "text", text: "change course", mentions: [] }],
+        input: [
+          { type: "text", text: "change course", mentions: [] },
+          {
+            type: "localImage",
+            path: "/tmp/shot.png",
+            name: "shot.png",
+            mentions: [],
+          },
+        ],
         options: {
           ...fullOptions,
           providerOptions: { agent: "build", steerDelivery: "inject" },
@@ -100,43 +107,130 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
-    expect(messages[0]).toMatchObject({ id: "steer", result: {} });
-    const deltas = messages.flatMap(
-      (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })
-          ?.deltas ?? []),
-    );
-    expect(deltas).toContainEqual({
+    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
+    expect(fake.lastPrompt).toEqual({
+      id: "ses_1",
+      body: expect.objectContaining({
+        agent: "build",
+        messageID: expect.stringMatching(/^msg_/),
+        parts: [
+          { type: "text", text: "change course" },
+          {
+            type: "file",
+            mime: "image/png",
+            filename: "shot.png",
+            url: "file:///tmp/shot.png",
+          },
+        ],
+      }),
+    });
+    expect(fake.calls.abort).toBe(0);
+    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual({
       kind: "input.accepted",
       clientRequestId: "req_steer",
     });
-    expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
-    expect(fake.calls.prompt).toBe(prompts);
-    expect(fake.calls.abort).toBe(1);
-    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
-    expect(fake.lastPrompt).toMatchObject({
-      id: "ses_1",
-      body: {
-        agent: "build",
-        parts: [{ type: "text", text: "change course" }],
-      },
-    });
   });
 
-  it("keeps delayed abort events inside the restarted BB turn", async () => {
+  it("queues turn/steer until the live turn settles", async () => {
     const fake = installFake();
-    let promptCall = 0;
-    let releaseRestart: (() => void) | undefined;
-    fake.promptImpl = () => {
-      promptCall += 1;
-      if (promptCall === 1) return new Promise(() => undefined);
-      return new Promise((resolve) => {
-        releaseRestart = () => resolve({});
-      });
-    };
+    fake.emitIdleAfterPrompt = false;
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const asyncPrompts = fake.calls.promptAsync;
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_queue",
+        input: [
+          { type: "text", text: "after this, update the README", mentions: [] },
+        ],
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "queue" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(asyncPrompts);
+    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual({ kind: "input.accepted", clientRequestId: "req_queue" });
+
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
+    expect(fake.lastPrompt?.body).toEqual(
+      expect.objectContaining({
+        messageID: expect.stringMatching(/^msg_/),
+        parts: [{ type: "text", text: "after this, update the README" }],
+      }),
+    );
+    expect(fake.calls.abort).toBe(0);
+  });
+
+  it("queues during initial prompt submission", async () => {
+    const fake = installFake();
+    let releaseInitial: (() => void) | undefined;
+    fake.promptImpl = () =>
+      fake.calls.promptAsync === 1
+        ? new Promise<void>((resolve) => {
+            releaseInitial = resolve;
+          })
+        : Promise.resolve();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_steer",
+        input: [{ type: "text", text: "change course", mentions: [] }],
+      }),
+    });
+    await flush();
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(messages.some((message) => message.id === "steer" && "result" in message)).toBe(true);
+
+    releaseInitial?.();
+    await flush();
+    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.lastPrompt?.body).toEqual(
+      expect.objectContaining({
+        parts: [{ type: "text", text: "change course" }],
+      }),
+    );
+    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
+  });
+
+  it("acknowledges steering before prompt submission completes", async () => {
+    const fake = installFake();
+    let release: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise<void>((resolve) => {
+        release = () => resolve();
+      });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     messages.length = 0;
     send({
@@ -145,7 +239,7 @@ describe("provider bridge", () => {
       params: turnParams({
         expectedTurnId: "turn_1",
         clientRequestId: "req_steer",
-        input: [{ type: "text", text: "change course", mentions: [] }],
+        input: [{ type: "text", text: "nudge", mentions: [] }],
         options: {
           ...fullOptions,
           providerOptions: { agent: "build", steerDelivery: "inject" },
@@ -153,15 +247,76 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
-    expect(fake.calls.promptAsync).toBe(2);
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(
+      messages.some((message) => message.id === "steer" && "result" in message),
+    ).toBe(true);
+    expect(
+      messages
+        .flatMap(
+          (message) =>
+            ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ??
+              []),
+        )
+        .some((delta) => delta.kind === "input.accepted"),
+    ).toBe(true);
 
-    await ingestOpenCodeEvent({
-      type: "session.error",
-      properties: {
-        sessionID: "ses_1",
-        error: { name: "MessageAbortedError", data: { message: "aborted" } },
-      },
+    release?.();
+    await flush();
+    expect(messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "steer", result: {} }),
+      ]),
+    );
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual({
+      kind: "input.accepted",
+      clientRequestId: "req_steer",
     });
+  });
+
+  it("warns without failing the live turn when steer submission fails", async () => {
+    const fake = installFake();
+    fake.emitIdleAfterPrompt = false;
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    let rejectSteer: ((error: Error) => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise<void>((_resolve, reject) => {
+        rejectSteer = reject;
+      });
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        clientRequestId: "req_steer",
+        input: [{ type: "text", text: "nudge", mentions: [] }],
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
+      }),
+    });
+    await flush();
+    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
+    expect(
+      messages
+        .flatMap(
+          (message) =>
+            ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ??
+              []),
+        )
+        .some((delta) => delta.kind === "input.accepted"),
+    ).toBe(true);
     await ingestOpenCodeEvent({
       type: "session.idle",
       properties: { sessionID: "ses_1" },
@@ -173,73 +328,137 @@ describe("provider bridge", () => {
       ).some((delta) => delta.kind === "turn.boundary"),
     ).toBe(false);
 
-    releaseRestart?.();
+    rejectSteer?.(new Error("steer failed"));
     await flush();
     expect(
       messages.flatMap(
         (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string }>;
-          })?.deltas ?? []),
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual(
+      expect.objectContaining({
+        kind: "provider.warning",
+        summary: "Could not deliver follow-up",
+        details: "steer failed",
+      }),
+    );
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
       ),
     ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
   });
 
-  it("fails an unexpected provider error while steering without restarting", async () => {
+  it("keeps the live turn open when idle overlaps steer submission", async () => {
     const fake = installFake();
-    fake.promptImpl = () => new Promise(() => undefined);
-    let releaseAbort: (() => void) | undefined;
-    fake.abortImpl = () =>
-      new Promise((resolve) => {
-        releaseAbort = resolve;
-      });
+    fake.emitIdleAfterPrompt = false;
+    fake.runningIds.add("ses_1");
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
     await flush();
-    const asyncPrompts = fake.calls.promptAsync;
+
+    let releaseSteer: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
     messages.length = 0;
     send({
       id: "steer",
       method: "turn/steer",
       params: turnParams({
         expectedTurnId: "turn_1",
-        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
       }),
     });
     await flush();
     await ingestOpenCodeEvent({
-      type: "session.error",
-      properties: {
-        sessionID: "ses_1",
-        error: { name: "APIError", data: { message: "provider 503" } },
-      },
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
     });
-    releaseAbort?.();
-    await flush();
-
-    expect(fake.calls.promptAsync).toBe(asyncPrompts);
     expect(
       messages.flatMap(
         (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string }>;
-          })?.deltas ?? []),
+          ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []),
+      ).some((delta) => delta.kind === "turn.boundary"),
+    ).toBe(false);
+
+    releaseSteer?.();
+    await flush();
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []),
+      ).some((delta) => delta.kind === "turn.boundary"),
+    ).toBe(false);
+
+    fake.runningIds.delete("ses_1");
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
       ),
-    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "failed" }));
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
   });
 
-  it("fails the BB turn when the post-abort restart is rejected", async () => {
+  it("settles when the steered run is already idle as submission returns", async () => {
     const fake = installFake();
-    let promptCall = 0;
-    fake.promptImpl = async () => {
-      promptCall += 1;
-      if (promptCall === 1) return new Promise(() => undefined);
-      throw new Error("restart rejected");
-    };
+    fake.emitIdleAfterPrompt = false;
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+
+    let releaseSteer: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
+    messages.length = 0;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
+      }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
+    releaseSteer?.();
+    await flush();
+
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
+  });
+
+  it("tracks steer work that starts without a live turn", async () => {
+    const fake = installFake();
+    fake.emitIdleAfterPrompt = false;
+    send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     messages.length = 0;
     send({
@@ -247,49 +466,60 @@ describe("provider bridge", () => {
       method: "turn/steer",
       params: turnParams({
         expectedTurnId: "turn_1",
-        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
       }),
     });
     await flush();
-
+    await ingestOpenCodeEvent({
+      type: "session.idle",
+      properties: { sessionID: "ses_1" },
+    });
     expect(
       messages.flatMap(
         (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string; error?: { message?: string } }>;
-          })?.deltas ?? []),
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
       ),
-    ).toContainEqual(
-      expect.objectContaining({
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message: "Could not start follow-up: restart rejected" },
-      }),
-    );
+    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
   });
 
-  it("does not restart after thread/stop wins an in-flight steer abort", async () => {
+  it("does not restart work when stop overlaps steer submission", async () => {
     const fake = installFake();
-    fake.promptImpl = () => new Promise(() => undefined);
-    let releaseAborts: (() => void) | undefined;
-    const abortsReleased = new Promise<void>((resolve) => {
-      releaseAborts = resolve;
-    });
-    fake.abortImpl = () => abortsReleased;
+    fake.emitIdleAfterPrompt = false;
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
     send({ id: "turn", method: "turn/start", params: turnParams() });
     await flush();
-    const asyncPrompts = fake.calls.promptAsync;
+
+    let releaseSteer: (() => void) | undefined;
+    fake.promptImpl = () =>
+      new Promise<void>((resolve) => {
+        releaseSteer = resolve;
+      });
     send({
       id: "steer",
       method: "turn/steer",
       params: turnParams({
         expectedTurnId: "turn_1",
-        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+        clientRequestId: "req_stop_race",
+        options: {
+          ...fullOptions,
+          providerOptions: { agent: "build", steerDelivery: "inject" },
+        },
       }),
     });
     await flush();
+    expect(
+      messages.flatMap(
+        (message) =>
+          ((message.params as { deltas?: Array<Record<string, unknown>> })
+            ?.deltas ?? []),
+      ),
+    ).toContainEqual({ kind: "input.accepted", clientRequestId: "req_stop_race" });
+    messages.length = 0;
     send({
       id: "stop",
       method: "thread/stop",
@@ -300,185 +530,20 @@ describe("provider bridge", () => {
       },
     });
     await flush();
-    expect(fake.calls.abort).toBe(2);
+    releaseSteer?.();
+    await flush();
 
-    releaseAborts?.();
-    await flush();
-    expect(fake.calls.promptAsync).toBe(asyncPrompts);
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string }>;
-          })?.deltas ?? []),
-      ),
-    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "interrupted" }));
-  });
-
-  it("re-aborts a steer restart accepted after thread/stop", async () => {
-    const fake = installFake();
-    let promptCall = 0;
-    let releaseRestart: (() => void) | undefined;
-    fake.promptImpl = () => {
-      promptCall += 1;
-      if (promptCall === 1) return new Promise(() => undefined);
-      return new Promise((resolve) => {
-        releaseRestart = () => resolve({});
-      });
-    };
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({ id: "turn", method: "turn/start", params: turnParams() });
-    await flush();
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
-      }),
-    });
-    await flush();
     expect(fake.calls.promptAsync).toBe(2);
     expect(fake.calls.abort).toBe(1);
-
-    send({
-      id: "stop",
-      method: "thread/stop",
-      params: {
-        threadId: "thr_1",
-        providerThreadId: "ses_1",
-        intent: "interrupt",
-      },
-    });
-    await flush();
-    expect(fake.calls.abort).toBe(2);
-
-    releaseRestart?.();
-    await flush();
-    expect(fake.calls.promptAsync).toBe(2);
-    expect(fake.calls.abort).toBe(3);
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string }>;
-          })?.deltas ?? []),
-      ),
-    ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "interrupted" }));
-  });
-
-  it("queues turn/steer until the live turn settles when steer-on-Enter is off", async () => {
-    const fake = installFake();
-    let release: (() => void) | undefined;
-    fake.promptImpl = () =>
-      new Promise((resolve) => {
-        release = () => resolve({});
-      });
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
-    });
-    await flush();
-    const prompts = fake.calls.prompt;
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_queue",
-        input: [{ type: "text", text: "after this, update the README", mentions: [] }],
-      }),
-    });
-    await flush();
-    expect(fake.calls.promptAsync).toBe(1);
-    expect(fake.calls.prompt).toBe(prompts);
-    release?.();
-    fake.promptImpl = undefined;
-    await flush();
-    expect(fake.calls.promptAsync).toBe(2);
-    expect(fake.lastPrompt?.body).toMatchObject({
-      agent: "build",
-      parts: [{ type: "text", text: "after this, update the README" }],
-    });
-  });
-
-  it("parks turn/steer that arrives before turn/start issues the prompt", async () => {
-    const fake = installFake();
-    let release: (() => void) | undefined;
-    fake.promptImpl = () =>
-      new Promise((resolve) => {
-        release = () => resolve({});
-      });
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({ input: [{ type: "text", text: "commit these", mentions: [] }] }),
-    });
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_steer",
-        input: [{ type: "text", text: "and push", mentions: [] }],
-      }),
-    });
-    await flush();
-    expect(fake.calls.promptAsync).toBe(1);
-    expect(fake.lastPrompt?.body).toMatchObject({
-      parts: [{ type: "text", text: "commit these" }],
-    });
     const deltas = messages.flatMap(
       (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })
-          ?.deltas ?? []),
+        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? []),
     );
-    expect(deltas).toContainEqual({
-      kind: "input.accepted",
-      clientRequestId: "req_steer",
-    });
-    release?.();
-    fake.promptImpl = undefined;
-    await flush();
-    expect(fake.calls.promptAsync).toBe(2);
-    expect(fake.lastPrompt?.body).toMatchObject({
-      parts: [{ type: "text", text: "and push" }],
-    });
+    expect(deltas).toContainEqual(
+      expect.objectContaining({ kind: "turn.boundary", status: "interrupted" }),
+    );
+    expect(deltas.filter((delta) => delta.kind === "input.accepted")).toHaveLength(0);
   });
-
-  it("flushes a same-tick steer after promptAsync returns idle immediately", async () => {
-    const fake = installFake();
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({
-        input: [{ type: "text", text: "commit these", mentions: [] }],
-      }),
-    });
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_fast",
-        input: [{ type: "text", text: "and push", mentions: [] }],
-      }),
-    });
-    await flush();
-    expect(fake.calls.promptAsync).toBe(2);
-    expect(fake.lastPrompt?.body).toMatchObject({
-      parts: [{ type: "text", text: "and push" }],
-    });
-  });
-
 
   it("starts a session once and resumes without create (ISC-9, ISC-10, ISC-10.1)", async () => {
     const fake = installFake();

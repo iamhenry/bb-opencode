@@ -162,12 +162,6 @@ interface ChildWork {
   turnOpened: boolean;
 }
 
-interface SteerRestart {
-  expectAbortError: boolean;
-  expectAbortIdle: boolean;
-  promptStarted: boolean;
-}
-
 interface LiveTurn {
   threadId: string;
   sessionId: string;
@@ -185,7 +179,9 @@ interface LiveTurn {
   pollUserMessageId?: string;
   settling?: boolean;
   stopping?: boolean;
-  steerRestart?: SteerRestart;
+  steerSubmissions?: number;
+  idleDuringSteer?: boolean;
+  steerSubmittedAfterIdle?: boolean;
   startGuard?: string;
 }
 
@@ -219,9 +215,8 @@ function parkStartGuardOnLive(threadId: string, token: string): void {
   if (live?.startGuard === token) return;
   releaseStartGuard(token);
 }
-const openingTurns = new Set<string>();
-const parkedSteers = new Map<string, Array<Record<string, unknown>>>();
 let configuredSkillRoots: SkillConfigureRoot[] = [];
+const openingTurns = new Map<string, Promise<void>>();
 const pendingPermission = new Map<
   string,
   { requestId: string; sessionId: string; threadId: string }
@@ -278,7 +273,6 @@ export function resetBridgeForTests(next?: Partial<BridgeDeps>): void {
   sessionToThread.clear();
   for (const id of [...liveTurns.keys()]) dropLiveTurn(id);
   openingTurns.clear();
-  parkedSteers.clear();
   pendingPermission.clear();
   pendingQuestion.clear();
   configuredSkillRoots = [];
@@ -815,17 +809,6 @@ function closeLiveTurn(
   ]);
 }
 
-function clearCompletedSteerRestart(live: LiveTurn): void {
-  const restart = live.steerRestart;
-  if (
-    restart?.promptStarted &&
-    !restart.expectAbortError &&
-    !restart.expectAbortIdle
-  ) {
-    live.steerRestart = undefined;
-  }
-}
-
 function serveLost(message: string): void {
   const had = Boolean(client || subscriptions.size > 0);
   dropSubscriptions();
@@ -1285,11 +1268,6 @@ export async function hydrateBoundSession(sessionId: string): Promise<boolean> {
   return true;
 }
 
-function steerDeliveryOf(options: unknown): "inject" | "queue" {
-  const value = providerOptions(options).steerDelivery;
-  return value === "inject" ? "inject" : "queue";
-}
-
 function providerOptions(options: unknown): Record<string, unknown> {
   if (!options || typeof options !== "object") return {};
   const record = options as { providerOptions?: unknown };
@@ -1297,6 +1275,10 @@ function providerOptions(options: unknown): Record<string, unknown> {
     return {};
   }
   return record.providerOptions as Record<string, unknown>;
+}
+
+function steerDeliveryOf(options: unknown): "inject" | "queue" {
+  return providerOptions(options).steerDelivery === "inject" ? "inject" : "queue";
 }
 
 function permissionModeOf(options: unknown): string | undefined {
@@ -1880,13 +1862,9 @@ async function onOpenCodeEvent(event: {
     }
     const idle = event.type === "session.idle" || status.kind === "idle";
     if (!idle) return;
-    if (
-      sessionId === live.sessionId &&
-      live.steerRestart?.expectAbortIdle
-    ) {
-      live.steerRestart.expectAbortIdle = false;
-      clearCompletedSteerRestart(live);
-      debugLog(`abort idle ignored for steer restart ses=${sessionId}`);
+    if (sessionId === live.sessionId && (live.steerSubmissions ?? 0) > 0) {
+      live.idleDuringSteer = true;
+      debugLog(`idle wait steer submission ses=${sessionId}`);
       return;
     }
     if (sessionId !== live.sessionId) {
@@ -1955,19 +1933,6 @@ async function onOpenCodeEvent(event: {
     const described = describeSessionError(error);
     debugLog(`session error ses=${sessionId} ${described.status}`);
     if (sessionId === live.sessionId) {
-      const name =
-        error && typeof error === "object"
-          ? (error as { name?: unknown }).name
-          : undefined;
-      if (
-        name === "MessageAbortedError" &&
-        live.steerRestart?.expectAbortError
-      ) {
-        live.steerRestart.expectAbortError = false;
-        clearCompletedSteerRestart(live);
-        debugLog(`abort error ignored for steer restart ses=${sessionId}`);
-        return;
-      }
       closeLiveTurn(threadId, described.status, described.message);
     }
     return;
@@ -2708,18 +2673,13 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         }
         const input = parsed.data.input ?? [];
         if (input.length > 0) {
-          openingTurns.add(parsed.data.threadId);
-          try {
-            await runPrompt({
-              threadId: parsed.data.threadId,
-              sessionId,
-              input,
-              options: parsed.data.options,
-              clientRequestId: undefined,
-            });
-          } finally {
-            closeOpeningTurn(parsed.data.threadId);
-          }
+          await runOpeningPrompt({
+            threadId: parsed.data.threadId,
+            sessionId,
+            input,
+            options: parsed.data.options,
+            clientRequestId: undefined,
+          });
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2865,34 +2825,29 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         bound.permissionMode = permissionModeOf(parsed.data.options);
         Object.assign(bound, sessionPolicy(parsed.data));
         respondResult(id, {});
-        openingTurns.add(parsed.data.threadId);
-        try {
-          // ponytail: agent-only bind seed must not become a second OpenCode prompt
-          if (
-            bound.bindOnly &&
-            firstTextPart(parsed.data.input ?? []).trim() === TASK_CHILD_BIND_TEXT
-          ) {
-            bound.bindOnly = false;
-            if (parsed.data.clientRequestId) {
-              emitDeltas(parsed.data.threadId, [
-                {
-                  kind: "input.accepted",
-                  clientRequestId: parsed.data.clientRequestId,
-                },
-              ]);
-            }
-            return;
+        // ponytail: agent-only bind seed must not become a second OpenCode prompt
+        if (
+          bound.bindOnly &&
+          firstTextPart(parsed.data.input ?? []).trim() === TASK_CHILD_BIND_TEXT
+        ) {
+          bound.bindOnly = false;
+          if (parsed.data.clientRequestId) {
+            emitDeltas(parsed.data.threadId, [
+              {
+                kind: "input.accepted",
+                clientRequestId: parsed.data.clientRequestId,
+              },
+            ]);
           }
-          await runPrompt({
-            threadId: parsed.data.threadId,
-            sessionId: bound.sessionId,
-            input: parsed.data.input,
-            options: parsed.data.options,
-            clientRequestId: parsed.data.clientRequestId,
-          });
-        } finally {
-          closeOpeningTurn(parsed.data.threadId);
+          return;
         }
+        await runOpeningPrompt({
+          threadId: parsed.data.threadId,
+          sessionId: bound.sessionId,
+          input: parsed.data.input,
+          options: parsed.data.options,
+          clientRequestId: parsed.data.clientRequestId,
+        });
       } catch (error) {
         failIssuedTurn(
           parsed.data.threadId,
@@ -2933,8 +2888,6 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     }
     bound.permissionMode = permissionModeOf(parsed.data.options);
     Object.assign(bound, sessionPolicy(parsed.data));
-    /* Ack before delivery. A JSON-RPC error here becomes BB run.failed
-       and kills the live turn ("Steer failed"). */
     respondResult(id, {});
     void runSteer({
       threadId: parsed.data.threadId,
@@ -3094,7 +3047,7 @@ async function settleIssuedTurn(
 ): Promise<void> {
   const liveAfter = liveTurns.get(threadId);
   if (!liveAfter || liveAfter.parentBoundaryEmitted || liveAfter.settling) return;
-  const queued = takeQueuedSteer(threadId, liveAfter);
+  const queued = takeQueuedSteer(liveAfter);
   if (queued) {
     await flushSteerBody(threadId, sessionId, active, liveAfter, queued);
     return;
@@ -3118,7 +3071,7 @@ async function settleIssuedTurn(
     );
     return;
   }
-  const lateQueued = takeQueuedSteer(threadId, liveAfter);
+  const lateQueued = takeQueuedSteer(liveAfter);
   if (lateQueued) {
     liveAfter.settling = false;
     await flushSteerBody(threadId, sessionId, active, liveAfter, lateQueued);
@@ -3261,29 +3214,24 @@ async function recoverEnsureTitle(sessionId: string): Promise<boolean> {
   }
 }
 
-function closeOpeningTurn(threadId: string): void {
-  openingTurns.delete(threadId);
-  const live = liveTurns.get(threadId);
-  if (live) live.pendingPrompts.push(...takeParkedSteers(threadId));
+function takeQueuedSteer(live: LiveTurn): Record<string, unknown> | undefined {
+  return live.pendingPrompts.shift();
 }
 
-function takeParkedSteers(threadId: string): Array<Record<string, unknown>> {
-  const parked = parkedSteers.get(threadId);
-  parkedSteers.delete(threadId);
-  return parked ?? [];
-}
-
-function takeQueuedSteer(
+function usableSteerLive(
   threadId: string,
-  live: LiveTurn,
-): Record<string, unknown> | undefined {
-  const fromLive = live.pendingPrompts.shift();
-  if (fromLive) return fromLive;
-  const parked = parkedSteers.get(threadId);
-  if (!parked?.length) return undefined;
-  const next = parked.shift();
-  if (parked.length === 0) parkedSteers.delete(threadId);
-  return next;
+  sessionId: string,
+): LiveTurn | undefined {
+  const live = liveTurns.get(threadId);
+  if (
+    !live ||
+    live.parentBoundaryEmitted ||
+    live.stopping ||
+    live.sessionId !== sessionId
+  ) {
+    return undefined;
+  }
+  return live;
 }
 
 let lastMessageIdTimestamp = 0;
@@ -3349,22 +3297,6 @@ async function flushSteerBody(
   }
 }
 
-function usableSteerLive(
-  threadId: string,
-  sessionId: string,
-): LiveTurn | undefined {
-  const live = liveTurns.get(threadId);
-  if (
-    !live ||
-    live.parentBoundaryEmitted ||
-    live.stopping ||
-    live.sessionId !== sessionId
-  ) {
-    return undefined;
-  }
-  return live;
-}
-
 function steerPromptBody(args: {
   sessionId: string;
   input: readonly PromptInput[];
@@ -3383,21 +3315,6 @@ function steerPromptBody(args: {
     ok: true,
     body: { ...built.prompt, ...(variant ? { variant } : {}) },
   };
-}
-
-function enqueueSteer(threadId: string, body: Record<string, unknown>): boolean {
-  const live = liveTurns.get(threadId);
-  if (live && !live.parentBoundaryEmitted) {
-    live.pendingPrompts.push(body);
-    return true;
-  }
-  if (openingTurns.has(threadId)) {
-    const parked = parkedSteers.get(threadId) ?? [];
-    parked.push(body);
-    parkedSteers.set(threadId, parked);
-    return true;
-  }
-  return false;
 }
 
 async function runSteer(args: {
@@ -3425,65 +3342,66 @@ async function runSteer(args: {
       { kind: "input.accepted", clientRequestId: args.clientRequestId },
     ]);
   }
-  if (
-    steerDeliveryOf(args.options) === "inject" &&
-    usableSteerLive(args.threadId, args.sessionId)
-  ) {
-    const active = await ensureClient();
-    // Legacy OpenCode has no live steer primitive. Suppress the abort boundary,
-    // wait for its runner to release, then restart inside the current BB turn.
-    const live = usableSteerLive(args.threadId, args.sessionId);
-    if (!live) return;
-    const restart: SteerRestart = {
-      expectAbortError: true,
-      expectAbortIdle: true,
-      promptStarted: false,
-    };
-    live.steerRestart = restart;
-    let aborted = false;
-    try {
-      await active.abort(args.sessionId);
-      aborted = true;
-      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-      await promptForLiveTurn(
-        active,
-        args.sessionId,
-        live,
-        built.body,
-        boundDirectory(args.sessionId),
-      );
-      if (usableSteerLive(args.threadId, args.sessionId) !== live) {
-        try {
-          await active.abort(args.sessionId);
-        } catch {
-          /* already idle */
-        }
-        return;
-      }
-      restart.promptStarted = true;
-      clearCompletedSteerRestart(live);
-    } catch (error) {
-      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-      live.steerRestart = undefined;
-      const details = error instanceof Error ? error.message : String(error);
-      if (aborted) {
-        failIssuedTurn(args.threadId, `Could not start follow-up: ${details}`);
-      } else {
-        emitDeltas(args.threadId, [
-          {
-            kind: "provider.warning",
-            category: "general",
-            summary: "Could not deliver follow-up",
-            details,
-            vouchedTurn: true,
-          },
-        ]);
-      }
-    }
+  const present = liveTurns.get(args.threadId);
+  const live = usableSteerLive(args.threadId, args.sessionId);
+  if (steerDeliveryOf(args.options) === "queue" && live) {
+    live.pendingPrompts.push(built.body);
     return;
   }
-  if (enqueueSteer(args.threadId, built.body)) return;
-  await runPrompt(args);
+  if (!live) {
+    if (present) return;
+    await runPrompt({ ...args, clientRequestId: undefined });
+    return;
+  }
+
+  live.steerSubmissions = (live.steerSubmissions ?? 0) + 1;
+  try {
+    await openingTurns.get(args.threadId);
+    if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+    const active = await ensureClient();
+    await promptForLiveTurn(
+      active,
+      args.sessionId,
+      live,
+      built.body,
+      boundDirectory(args.sessionId),
+    );
+    if (live.idleDuringSteer) live.steerSubmittedAfterIdle = true;
+  } catch (error) {
+    if (live.stopping || liveTurns.get(args.threadId) !== live) return;
+    throw error;
+  } finally {
+    live.steerSubmissions -= 1;
+    if (live.steerSubmissions === 0 && live.idleDuringSteer) {
+      const submitted = live.steerSubmittedAfterIdle;
+      live.idleDuringSteer = false;
+      live.steerSubmittedAfterIdle = false;
+      if (liveTurns.get(args.threadId) === live && client) {
+        let shouldSettle = !submitted;
+        if (submitted) {
+          try {
+            shouldSettle = !(await client.sessionIsRunning(
+              args.sessionId,
+              boundDirectory(args.sessionId),
+            ));
+          } catch (error) {
+            unknownLogLines.push(`steer-status-error ${String(error)}`);
+          }
+        }
+        if (shouldSettle) {
+          await settleIssuedTurn(args.threadId, args.sessionId, client);
+        }
+      }
+    }
+  }
+}
+
+function runOpeningPrompt(args: Parameters<typeof runPrompt>[0]): Promise<void> {
+  const prompt = runPrompt(args);
+  openingTurns.set(args.threadId, prompt);
+  return prompt.finally(() => {
+    if (openingTurns.get(args.threadId) === prompt) openingTurns.delete(args.threadId);
+  });
 }
 
 function rememberPromptedModel(sessionId: string, model: string): void {
@@ -3706,7 +3624,6 @@ async function runPrompt(args: {
   const live = liveTurns.get(args.threadId);
   if (!live) return;
   live.promptIssued = true;
-  live.pendingPrompts.push(...takeParkedSteers(args.threadId));
   if (args.clientRequestId) {
     emitDeltas(args.threadId, [
       {
@@ -3959,7 +3876,6 @@ function disposeBridgeRuntime(): void {
   sessionToThread.clear();
   for (const id of [...liveTurns.keys()]) dropLiveTurn(id);
   openingTurns.clear();
-  parkedSteers.clear();
   pendingPermission.clear();
   pendingQuestion.clear();
   lastTitles.clear();
