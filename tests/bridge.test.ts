@@ -2927,7 +2927,7 @@ describe("provider bridge", () => {
     expect(texts).toContain("SMOKE_OK");
   });
 
-  it("keeps inherited variant when the last-user snapshot fails", async () => {
+  it("honors explicit settings when the last-user snapshot fails", async () => {
     const fake = installFake();
     fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
     fake.messages.set("ses_1", [
@@ -2977,7 +2977,8 @@ describe("provider bridge", () => {
     await flush();
     expect(fake.lastPrompt?.body).toMatchObject({
       agent: "explore",
-      variant: "high",
+      model: { providerID: "xai", modelID: "grok-4.6" },
+      variant: "medium",
     });
   });
 
@@ -4334,7 +4335,7 @@ describe("provider bridge", () => {
     expect(fake.calls.promptAsync).toBe(0);
   });
 
-  it("follow-up on a subagent child keeps that agent's model", async () => {
+  it("keeps a subagent while honoring composer model and reasoning", async () => {
     const fake = installFake();
     fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
     fake.messages.set("ses_1", [
@@ -4375,12 +4376,12 @@ describe("provider bridge", () => {
     await flush();
     expect(fake.lastPrompt?.body).toMatchObject({
       agent: "explore",
-      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
-      variant: "high",
+      model: { providerID: "xai", modelID: "grok-4.6" },
+      variant: "medium",
     });
   });
 
-  it("keeps a subagent from an assistant-only bounded history", async () => {
+  it("keeps subagent session defaults when composer settings are absent", async () => {
     const fake = installFake();
     fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
     fake.messages.set("ses_1", [
@@ -4412,8 +4413,6 @@ describe("provider bridge", () => {
         input: [{ type: "text", text: "continue", mentions: [] }],
         options: {
           ...fullOptions,
-          model: "xai/grok-4.6",
-          reasoningLevel: "medium",
           providerOptions: { agent: "build" },
         },
       }),

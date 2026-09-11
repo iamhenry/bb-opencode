@@ -3497,7 +3497,11 @@ async function resolvePromptModel(
   active: OpenCodeClient,
   preferSession = false,
 ): Promise<{ ok: true; id?: string } | { ok: false; reason: string }> {
-  if (preferSession) {
+  const raw =
+    typeof (options as { model?: unknown })?.model === "string"
+      ? ((options as { model: string }).model as string).trim()
+      : undefined;
+  if (preferSession && !raw) {
     try {
       const fromHistory = lastModelIdFromMessages(
         await readSessionMessages(
@@ -3516,10 +3520,6 @@ async function resolvePromptModel(
     }
     return { ok: true };
   }
-  const raw =
-    typeof (options as { model?: unknown })?.model === "string"
-      ? ((options as { model: string }).model as string).trim()
-      : undefined;
   const remembered = lastPromptedModels.get(sessionId) ?? lastPromptedModel;
   let providers: Array<{ id: string; models?: unknown }> = [];
   let configured: string | undefined;
@@ -3772,17 +3772,21 @@ async function runPrompt(args: {
     return;
   }
   try {
-    const variant = resolved.inheritSession
-      ? lastVariantFromMessages(
-          priorMessages ??
-            (await readSessionMessages(
-              active,
-              args.sessionId,
-              "variant",
-              PROMPT_HISTORY_LIMIT,
-            )),
-        )
-      : openCodeVariantFor(reasoningLevelOf(args.options));
+    const requestedReasoning = reasoningLevelOf(args.options);
+    const variant =
+      requestedReasoning !== undefined
+        ? openCodeVariantFor(requestedReasoning)
+        : resolved.inheritSession
+          ? lastVariantFromMessages(
+              priorMessages ??
+                (await readSessionMessages(
+                  active,
+                  args.sessionId,
+                  "variant",
+                  PROMPT_HISTORY_LIMIT,
+                )),
+            )
+          : undefined;
     const slash = parseLeadingSlash(firstTextPart(args.input));
     if (isCompactRequest(args.input)) {
       await runCompact({

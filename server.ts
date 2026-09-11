@@ -1171,6 +1171,16 @@ async function spawnBoundTaskChild(
       title: taskChildThreadTitle(args.title),
       ...(args.model ? { model: args.model } : {}),
       ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
+      ...(args.model || args.reasoningLevel
+        ? {
+            executionInputSources: {
+              ...(args.model ? { model: "explicit" as const } : {}),
+              ...(args.reasoningLevel
+                ? { reasoningLevel: "explicit" as const }
+                : {}),
+            },
+          }
+        : {}),
       ...(args.prompt
         ? { prompt: args.prompt }
         : { input: taskChildBindInput() }),

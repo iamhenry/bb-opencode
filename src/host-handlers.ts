@@ -1,8 +1,10 @@
 import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
 import {
+  coerceModelRef,
   configDefaultModelId,
   lastModelIdFromMessages,
   lastVariantFromMessages,
+  listAuthenticatedProviders,
 } from "./catalog.js";
 import {
   lastAgent,
@@ -246,13 +248,24 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
     sessionId,
     SNAPSHOT_HISTORY_LIMIT,
   )) as HydrateMessage[];
+  const rawModel = lastModelIdFromMessages(messages);
+  let model = rawModel;
+  if (rawModel) {
+    try {
+      model = coerceModelRef(rawModel, {
+        providers: listAuthenticatedProviders(await client.providers()),
+      });
+    } catch {
+      // Catalog lookup is best-effort; retain the session model when unavailable.
+    }
+  }
   return {
     id: session.id,
     title: session.title ?? null,
     directory: session.directory ?? null,
     parentID: session.parentID ?? null,
     lastUserAgent: lastAgent(messages) ?? null,
-    model: lastModelIdFromMessages(messages) ?? null,
+    model: model ?? null,
     reasoningLevel:
       bbReasoningLevelForVariant(lastVariantFromMessages(messages)) ?? null,
   };

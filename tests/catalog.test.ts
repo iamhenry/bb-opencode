@@ -55,6 +55,16 @@ describe("authenticated OpenCode catalog", () => {
   it("coerces BB bare model ids onto provider/model", () => {
     expect(coerceModelRef("openai/gpt-5.6-luna")).toBe("openai/gpt-5.6-luna");
     expect(
+      coerceModelRef("openai/luna", {
+        providers: [
+          {
+            id: "openai",
+            models: { "gpt-5.6-luna": {}, "gpt-5.6-luna-fast": {} },
+          },
+        ],
+      }),
+    ).toBe("openai/gpt-5.6-luna");
+    expect(
       coerceModelRef("gpt-5.6-luna", {
         lastPrompted: "openai/gpt-5.6-luna",
       }),

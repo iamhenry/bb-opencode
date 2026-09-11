@@ -149,7 +149,16 @@ export function coerceModelRef(
   } = {},
 ): string | undefined {
   const trimmed = raw?.trim() ?? "";
-  if (trimmed.includes("/")) return trimmed;
+  if (trimmed.includes("/")) {
+    const slash = trimmed.indexOf("/");
+    const providerId = trimmed.slice(0, slash);
+    const modelId = trimmed.slice(slash + 1);
+    const provider = args.providers?.find((row) => row.id === providerId);
+    const modelIds = provider ? modelIdsOf(provider) : [];
+    if (!provider || modelIds.includes(modelId)) return trimmed;
+    const aliases = modelIds.filter((id) => id.endsWith(`-${modelId}`));
+    return aliases.length === 1 ? `${providerId}/${aliases[0]}` : trimmed;
+  }
   const hinted = [args.lastPrompted, args.configured].filter(
     (value): value is string => typeof value === "string" && value.includes("/"),
   );
