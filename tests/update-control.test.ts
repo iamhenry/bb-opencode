@@ -285,6 +285,10 @@ describe("mountUpdateControl", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(menu.querySelectorAll(`[${UPDATE_CONTROL_ATTR}]`)).toHaveLength(1);
     expect(native.getAttribute("data-testid")).toBe("sidebar-updates-badge-bb");
+    expect(menu.children.at(-1)?.getAttribute(UPDATE_CONTROL_ATTR)).toBe("gen-a");
+    const button = menu.querySelector(`[${UPDATE_CONTROL_ATTR}] button`);
+    expect(button?.innerHTML).toContain("oc-update__download");
+    expect(button?.innerHTML).toContain("oc-update__provider");
     dispose();
     expect(menu.querySelectorAll(`[${UPDATE_CONTROL_ATTR}]`)).toHaveLength(0);
     expect(observerDisconnects).toBe(1);
@@ -373,7 +377,8 @@ describe("mountUpdateControl", () => {
     expect(button.getAttribute("aria-label")).toContain("installer exploded");
     expect(button.getAttribute("aria-label")).toContain("retry");
     expect(live.textContent).toContain("installer exploded");
-    expect(button.querySelector(".oc-update__label")?.textContent).toBe("Update failed");
+    expect(button.innerHTML).toContain("oc-update__download");
+    expect(button.innerHTML).toContain("oc-update__provider");
     expect(item.querySelector(".oc-update__detail")?.textContent).toBe("installer exploded");
     ac.abort();
   });
@@ -501,7 +506,6 @@ describe("mountUpdateControl", () => {
     const item = menu.querySelector(`[${UPDATE_CONTROL_ATTR}="gen-pending"]`) as Mini;
     const button = item.querySelector("button") as Mini;
     expect(button.getAttribute("aria-label")).toContain("restart pending");
-    expect(button.querySelector(".oc-update__label")?.textContent).toBe("Restart pending");
     button.click();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(activates).toEqual([1]);
@@ -509,13 +513,11 @@ describe("mountUpdateControl", () => {
     ac.abort();
   });
 
-  it("shows readable visible labels without single-line clipping", async () => {
+  it("keeps the icon-only control accessible and long failures readable", async () => {
     const css = readFileSync(new URL("../src/app/update-control.css", import.meta.url), "utf8");
     expect(css).not.toMatch(/text-overflow:\s*ellipsis/);
     expect(css).toMatch(/\.oc-update-item[\s\S]*max-width:\s*100%/);
-    expect(css).toMatch(/\.oc-update__label[\s\S]*white-space:\s*normal/);
     expect(css).toMatch(/\.oc-update__detail[\s\S]*overflow-wrap:\s*anywhere/);
-    expect(css).not.toMatch(/^\s*height:\s*1\.5rem/m);
 
     const { doc, menu } = footerDoc();
     stubObserver();
@@ -540,11 +542,11 @@ describe("mountUpdateControl", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const item = menu.querySelector(`[${UPDATE_CONTROL_ATTR}="gen-labels"]`) as Mini;
     const button = item.querySelector("button") as Mini;
-    expect(button.querySelector(".oc-update__label")?.textContent).toBe("Update");
+    expect(button.innerHTML).not.toContain("Update");
     button.click();
-    expect(button.querySelector(".oc-update__label")?.textContent).toBe("Updating");
+    expect(button.getAttribute("aria-label")).toBe("Updating OpenCode");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(button.querySelector(".oc-update__label")?.textContent).toBe("Update failed");
+    expect(button.getAttribute("aria-label")).toContain("Click to retry");
     expect(item.querySelector(".oc-update__detail")?.textContent).toContain(
       "a very long installer failure",
     );

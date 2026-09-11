@@ -20,8 +20,10 @@ export type UpdateControlRpc = {
   activate?(): Promise<{ ok: boolean; error: string | null }>;
 };
 
-const ICON_SVG =
-  '<svg viewBox="-72 -42 384 384" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M180 240H60V120H180V240Z" fill="currentColor" fill-opacity="0.45"/><path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="currentColor"/></svg>';
+const DOWNLOAD_ICON_SVG =
+  '<svg class="oc-update__download" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M3 17c0 .93 0 1.395.102 1.777A3 3 0 0 0 5.223 20.9C5.605 21 6.07 21 7 21h10c.93 0 1.395 0 1.777-.102a3 3 0 0 0 2.12-2.121C21 18.395 21 17.93 21 17" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/><path d="M16.5 11.5S13.186 16 12 16s-4.5-4.5-4.5-4.5M12 15V3" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"/></svg>';
+const PROVIDER_ICON_SVG =
+  '<svg class="oc-update__provider" viewBox="-72 -42 384 384" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M180 240H60V120H180V240Z" fill="currentColor" fill-opacity="0.45"/><path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="currentColor"/></svg>';
 
 function ariaLabel(node: Element): string {
   return node.getAttribute("aria-label") ?? "";
@@ -82,31 +84,26 @@ function paint(
   button.disabled = state === "pending";
   button.setAttribute("aria-busy", state === "pending" ? "true" : "false");
   button.dataset.state = state;
-  const label = button.querySelector(".oc-update__label");
   const detail = button.parentElement?.querySelector(".oc-update__detail");
   if (state === "pending") {
     button.setAttribute("aria-label", "Updating OpenCode");
     button.title = "Updating OpenCode";
-    if (label) label.textContent = "Updating";
     if (detail) detail.textContent = "";
     if (live) live.textContent = "Updating OpenCode";
   } else if (state === "pending-restart") {
     button.setAttribute("aria-label", "Installed—restart pending");
     button.title = "Installed—restart pending";
-    if (label) label.textContent = "Restart pending";
     if (detail) detail.textContent = "";
     if (live) live.textContent = "Installed—restart pending";
   } else if (state === "failed") {
     const message = error || "OpenCode update failed";
     button.setAttribute("aria-label", `${message}. Click to retry.`);
     button.title = `${message}. Click to retry.`;
-    if (label) label.textContent = "Update failed";
     if (detail) detail.textContent = message;
     if (live) live.textContent = `${message}. Click to retry.`;
   } else {
     button.setAttribute("aria-label", "Update OpenCode");
     button.title = "Update OpenCode";
-    if (label) label.textContent = "Update";
     if (detail) detail.textContent = "";
     if (live) live.textContent = "";
   }
@@ -135,15 +132,12 @@ function ensureControl(
   const button = doc.createElement("button");
   button.type = "button";
   button.className = "oc-update";
-  button.innerHTML = ICON_SVG;
-  const label = doc.createElement("span");
-  label.className = "oc-update__label";
+  button.innerHTML = DOWNLOAD_ICON_SVG + PROVIDER_ICON_SVG;
   const status = doc.createElement("span");
   status.className = "oc-update__live";
   status.setAttribute("role", "status");
   const detail = doc.createElement("span");
   detail.className = "oc-update__detail";
-  button.append(label);
   item.append(button, detail, status);
   paint(button, status, "ready");
   menu.appendChild(item);
