@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   compareVersionStrings,
@@ -501,7 +501,7 @@ export async function providerInstallationRun(
 
 export function hostWrapEntry(): string | null {
   const self = fileURLToPath(import.meta.url);
-  if (self.endsWith("/host.js") || self.endsWith("\\host.js")) {
+  if (["host.js", "host.mjs"].includes(basename(self))) {
     return existsSync(self) ? self : null;
   }
   const dist = join(process.cwd(), "dist", "host.js");

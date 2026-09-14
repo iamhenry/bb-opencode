@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -64,7 +65,7 @@ describe("install wrap packaging", () => {
     resetLatestCacheForTests();
   });
 
-  it("executes the exact providerInstallationRun command against a disposable CLI", async () => {
+  it("executes a cached host.mjs wrapper from BB's plugin data directory", async () => {
     const built = spawnSync("bb", ["plugin", "build"], {
       encoding: "utf8",
       timeout: 120_000,
@@ -100,10 +101,18 @@ describe("install wrap packaging", () => {
       if (!plan.available) return;
       expect(plan.command.args[0]).toBe(hostWrapEntry());
       expect(existsSync(plan.command.args[0]!)).toBe(true);
-      const ok = spawnSync(plan.command.command, plan.command.args, {
+      const cache = join(home, "plugin-host-artifacts", "opencode", "digest");
+      const cwd = join(home, "plugin-data");
+      mkdirSync(cache, { recursive: true });
+      mkdirSync(cwd, { recursive: true });
+      const cachedHost = join(cache, "host.mjs");
+      copyFileSync(plan.command.args[0]!, cachedHost);
+      const cachedArgs = [cachedHost, ...plan.command.args.slice(1)];
+      const ok = spawnSync(plan.command.command, cachedArgs, {
         encoding: "utf8",
         timeout: 20_000,
         env: { ...process.env, HOME: home },
+        cwd,
       });
       expect(ok.status, ok.stderr || ok.stdout).toBe(0);
       expect(readCliVersion(bin)).toBe("1.18.29");
@@ -112,10 +121,11 @@ describe("install wrap packaging", () => {
         "upgrade\n1.18.29\n--method\ncurl\n",
       );
       writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
-      const again = spawnSync(plan.command.command, plan.command.args, {
+      const again = spawnSync(plan.command.command, cachedArgs, {
         encoding: "utf8",
         timeout: 20_000,
         env: { ...process.env, HOME: home },
+        cwd,
       });
       expect(again.status).toBe(1);
       expect(readCliVersion(bin)).toBe("1.18.29");
@@ -155,10 +165,11 @@ while (Date.now() - start < 8000) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         expect(existsSync(ready)).toBe(true);
-        const blocked = spawnSync(plan.command.command, plan.command.args, {
+        const blocked = spawnSync(plan.command.command, cachedArgs, {
           encoding: "utf8",
           timeout: 20_000,
           env: { ...process.env, HOME: home },
+          cwd,
         });
         expect(blocked.status).toBe(1);
         expect(readCliVersion(bin)).toBe("1.18.21");
