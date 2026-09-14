@@ -1,5 +1,5 @@
 /** BB reasoning picker levels we can legally advertise. */
-const BB_REASONING_ORDER = [
+export const BB_REASONING_ORDER = [
   "none",
   "low",
   "medium",

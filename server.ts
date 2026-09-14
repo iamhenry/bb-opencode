@@ -36,7 +36,10 @@ import {
   persistPublishedOpenCodeTitle,
 } from "./src/session-title.js";
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
-import type { BbReasoningLevel } from "./src/reasoning.js";
+import {
+  BB_REASONING_ORDER,
+  type BbReasoningLevel,
+} from "./src/reasoning.js";
 import {
   EMPTY_REVERT_STATE,
   OPENCODE_REVERT_CHANNEL,
@@ -145,7 +148,7 @@ export default async function plugin(bb: BbPluginApi) {
       supportsThreadArchive: false,
       supportsThreadRename: true,
       permissionModes: ["accept-edits", "auto", "full"],
-      reasoningLevels: ["none", "low", "medium", "high"],
+      reasoningLevels: [...BB_REASONING_ORDER],
     },
     composerActions: [],
     experimental_visibility: "always",

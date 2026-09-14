@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BB_REASONING_ORDER,
   bbReasoningLevelForVariant,
   defaultReasoningEffortFor,
   openCodeVariantFor,
@@ -61,6 +62,16 @@ describe("reasoning", () => {
         },
       }).map((effort) => effort.reasoningEffort),
     ).toEqual(["low", "high"]);
+  });
+
+  it("keeps the provider-level picker allow-list in sync with model efforts", () => {
+    const lunaEfforts = supportedReasoningEffortsForModel({
+      variants: { low: {}, medium: {}, high: {}, xhigh: {}, max: {} },
+    }).map((effort) => effort.reasoningEffort);
+
+    expect(lunaEfforts.every((level) => BB_REASONING_ORDER.includes(level))).toBe(
+      true,
+    );
   });
 
   it("falls back to none when OpenCode lists no BB-legal variants", () => {
