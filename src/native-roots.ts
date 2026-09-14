@@ -28,6 +28,12 @@ export function opencodeNativeRoots(args: {
       recursive: true,
       shape: "commands",
     },
+    {
+      origin: "user",
+      path: join(args.homeDir, ".config", "opencode", "command"),
+      recursive: true,
+      shape: "commands",
+    },
   ];
   if (args.cwd) {
     skills.push({
@@ -40,6 +46,13 @@ export function opencodeNativeRoots(args: {
     commands.push({
       origin: "project",
       path: join(args.cwd, ".opencode", "commands"),
+      recursive: true,
+      ancestors: true,
+      shape: "commands",
+    });
+    commands.push({
+      origin: "project",
+      path: join(args.cwd, ".opencode", "command"),
       recursive: true,
       ancestors: true,
       shape: "commands",

@@ -20,6 +20,12 @@ describe("opencodeNativeRoots", () => {
         recursive: true,
         shape: "commands",
       },
+      {
+        origin: "user",
+        path: join("/test-home", ".config", "opencode", "command"),
+        recursive: true,
+        shape: "commands",
+      },
     ]);
   });
 
@@ -34,9 +40,13 @@ describe("opencodeNativeRoots", () => {
     ]);
     expect(roots.commands.map((root) => root.path)).toEqual([
       join("/test-home", ".config", "opencode", "commands"),
+      join("/test-home", ".config", "opencode", "command"),
       join("/proj", ".opencode", "commands"),
+      join("/proj", ".opencode", "command"),
     ]);
     expect(roots.skills[1]?.ancestors).toBe(true);
-    expect(roots.commands[1]?.ancestors).toBe(true);
+    expect(roots.commands[1]?.ancestors).toBeUndefined();
+    expect(roots.commands[2]?.ancestors).toBe(true);
+    expect(roots.commands[3]?.ancestors).toBe(true);
   });
 });
