@@ -298,7 +298,6 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
             onClick={() => setOpen((value) => !value)}
           >
             <BotIcon />
-            <span className="oc-agent__prefix">Agent</span>
             <span className="oc-agent__name">{selected?.name ?? "build"}</span>
             {agentIsSelectable ? <ChevronIcon /> : null}
           </button>

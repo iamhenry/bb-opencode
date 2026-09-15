@@ -52,11 +52,6 @@
   opacity: 0.85;
 }
 
-.oc-agent__prefix {
-  flex: none;
-  opacity: 0.8;
-}
-
 .oc-agent__name {
   overflow: hidden;
   color: var(--foreground, inherit);
@@ -305,10 +300,6 @@
 @media (pointer: coarse) {
   .oc-agent--banner {
     min-height: 2.75rem;
-  }
-
-  .oc-agent[data-layout="compact"] .oc-agent__prefix {
-    display: none;
   }
 }
 
