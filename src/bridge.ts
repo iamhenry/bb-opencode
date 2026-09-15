@@ -3722,6 +3722,7 @@ async function runPrompt(args: {
             command: matched.name,
             arguments: slash.arguments,
             agent: built.prompt.agent,
+            ...(model.id ? { model: model.id } : {}),
             ...(variant ? { variant } : {}),
           },
           cwd,

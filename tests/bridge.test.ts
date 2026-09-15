@@ -3809,6 +3809,37 @@ describe("provider bridge", () => {
     ]);
   });
 
+  it("posts the composer model on listed session.command", async () => {
+    const fake = installFake();
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        input: [{ type: "text", text: "/init repo", mentions: [] }],
+        options: {
+          ...fullOptions,
+          model: "openai/gpt-5.6",
+          providerOptions: { agent: "build" },
+        },
+      }),
+    });
+    await flush();
+    expect(fake.calls.prompt).toBe(0);
+    expect(fake.calls.command).toEqual([
+      {
+        id: "ses_1",
+        body: {
+          command: "init",
+          arguments: "repo",
+          agent: "build",
+          model: "openai/gpt-5.6",
+        },
+      },
+    ]);
+  });
+
   it("does not route a slash send that also has an attachment (ISC-83)", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
