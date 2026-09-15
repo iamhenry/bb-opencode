@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
+  pickerHydrationAgent,
   pickerOptionsFromAgents,
   resolveContinueAgent,
   type OpenCodeAgent,
@@ -45,6 +46,21 @@ describe("selectable primaries", () => {
         description: "Coordinate work across threads",
       },
     ]);
+  });
+
+  it("hydrates a new composer from the configured custom primary", () => {
+    expect(
+      pickerHydrationAgent({
+        isNewThread: true,
+        defaultAgent: "bb-supervisor",
+      }),
+    ).toBe("bb-supervisor");
+    expect(
+      pickerHydrationAgent({
+        isNewThread: false,
+        defaultAgent: "bb-supervisor",
+      }),
+    ).toBeUndefined();
   });
 
   it("hydrates last selectable primary (ISC-29.3)", () => {

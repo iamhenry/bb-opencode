@@ -227,6 +227,20 @@ export const hostContract = defineRpcContract({
 });
 
 export const rpcContract = defineRpcContract({
+  defaultAgent: {
+    input: z.null(),
+    output: z
+      .object({
+        agent: z.string(),
+        options: z.array(z.string()),
+        error: z.string().nullable(),
+      })
+      .strict(),
+  },
+  setDefaultAgent: {
+    input: z.object({ agent: z.string().min(1) }).strict(),
+    output: z.object({ agent: z.string() }).strict(),
+  },
   threadProvider: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ providerId: z.string().nullable() }).strict(),

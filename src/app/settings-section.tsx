@@ -30,10 +30,19 @@ type UpdateStatus = {
   error: string | null;
 };
 
+type DefaultAgent = {
+  agent: string;
+  options: string[];
+  error: string | null;
+};
+
 export function SettingsSection() {
   const rpc = useRpc<typeof rpcContract>();
   const [probe, setProbe] = useState<Probe | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [defaultAgent, setDefaultAgent] = useState<DefaultAgent | null>(null);
+  const [savingAgent, setSavingAgent] = useState(false);
+  const [agentMessage, setAgentMessage] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
   const [reloadMessage, setReloadMessage] = useState<string | null>(null);
 
@@ -44,6 +53,9 @@ export function SettingsSection() {
     });
     void rpc.call("updateStatus", {}).then((result) => {
       if (!cancelled) setUpdate(result);
+    });
+    void rpc.call("defaultAgent", null).then((result) => {
+      if (!cancelled) setDefaultAgent(result);
     });
     return () => {
       cancelled = true;
@@ -65,9 +77,56 @@ export function SettingsSection() {
     }
   }
 
+  async function saveDefaultAgent(agent: string) {
+    setSavingAgent(true);
+    setAgentMessage(null);
+    try {
+      const saved = await rpc.call("setDefaultAgent", { agent });
+      setDefaultAgent((current) =>
+        current ? { ...current, agent: saved.agent } : current,
+      );
+      setAgentMessage("Saved.");
+    } catch (error) {
+      setAgentMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSavingAgent(false);
+    }
+  }
+
   return (
     <section data-opencode-settings="true">
       <h3>OpenCode</h3>
+      <label className="oc-settings__field">
+        <span>Default OpenCode agent</span>
+        <select
+          aria-label="Default OpenCode agent"
+          value={defaultAgent?.agent ?? ""}
+          disabled={!defaultAgent?.options.length || savingAgent}
+          onChange={(event) => void saveDefaultAgent(event.target.value)}
+        >
+          {defaultAgent && !defaultAgent.options.includes(defaultAgent.agent) ? (
+            <option value={defaultAgent.agent}>{defaultAgent.agent}</option>
+          ) : null}
+          {(defaultAgent?.options ?? []).map((agent) => (
+            <option key={agent} value={agent}>
+              {agent}
+            </option>
+          ))}
+        </select>
+        <small>
+          Used on new OpenCode threads. Desktop and PWA can override it in the composer.
+        </small>
+      </label>
+      {defaultAgent?.error ? (
+        <p className="oc-settings__msg" data-ok="false">
+          {defaultAgent.error}
+        </p>
+      ) : null}
+      {agentMessage ? (
+        <p className="oc-settings__msg" data-ok={agentMessage === "Saved."}>
+          {agentMessage}
+        </p>
+      ) : null}
       {probe ? (
         <dl>
           <dt>Binary</dt>

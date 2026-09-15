@@ -31,6 +31,14 @@ export function pickerOptionsFromAgents(
   }));
 }
 
+export function pickerHydrationAgent(args: {
+  lastUserAgent?: string;
+  isNewThread: boolean;
+  defaultAgent: string;
+}): string | undefined {
+  return args.lastUserAgent ?? (args.isNewThread ? args.defaultAgent : undefined);
+}
+
 export function defaultPrimary(
   agents: readonly OpenCodeAgent[],
 ): OpenCodeAgent | undefined {

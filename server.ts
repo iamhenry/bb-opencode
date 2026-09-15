@@ -75,6 +75,7 @@ import {
 import {
   hydratePickerAgent,
   listSelectablePrimaries,
+  pickerHydrationAgent,
   pickerOptionsFromAgents,
   type OpenCodeAgent,
 } from "./src/selectable-primaries.js";
@@ -89,34 +90,18 @@ const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
 const seenThreadIds = new Set<string>();
 let steerActiveThreadOnEnter = false;
+const DEFAULT_AGENT_KEY = "default-agent";
 const taskPollTimers = ((globalThis as {
   __ocTaskPollTimers?: Set<ReturnType<typeof setInterval>>;
 }).__ocTaskPollTimers ??= new Set());
 
 export default async function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
-  const settings = bb.settings.define({
-    defaultAgent: {
-      type: "select",
-      label: "Default OpenCode agent",
-      description:
-        "Used on new OpenCode threads. The iOS app has no in-composer Agent chip; change it here. Desktop/PWA show the chip when OpenCode is selected.",
-      options: ["build", "plan", "orchestrator"],
-      default: "build",
-    },
-  });
-  let configuredAgent = "build";
-  const readConfiguredAgent = async () => {
-    const current = await settings.get();
-    configuredAgent =
-      typeof current.defaultAgent === "string" && current.defaultAgent.trim()
-        ? current.defaultAgent.trim()
-        : "build";
-  };
-  await readConfiguredAgent();
-  settings.onChange(() => {
-    void readConfiguredAgent();
-  });
+  const storedAgent = await bb.storage.kv.get<unknown>(DEFAULT_AGENT_KEY);
+  let configuredAgent =
+    typeof storedAgent === "string" && storedAgent.trim()
+      ? storedAgent.trim()
+      : "build";
   const refreshSteerSetting = async () => {
     try {
       const config = await bb.sdk.system.config();
@@ -206,6 +191,42 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(rpcContract, {
+    async defaultAgent() {
+      const hostId = await firstHostId(bb);
+      if (!hostId) {
+        return {
+          agent: configuredAgent,
+          options: [],
+          error: "No enrolled host",
+        };
+      }
+      try {
+        const agents = await loadAgents(host, hostId);
+        return {
+          agent: configuredAgent,
+          options: listSelectablePrimaries(agents).map((agent) => agent.name),
+          error: null,
+        };
+      } catch (error) {
+        return {
+          agent: configuredAgent,
+          options: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    async setDefaultAgent({ agent }) {
+      const hostId = await firstHostId(bb);
+      if (!hostId) throw new Error("No enrolled host");
+      const agents = await loadAgents(host, hostId);
+      if (!listSelectablePrimaries(agents).some((item) => item.name === agent)) {
+        throw new Error(`Unknown OpenCode primary agent: ${agent}`);
+      }
+      await bb.storage.kv.set(DEFAULT_AGENT_KEY, agent);
+      configuredAgent = agent;
+      bb.log.info(`agent.default agent=${agent}`);
+      return { agent };
+    },
     async threadProvider({ threadId }) {
       try {
         const thread = await bb.sdk.threads.get({ threadId });
@@ -356,7 +377,11 @@ export default async function plugin(bb: BbPluginApi) {
       }
     },
     async composerChrome({ threadId, projectId }) {
-      return loadComposerChrome(bb, host, { threadId, projectId });
+      return loadComposerChrome(bb, host, {
+        threadId,
+        projectId,
+        defaultAgent: configuredAgent,
+      });
     },
     async hydratePicker({ threadId }) {
       try {
@@ -1393,7 +1418,11 @@ async function resolveHostId(
 async function loadComposerChrome(
   bb: BbPluginApi,
   host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
-  args: { threadId: string | null; projectId: string | null },
+  args: {
+    threadId: string | null;
+    projectId: string | null;
+    defaultAgent: string;
+  },
 ) {
   const hidden = {
     providerId: null as string | null,
@@ -1465,7 +1494,14 @@ async function loadComposerChrome(
       listSelectablePrimaries(listed).length > 0
         ? listed
         : fallbackSelectableAgents();
-    const hydrated = hydratePickerAgent({ lastUserAgent, agents });
+    const hydrated = hydratePickerAgent({
+      lastUserAgent: pickerHydrationAgent({
+        lastUserAgent,
+        isNewThread: !args.threadId,
+        defaultAgent: args.defaultAgent,
+      }),
+      agents,
+    });
     const options = pickerOptionsFromAgents(agents);
     if (hydrated.status === "unknown") {
       return {
