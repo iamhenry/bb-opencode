@@ -36,7 +36,7 @@ export function isOpenCodeParentThread(thread: {
   );
 }
 
-export function taskChildBindInput(): Array<{
+export function taskChildBindInput(prompt?: string): Array<{
   type: "text";
   text: string;
   mentions: [];
@@ -44,7 +44,7 @@ export function taskChildBindInput(): Array<{
   return [
     {
       type: "text",
-      text: TASK_CHILD_BIND_TEXT,
+      text: prompt ?? TASK_CHILD_BIND_TEXT,
       mentions: [],
     },
   ];

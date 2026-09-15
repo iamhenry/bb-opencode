@@ -1156,7 +1156,7 @@ async function spawnBoundTaskChild(
     model?: string | null;
     agent?: string | null;
     reasoningLevel?: BbReasoningLevel | null;
-    prompt?: string;
+    bindInput?: string;
   },
 ) {
   armNextAdopt(nextAdopts, {
@@ -1174,9 +1174,7 @@ async function spawnBoundTaskChild(
       title: taskChildThreadTitle(args.title),
       ...(args.model ? { model: args.model } : {}),
       ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
-      ...(args.prompt
-        ? { prompt: args.prompt }
-        : { input: taskChildBindInput() }),
+      input: taskChildBindInput(args.bindInput),
       environment: args.environmentId
         ? { type: "reuse", environmentId: args.environmentId }
         : { type: "project-default" },
@@ -1252,6 +1250,7 @@ async function ensureRunningTaskChildThreads(
         model: snapshot.model,
         agent: snapshot.lastUserAgent,
         reasoningLevel: snapshot.reasoningLevel,
+        bindInput: live.prompt ?? undefined,
       });
       rememberBoundTaskChild(live.childSessionId, childThreadId);
       bb.log.info(
