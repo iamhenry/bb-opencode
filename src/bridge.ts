@@ -43,7 +43,7 @@ import {
   isCompactionSkipError,
   isOpenCodeCompactCommand,
 } from "./compaction.js";
-import { splitModelRef, TASK_CHILD_BIND_TEXT } from "./task-thread.js";
+import { splitModelRef } from "./task-thread.js";
 import {
   parseOpenCodeTodos,
   todoPlanDeltas,
@@ -2825,11 +2825,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         bound.permissionMode = permissionModeOf(parsed.data.options);
         Object.assign(bound, sessionPolicy(parsed.data));
         respondResult(id, {});
-        // ponytail: agent-only bind seed must not become a second OpenCode prompt
-        if (
-          bound.bindOnly &&
-          firstTextPart(parsed.data.input ?? []).trim() === TASK_CHILD_BIND_TEXT
-        ) {
+        // ponytail: bind-only input seeds BB display; the OpenCode turn already exists
+        if (bound.bindOnly) {
           bound.bindOnly = false;
           if (parsed.data.clientRequestId) {
             emitDeltas(parsed.data.threadId, [

@@ -4347,7 +4347,7 @@ describe("provider bridge", () => {
       method: "thread/start",
       params: sessionParams({
         threadId: "thr_child",
-        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        input: [{ type: "text", text: "Explore the event flow", mentions: [] }],
         options: {
           ...fullOptions,
           model: "xai/grok-4.6",
@@ -4363,7 +4363,7 @@ describe("provider bridge", () => {
       params: turnParams({
         threadId: "thr_child",
         providerThreadId: "child",
-        input: [{ type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] }],
+        input: [{ type: "text", text: "Explore the event flow", mentions: [] }],
         options: {
           ...fullOptions,
           model: "xai/grok-4.6",

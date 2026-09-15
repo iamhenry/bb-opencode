@@ -69,13 +69,16 @@ describe("task child threads", () => {
     );
   });
 
-  it("exposes the hydrated Task prompt as a normal user message", () => {
-    expect(taskChildBindInput()).toEqual([
+  it("exposes the Task prompt as a normal user message", () => {
+    expect(taskChildBindInput("Trace the complete event flow")).toEqual([
       {
         type: "text",
-        text: TASK_CHILD_BIND_TEXT,
+        text: "Trace the complete event flow",
         mentions: [],
       },
+    ]);
+    expect(taskChildBindInput()).toEqual([
+      { type: "text", text: TASK_CHILD_BIND_TEXT, mentions: [] },
     ]);
   });
 
