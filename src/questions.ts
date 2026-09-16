@@ -85,7 +85,8 @@ function parseQuestion(raw: unknown): OpenCodeQuestionInfo | undefined {
     header: typeof record.header === "string" ? record.header : undefined,
     options,
     multiple: record.multiple === true,
-    custom: record.custom === true,
+    // OpenCode defaults `custom` to true when omitted; only explicit false disables it
+    custom: record.custom !== false,
   };
 }
 
@@ -121,7 +122,9 @@ export function toUserQuestionPayload(
   return {
     kind: "user_question",
     questions: sliced.map((question, index) => {
-      const options = question.options
+      const allOptions = question.options;
+      const truncated = allOptions.length > USER_QUESTION_MAX_OPTIONS;
+      const options = allOptions
         .slice(0, USER_QUESTION_MAX_OPTIONS)
         .map((option) => ({
           value: option.label,
@@ -133,7 +136,11 @@ export function toUserQuestionPayload(
         prompt: question.question,
         ...(question.header ? { shortLabel: question.header } : {}),
         multiSelect: question.multiple === true,
-        allowFreeText: question.custom === true || options.length === 0,
+        // ponytail: options are silently truncated at 4; enable free text so
+        // the user can still answer with a dropped option — raise the cap in
+        // questions.ts if BB ever renders more
+        allowFreeText:
+          question.custom || truncated || options.length === 0,
         ...(options.length > 0 ? { options } : {}),
       };
     }),
