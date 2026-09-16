@@ -114,6 +114,7 @@ export function ImportControl() {
   return (
     <div data-opencode-import="true">
       <div className="oc-settings__actions">
+        <span>Session history</span>
         <button
           type="button"
           className="oc-settings__btn"

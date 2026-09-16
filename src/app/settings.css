@@ -1,11 +1,23 @@
-/* Settings-section action buttons: match BB's bordered secondary-button idiom. */
+/* Settings-section controls: match BB's bordered secondary-button idiom. */
+.oc-settings__group {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 12%, transparent);
+  border-radius: 0.65rem;
+}
+
 .oc-settings__field {
   display: grid;
-  gap: 0.35rem;
-  margin-bottom: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 1fr);
+  align-items: center;
+  gap: 1rem;
+  margin: 0;
 }
 
 .oc-settings__field select {
+  width: 100%;
+  box-sizing: border-box;
   font: inherit;
   color: var(--foreground, inherit);
   background: var(--background, transparent);
@@ -14,15 +26,21 @@
   padding: 0.4rem 0.55rem;
 }
 
-.oc-settings__field small {
-  color: var(--muted-foreground, #a1a1aa);
+.oc-settings__lane,
+.oc-settings__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 1fr);
+  align-items: center;
+  gap: 1rem;
 }
 
 .oc-settings__actions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-  margin-top: 0.75rem;
+  margin: 0;
+}
+
+.oc-settings__value,
+.oc-settings__actions .oc-settings__btn {
+  justify-self: end;
 }
 
 .oc-settings__btn {
@@ -55,4 +73,17 @@
 
 .oc-settings__msg[data-ok="false"] {
   color: var(--destructive, #dc2626);
+}
+
+@media (max-width: 600px) {
+  .oc-settings__field,
+  .oc-settings__lane,
+  .oc-settings__actions {
+    grid-template-columns: 1fr;
+  }
+
+  .oc-settings__value,
+  .oc-settings__actions .oc-settings__btn {
+    justify-self: start;
+  }
 }

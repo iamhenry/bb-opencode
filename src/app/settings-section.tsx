@@ -95,28 +95,44 @@ export function SettingsSection() {
 
   return (
     <section data-opencode-settings="true">
-      <h3>OpenCode</h3>
-      <label className="oc-settings__field">
-        <span>Default OpenCode agent</span>
-        <select
-          aria-label="Default OpenCode agent"
-          value={defaultAgent?.agent ?? ""}
-          disabled={!defaultAgent?.options.length || savingAgent}
-          onChange={(event) => void saveDefaultAgent(event.target.value)}
-        >
-          {defaultAgent && !defaultAgent.options.includes(defaultAgent.agent) ? (
-            <option value={defaultAgent.agent}>{defaultAgent.agent}</option>
-          ) : null}
-          {(defaultAgent?.options ?? []).map((agent) => (
-            <option key={agent} value={agent}>
-              {agent}
-            </option>
-          ))}
-        </select>
-        <small>
-          Used on new OpenCode threads. Desktop and PWA can override it in the composer.
-        </small>
-      </label>
+      <div className="oc-settings__group">
+        <label className="oc-settings__field">
+          <span>Default OpenCode agent</span>
+          <select
+            aria-label="Default OpenCode agent"
+            value={defaultAgent?.agent ?? ""}
+            disabled={!defaultAgent?.options.length || savingAgent}
+            onChange={(event) => void saveDefaultAgent(event.target.value)}
+          >
+            {defaultAgent && !defaultAgent.options.includes(defaultAgent.agent) ? (
+              <option value={defaultAgent.agent}>{defaultAgent.agent}</option>
+            ) : null}
+            {(defaultAgent?.options ?? []).map((agent) => (
+              <option key={agent} value={agent}>
+                {agent}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="oc-settings__lane">
+          <span>OpenCode version</span>
+          <span className="oc-settings__value">
+            {probe?.serverVersion ?? update?.diskVersion ?? "—"}
+          </span>
+        </div>
+        <div className="oc-settings__actions">
+          <span>OpenCode server</span>
+          <button
+            type="button"
+            className="oc-settings__btn"
+            disabled={reloading}
+            onClick={() => void reload()}
+          >
+            {reloading ? "Reloading…" : "Reload OpenCode"}
+          </button>
+        </div>
+        <ImportControl />
+      </div>
       {defaultAgent?.error ? (
         <p className="oc-settings__msg" data-ok="false">
           {defaultAgent.error}
@@ -127,50 +143,8 @@ export function SettingsSection() {
           {agentMessage}
         </p>
       ) : null}
-      {probe ? (
-        <dl>
-          <dt>Binary</dt>
-          <dd>{probe.binaryPath ?? "missing"}</dd>
-          <dt>Server</dt>
-          <dd>{probe.serverVersion ?? "unknown"}</dd>
-          <dt>Disk</dt>
-          <dd>{update?.diskVersion ?? "unknown"}</dd>
-          <dt>Latest</dt>
-          <dd>{update?.latestVersion ?? "unknown"}</dd>
-          <dt>Attach</dt>
-          <dd>{probe.attached ? "attached" : probe.spawned ? "spawned" : "down"}</dd>
-          <dt>Port</dt>
-          <dd>{probe.port ?? "-"}</dd>
-          <dt>Range</dt>
-          <dd>{probe.supportedRange}</dd>
-          <dt>SDK</dt>
-          <dd>{probe.sdkPin}</dd>
-          <dt>Serve cwd</dt>
-          <dd>{probe.serveCwd ?? "-"}</dd>
-          {probe.configSummary ? (
-            <>
-              <dt>Config</dt>
-              <dd>{probe.configSummary}</dd>
-            </>
-          ) : null}
-        </dl>
-      ) : (
-        <p>Probing OpenCode…</p>
-      )}
       {probe?.authError ? <p>Auth: {probe.authError}</p> : null}
       {probe?.error ? <p>{probe.error}</p> : null}
-      {update?.current ? <p>Up to date</p> : null}
-      {update?.error && !update.current ? <p>{update.error}</p> : null}
-      <div className="oc-settings__actions">
-        <button
-          type="button"
-          className="oc-settings__btn"
-          disabled={reloading}
-          onClick={() => void reload()}
-        >
-          {reloading ? "Reloading…" : "Reload OpenCode"}
-        </button>
-      </div>
       {reloadMessage ? (
         <p
           className="oc-settings__msg"
@@ -179,7 +153,6 @@ export function SettingsSection() {
           {reloadMessage}
         </p>
       ) : null}
-      <ImportControl />
     </section>
   );
 }
