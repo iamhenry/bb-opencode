@@ -48,4 +48,6 @@ Secondary: `USER_QUESTION_MAX_OPTIONS = 4` silently truncated option lists; a
 ## Follow-up
 
 Upstream feature request for image attachments on answers:
-https://github.com/anomalyco/opencode/issues/49405
+- OpenCode (provider contract half): https://github.com/anomalyco/opencode/issues/49405
+- get-bb/bb (card/payload half): https://github.com/get-bb/bb/issues/3795
+- Each issue cross-links the other; both must land compatibly for the feature to work end to end.
