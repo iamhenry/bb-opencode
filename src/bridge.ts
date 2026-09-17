@@ -162,6 +162,16 @@ interface ChildWork {
   turnOpened: boolean;
 }
 
+interface SteerRestart {
+  phase: "persisting" | "aborting" | "replaying" | "running";
+  idleSeen: boolean;
+  lastError?: {
+    status: "failed" | "interrupted";
+    message: string;
+    phase: SteerRestart["phase"];
+  };
+}
+
 interface LiveTurn {
   threadId: string;
   sessionId: string;
@@ -179,9 +189,7 @@ interface LiveTurn {
   pollUserMessageId?: string;
   settling?: boolean;
   stopping?: boolean;
-  steerSubmissions?: number;
-  idleDuringSteer?: boolean;
-  steerSubmittedAfterIdle?: boolean;
+  steerRestart?: SteerRestart;
   startGuard?: string;
 }
 
@@ -861,6 +869,28 @@ function closeLiveTurn(
   ]);
 }
 
+function rememberSteerTerminal(
+  live: LiveTurn,
+  terminal:
+    | { kind: "idle" }
+    | { kind: "error"; status: "failed" | "interrupted"; message: string },
+): void {
+  const restart = live.steerRestart;
+  if (!restart) return;
+  if (terminal.kind === "idle") {
+    restart.idleSeen = true;
+  } else {
+    restart.lastError = {
+      status: terminal.status,
+      message: terminal.message,
+      phase: restart.phase,
+    };
+  }
+  debugLog(
+    `steer terminal fact=${terminal.kind} phase=${restart.phase} ses=${live.sessionId}`,
+  );
+}
+
 function serveLost(message: string): void {
   const had = Boolean(client || subscriptions.size > 0);
   dropSubscriptions();
@@ -1195,6 +1225,10 @@ export async function syncLiveTurnParts(sessionId: string): Promise<boolean> {
     await maybeFailUncardedWrite(sessionId, messages);
     if (leftovers.length > 0) emitDeltas(threadId, leftovers);
     await completeBindOnlyIfIdle(threadId, sessionId, messages);
+    const current = liveTurns.get(threadId);
+    if (current?.steerRestart?.phase === "running") {
+      await settleIssuedTurn(threadId, sessionId, client);
+    }
     return leftovers.length > 0;
   } catch {
     return false;
@@ -1287,7 +1321,7 @@ async function maybeFailUncardedWrite(
   if (!next.giveUp || !runningTool) return;
   debugLog(`ask timeout ses=${sessionId} tool=${runningTool} abort`);
   try {
-    await client.abort(sessionId);
+    await client.abort(sessionId, boundDirectory(sessionId));
   } catch {
     /* still fail the BB turn */
   }
@@ -1940,9 +1974,12 @@ async function onOpenCodeEvent(event: {
     }
     const idle = event.type === "session.idle" || status.kind === "idle";
     if (!idle) return;
-    if (sessionId === live.sessionId && (live.steerSubmissions ?? 0) > 0) {
-      live.idleDuringSteer = true;
-      debugLog(`idle wait steer submission ses=${sessionId}`);
+    if (sessionId === live.sessionId && live.steerRestart) {
+      rememberSteerTerminal(live, { kind: "idle" });
+      if (live.steerRestart.phase !== "running" || live.stopping) {
+        return;
+      }
+      if (client) await settleIssuedTurn(threadId, sessionId, client);
       return;
     }
     if (sessionId !== live.sessionId) {
@@ -2012,6 +2049,18 @@ async function onOpenCodeEvent(event: {
     const described = describeSessionError(error);
     debugLog(`session error ses=${sessionId} ${described.status}`);
     if (sessionId === live.sessionId) {
+      if (live.steerRestart) {
+        rememberSteerTerminal(live, {
+          kind: "error",
+          status: described.status,
+          message: described.message,
+        });
+        if (live.steerRestart.phase !== "running" || live.stopping) {
+          return;
+        }
+        if (client) await settleIssuedTurn(threadId, sessionId, client);
+        return;
+      }
       closeLiveTurn(threadId, described.status, described.message);
     }
     return;
@@ -3098,7 +3147,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           }
           for (const sessionId of ids) {
             try {
-              await active.abort(sessionId);
+              await active.abort(sessionId, boundDirectory(sessionId));
             } catch {
               /* already idle */
             }
@@ -3138,32 +3187,74 @@ async function settleIssuedTurn(
 ): Promise<void> {
   const liveAfter = liveTurns.get(threadId);
   if (!liveAfter || liveAfter.parentBoundaryEmitted || liveAfter.settling) return;
-  const queued = takeQueuedSteer(liveAfter);
-  if (queued) {
-    await flushSteerBody(threadId, sessionId, active, liveAfter, queued);
+  const settlementRestart = liveAfter.steerRestart;
+  if (settlementRestart && settlementRestart.phase !== "running") {
+    debugLog(`settle wait steer restart ses=${sessionId}`);
     return;
+  }
+  if (!settlementRestart) {
+    const queued = takeQueuedSteer(liveAfter);
+    if (queued) {
+      await flushSteerBody(threadId, sessionId, active, liveAfter, queued);
+      return;
+    }
   }
   liveAfter.settling = true;
   let messages: HydrateMessage[];
-  try {
-    messages = await readSessionMessages(
-      active,
-      sessionId,
-      "settle",
-      RECONCILE_HISTORY_LIMIT,
-    );
-  } catch (error) {
-    liveAfter.settling = false;
-    failIssuedTurn(
+  if (settlementRestart) {
+    const reconciliation = await reconcileSteerRestart(
       threadId,
-      `Could not finalize OpenCode turn: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      sessionId,
+      active,
+      settlementRestart,
     );
+    if (
+      liveTurns.get(threadId) !== liveAfter ||
+      liveAfter.parentBoundaryEmitted
+    ) {
+      return;
+    }
+    if (!reconciliation) {
+      liveAfter.settling = false;
+      return;
+    }
+    if (reconciliation.status === "failed") {
+      liveAfter.settling = false;
+      closeLiveTurn(
+        threadId,
+        "failed",
+        reconciliation.message ?? "OpenCode corrected turn failed",
+      );
+      return;
+    }
+    messages = reconciliation.messages;
+  } else {
+    try {
+      messages = await readSessionMessages(
+        active,
+        sessionId,
+        "settle",
+        RECONCILE_HISTORY_LIMIT,
+      );
+    } catch (error) {
+      liveAfter.settling = false;
+      failIssuedTurn(
+        threadId,
+        `Could not finalize OpenCode turn: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return;
+    }
+  }
+  if (liveAfter.steerRestart !== settlementRestart) {
+    liveAfter.settling = false;
+    debugLog(`settle wait changed steer restart ses=${sessionId}`);
     return;
   }
   const lateQueued = takeQueuedSteer(liveAfter);
   if (lateQueued) {
+    if (settlementRestart) liveAfter.steerRestart = undefined;
     liveAfter.settling = false;
     await flushSteerBody(threadId, sessionId, active, liveAfter, lateQueued);
     return;
@@ -3325,25 +3416,133 @@ function usableSteerLive(
   return live;
 }
 
-let lastMessageIdTimestamp = 0;
-let messageIdCounter = 0;
+interface SteerReconciliation {
+  messages: HydrateMessage[];
+  status: "completed" | "failed";
+  message?: string;
+}
+
+async function reconcileSteerRestart(
+  threadId: string,
+  sessionId: string,
+  active: OpenCodeClient,
+  restart: SteerRestart,
+): Promise<SteerReconciliation | undefined> {
+  const live = liveTurns.get(threadId);
+  if (
+    !live ||
+    live.parentBoundaryEmitted ||
+    live.stopping ||
+    live.sessionId !== sessionId ||
+    live.steerRestart !== restart ||
+    restart.phase !== "running"
+  ) {
+    return undefined;
+  }
+  const fact = restart.lastError
+    ? "error"
+    : restart.idleSeen
+      ? "idle"
+      : "none";
+  let running: boolean;
+  try {
+    running = await active.sessionIsRunning(sessionId, boundDirectory(sessionId));
+  } catch {
+    return undefined;
+  }
+  if (running) {
+    debugLog(`steer reconcile fact=${fact} live=busy ses=${sessionId}`);
+    return undefined;
+  }
+
+  let messages: HydrateMessage[];
+  try {
+    messages = await readSessionMessages(
+      active,
+      sessionId,
+      "steer-reconcile",
+      RECONCILE_HISTORY_LIMIT,
+    );
+  } catch {
+    return undefined;
+  }
+  const assistants = currentAssistantMessages(live, messages);
+  if (assistants.length === 0 || !lastAssistantSettled(assistants)) {
+    debugLog(
+      `steer reconcile fact=${fact} live=idle assistant=pending ses=${sessionId}`,
+    );
+    return undefined;
+  }
+
+  try {
+    if (await active.sessionIsRunning(sessionId, boundDirectory(sessionId))) {
+      debugLog(
+        `steer reconcile fact=${fact} live=busy-after-history ses=${sessionId}`,
+      );
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  const finalAssistant = assistants.at(-1);
+  const failed = finalAssistant?.parts.some(
+    (part) => part.state?.status === "error",
+  );
+  debugLog(
+    `steer reconcile fact=${fact} live=idle assistant=terminal ses=${sessionId}`,
+  );
+  return {
+    messages,
+    status: failed ? "failed" : "completed",
+    ...(failed &&
+      restart.lastError?.phase === "running" &&
+      restart.lastError.status === "failed"
+      ? { message: restart.lastError.message }
+      : {}),
+  };
+}
+
+let lastOpenCodeIdTimestamp = 0;
+let openCodeIdCounter = 0;
 
 /** OpenCode Identifier.ascending wire format for client-owned prompt boundaries. */
-function nextMessageId(): string {
+function nextOpenCodeId(prefix: "msg" | "prt"): string {
   const now = Date.now();
-  if (now !== lastMessageIdTimestamp) {
-    lastMessageIdTimestamp = now;
-    messageIdCounter = 0;
+  if (now !== lastOpenCodeIdTimestamp) {
+    lastOpenCodeIdTimestamp = now;
+    openCodeIdCounter = 0;
   }
-  messageIdCounter += 1;
-  const value = BigInt(now) * 0x1000n + BigInt(messageIdCounter);
+  openCodeIdCounter += 1;
+  const value = BigInt(now) * 0x1000n + BigInt(openCodeIdCounter);
   const hex = (value & 0xffffffffffffn).toString(16).padStart(12, "0");
   const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   let random = "";
   for (let index = 0; index < 14; index += 1) {
     random += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
-  return `msg_${hex}${random}`;
+  return `${prefix}_${hex}${random}`;
+}
+
+function nextMessageId(): string {
+  return nextOpenCodeId("msg");
+}
+
+function stableSteerPrompt(body: Record<string, unknown>): {
+  messageID: string;
+  body: Record<string, unknown>;
+} {
+  const messageID = nextMessageId();
+  const parts = Array.isArray(body.parts)
+    ? body.parts.map((part) =>
+        part && typeof part === "object" && typeof (part as { id?: unknown }).id !== "string"
+          ? { ...(part as Record<string, unknown>), id: nextOpenCodeId("prt") }
+          : part,
+      )
+    : body.parts;
+  return {
+    messageID,
+    body: { ...body, ...(parts === undefined ? {} : { parts }), messageID },
+  };
 }
 
 function promptForLiveTurn(
@@ -3408,6 +3607,20 @@ function steerPromptBody(args: {
   };
 }
 
+async function waitForSteerRunnerRelease(
+  active: OpenCodeClient,
+  sessionId: string,
+  directory?: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (await active.sessionIsRunning(sessionId, directory)) {
+    if (Date.now() >= deadline) {
+      throw new Error("OpenCode session did not stop after abort");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function runSteer(args: {
   threadId: string;
   sessionId: string;
@@ -3428,62 +3641,103 @@ async function runSteer(args: {
     ]);
     return;
   }
-  if (args.clientRequestId) {
+  const acknowledgeInput = (): void => {
+    if (!args.clientRequestId) return;
     emitDeltas(args.threadId, [
       { kind: "input.accepted", clientRequestId: args.clientRequestId },
     ]);
-  }
+  };
   const present = liveTurns.get(args.threadId);
   const live = usableSteerLive(args.threadId, args.sessionId);
   if (steerDeliveryOf(args.options) === "queue" && live) {
     live.pendingPrompts.push(built.body);
+    acknowledgeInput();
     return;
   }
   if (!live) {
     if (present) return;
-    await runPrompt({ ...args, clientRequestId: undefined });
+    await runPrompt(args);
     return;
   }
 
-  live.steerSubmissions = (live.steerSubmissions ?? 0) + 1;
+  const restart: SteerRestart = {
+    phase: "persisting",
+    idleSeen: false,
+  };
+  const previousPollUserMessageId = live.pollUserMessageId;
+  live.steerRestart = restart;
+  let active: OpenCodeClient | undefined;
+  const directory = boundDirectory(args.sessionId);
+  let stable: ReturnType<typeof stableSteerPrompt> | undefined;
   try {
     await openingTurns.get(args.threadId);
     if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-    const active = await ensureClient();
-    await promptForLiveTurn(
-      active,
+    active = await ensureClient();
+    stable = stableSteerPrompt(built.body);
+    live.pollUserMessageId = stable.messageID;
+    await active.prompt(
       args.sessionId,
-      live,
-      built.body,
-      boundDirectory(args.sessionId),
+      { ...stable.body, noReply: true },
+      directory,
     );
-    if (live.idleDuringSteer) live.steerSubmittedAfterIdle = true;
   } catch (error) {
-    if (live.stopping || liveTurns.get(args.threadId) !== live) return;
-    throw error;
-  } finally {
-    live.steerSubmissions -= 1;
-    if (live.steerSubmissions === 0 && live.idleDuringSteer) {
-      const submitted = live.steerSubmittedAfterIdle;
-      live.idleDuringSteer = false;
-      live.steerSubmittedAfterIdle = false;
-      if (liveTurns.get(args.threadId) === live && client) {
-        let shouldSettle = !submitted;
-        if (submitted) {
-          try {
-            shouldSettle = !(await client.sessionIsRunning(
-              args.sessionId,
-              boundDirectory(args.sessionId),
-            ));
-          } catch (error) {
-            unknownLogLines.push(`steer-status-error ${String(error)}`);
-          }
+    if (liveTurns.get(args.threadId) === live && !live.stopping) {
+      if (live.steerRestart === restart) live.steerRestart = undefined;
+      live.pollUserMessageId = previousPollUserMessageId;
+    }
+    emitDeltas(args.threadId, [
+      {
+        kind: "provider.warning",
+        category: "general",
+        summary: "Could not persist correction",
+        details: error instanceof Error ? error.message : String(error),
+        vouchedTurn: true,
+      },
+    ]);
+    if (active && liveTurns.get(args.threadId) === live && !live.stopping) {
+      try {
+        if (!(await active.sessionIsRunning(args.sessionId, directory))) {
+          await settleIssuedTurn(args.threadId, args.sessionId, active);
         }
-        if (shouldSettle) {
-          await settleIssuedTurn(args.threadId, args.sessionId, client);
-        }
+      } catch (settleError) {
+        unknownLogLines.push(`steer-persist-settle-error ${String(settleError)}`);
       }
     }
+    return;
+  }
+  if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+  restart.phase = "aborting";
+  acknowledgeInput();
+  let aborted = false;
+  try {
+    if (await active.sessionIsRunning(args.sessionId, directory)) {
+      await active.abort(args.sessionId, directory);
+      aborted = true;
+      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+      await waitForSteerRunnerRelease(active, args.sessionId, directory);
+      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+    }
+    restart.phase = "replaying";
+    await active.promptAsync(args.sessionId, stable.body, directory);
+    if (usableSteerLive(args.threadId, args.sessionId) !== live) {
+      try {
+        await active.abort(args.sessionId, boundDirectory(args.sessionId));
+      } catch {
+        /* already idle */
+      }
+      return;
+    }
+    restart.phase = "running";
+    await settleIssuedTurn(args.threadId, args.sessionId, active);
+  } catch (error) {
+    if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
+    live.steerRestart = undefined;
+    const details = error instanceof Error ? error.message : String(error);
+    if (aborted) {
+      failIssuedTurn(args.threadId, `Could not start follow-up: ${details}`);
+      return;
+    }
+    throw error;
   }
 }
 
