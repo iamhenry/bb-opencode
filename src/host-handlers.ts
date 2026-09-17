@@ -266,7 +266,8 @@ async function settleOpenCodeSession(
   sessionId: string,
 ): Promise<void> {
   if (!(await client.sessionIsRunning(sessionId))) return;
-  await client.abort(sessionId);
+  const session = await client.getSession(sessionId);
+  await client.abort(sessionId, session.directory);
   const deadline = Date.now() + REVERT_SETTLE_TIMEOUT_MS;
   while (await client.sessionIsRunning(sessionId)) {
     if (Date.now() >= deadline) {

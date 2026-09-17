@@ -38,7 +38,8 @@ export interface FakeOpenCode {
   }>;
   emit: (event: { type: string; properties?: unknown }) => void;
   promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
-  abortImpl?: (id: string) => Promise<void>;
+  abortImpl?: (id: string, directory?: string) => Promise<void>;
+  lastAbort?: { id: string; directory?: string };
   lastPrompt?: { id: string; body: Record<string, unknown> };
   lastRevert?: { id: string; body: Record<string, unknown> };
   lastPermissionDirectory?: string;
@@ -154,14 +155,17 @@ export function createFakeOpenCode(): FakeOpenCode {
         fake.calls.prompt += 1;
         fake.lastPrompt = { id, body };
         if (fake.promptImpl) return fake.promptImpl(id, body);
-        queueMicrotask(() => {
-          fake.emit({ type: "session.idle", properties: { sessionID: id } });
-        });
+        if (fake.emitIdleAfterPrompt) {
+          queueMicrotask(() => {
+            fake.emit({ type: "session.idle", properties: { sessionID: id } });
+          });
+        }
         return {};
       },
-      async abort(id) {
+      async abort(id, directory) {
         fake.calls.abort += 1;
-        await fake.abortImpl?.(id);
+        fake.lastAbort = { id, directory };
+        await fake.abortImpl?.(id, directory);
       },
       async revert(id, body) {
         fake.calls.revert += 1;

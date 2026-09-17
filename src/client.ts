@@ -52,7 +52,7 @@ export interface OpenCodeClient {
     body: Record<string, unknown>,
     directory?: string,
   ): Promise<void>;
-  abort(id: string): Promise<void>;
+  abort(id: string, directory?: string): Promise<void>;
   revert(id: string, body: Record<string, unknown>): Promise<unknown>;
   unrevert(id: string): Promise<unknown>;
   forkSession(
@@ -363,9 +363,12 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
         );
       }
     },
-    async abort(id) {
+    async abort(id, directory) {
       await withTimeout(
-        sdk.session.abort({ path: { id } }),
+        sdk.session.abort({
+          path: { id },
+          ...(directory ? { query: { directory } } : {}),
+        }),
         OPENCODE_REPLY_MS,
         "session.abort",
       );
