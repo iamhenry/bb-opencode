@@ -29,7 +29,7 @@ import {
   greetingSessionTitle,
   shouldPublishOpenCodeTitle,
 } from "./session-title.js";
-import { taskChildPrompt, taskChildSessionId } from "./task-child.js";
+import { taskChildPrompt, taskChildSessionId, taskDelegationLabel } from "./task-child.js";
 import { noteLiveTaskChild } from "./task-live.js";
 import {
   coerceModelRef,
@@ -199,6 +199,21 @@ interface BoundSession {
 const sessions = new Map<string, BoundSession>();
 const sessionToThread = new Map<string, string>();
 const liveTurns = new Map<string, LiveTurn>();
+
+/** A background Task child whose delegation row is still open in BB. */
+interface BackgroundChild {
+  threadId: string;
+  parentSessionId: string;
+  parentItemId: string;
+  label: string;
+}
+
+/**
+ * Turn-independent registry for background Task children: they outlive the
+ * spawning turn, and the real delegation close fires on child idle, which can
+ * be long after the parent turn dropped its LiveTurn.
+ */
+const backgroundChildren = new Map<string, BackgroundChild>();
 
 function dropLiveTurn(threadId: string): void {
   const live = liveTurns.get(threadId);
@@ -758,6 +773,43 @@ function isUserMessageText(
   const messageID =
     typeof part.messageID === "string" ? part.messageID : undefined;
   return Boolean(messageID && live.userMessageIds.has(messageID));
+}
+
+/**
+ * Real terminal close for a background delegation: the child session went
+ * idle or errored. The parent turn may already be gone, so the thread comes
+ * from the background-children registry, not the live turn.
+ */
+function closeBackgroundChild(
+  childId: string,
+  status: "failed" | "completed",
+  errorText?: string,
+): void {
+  const registered = backgroundChildren.get(childId);
+  if (!registered) return;
+  backgroundChildren.delete(childId);
+  const key = { providerItemId: registered.parentItemId };
+  emitDeltas(registered.threadId, [
+    {
+      kind: "item.close",
+      key,
+      status,
+      item: {
+        type: "delegation",
+        childRef: childId,
+        label: registered.label,
+        background: true,
+        ...(errorText ? { summary: errorText } : {}),
+      },
+      presentation: {
+        label: {
+          pending: "Running subagent",
+          completed: status === "failed" ? "Subagent failed" : "Subagent finished",
+        },
+        icon: { glyph: "Bot" },
+      },
+    },
+  ]);
 }
 
 function isChildProseType(type: unknown): boolean {
@@ -1559,6 +1611,30 @@ async function onOpenCodeEvent(event: {
     await maybeCardQuestionFromPart(sessionId, questionPart);
   }
 
+  // A background Task child outlives the spawning turn; once the parent's
+  // LiveTurn is gone, only the registry knows its delegation row. Terminal
+  // child events still close the row.
+  if (!resolved && backgroundChildren.has(sessionId)) {
+    if (event.type === "session.idle") {
+      closeBackgroundChild(sessionId, "completed");
+      return;
+    }
+    if (event.type === "session.error") {
+      const error =
+        event.properties && typeof event.properties === "object"
+          ? (event.properties as { error?: unknown }).error
+          : undefined;
+      const described = describeSessionError(error);
+      closeBackgroundChild(
+        sessionId,
+        described.status === "failed" ? "failed" : "completed",
+        described.message,
+      );
+      return;
+    }
+    return;
+  }
+
   if (event.type === "todo.updated") {
     const bound = sessionToThread.get(sessionId);
     if (!bound) return;
@@ -1681,6 +1757,8 @@ async function onOpenCodeEvent(event: {
           childSessionId: id,
           running: false,
         });
+        // Background delegation: this idle is the real terminal signal.
+        closeBackgroundChild(id, "completed");
       }
       return;
     }
@@ -1869,6 +1947,7 @@ async function onOpenCodeEvent(event: {
     }
     if (sessionId !== live.sessionId) {
       live.liveChildIds.delete(sessionId);
+      closeBackgroundChild(sessionId, "completed");
       return;
     }
     if (
@@ -1997,6 +2076,21 @@ function rememberTaskChild(
   const parentItemId = part.callID ?? part.id;
   if (!childId || !parentItemId) return undefined;
   live.liveChildIds.add(childId);
+  const background = part.state?.metadata?.background === true;
+  if (background) {
+    // A background delegation outlives its spawning turn; the parent turn may
+    // drop its LiveTurn before the child idles. Track those children in a
+    // turn-independent registry keyed by child session id so the real close
+    // still routes. Foreground children stay on the turn-local map.
+    backgroundChildren.set(childId, {
+      threadId: live.threadId,
+      parentSessionId: live.sessionId,
+      parentItemId,
+      label: taskDelegationLabel(part),
+    });
+    live.childWork.delete(childId);
+    return undefined;
+  }
   noteLiveTaskChild({
     parentThreadId: live.threadId,
     parentSessionId: live.sessionId,
