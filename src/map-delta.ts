@@ -273,7 +273,7 @@ function coreToolItem(
       type: "delegation",
       childRef: child,
       label: taskDelegationLabel(part),
-      background: false,
+      background: part.state?.metadata?.background === true,
       summary: taskResultSummary(
         typeof part.state?.output === "string" ? part.state.output : undefined,
       ),
@@ -456,25 +456,35 @@ export function mapPartDelta(args: {
       });
     }
     if (finished) {
-      args.state.closedItems.add(itemId);
-      deltas.push({
-        kind: "item.close",
-        key,
-        status: part.state?.status === "error" ? "failed" : "completed",
-        item: {
-          ...item,
-          ...(item.type === "tool"
-            ? {
-                result: part.state?.output,
-                error:
-                  part.state?.status === "error"
-                    ? String(part.state.error ?? part.state.output ?? "error")
-                    : undefined,
-              }
-            : {}),
-        },
-        presentation,
-      });
+      // Background delegation: the task part completes at launch while the
+      // child session keeps running. Emit nothing here — the bridge emits the
+      // real close when the child session idles (or errors). An errored part
+      // is a genuine terminal signal from OpenCode, so it still closes failed.
+      const backgroundDelegation =
+        item.type === "delegation" &&
+        item.background === true &&
+        part.state?.status !== "error";
+      if (!backgroundDelegation) {
+        args.state.closedItems.add(itemId);
+        deltas.push({
+          kind: "item.close",
+          key,
+          status: part.state?.status === "error" ? "failed" : "completed",
+          item: {
+            ...item,
+            ...(item.type === "tool"
+              ? {
+                  result: part.state?.output,
+                  error:
+                    part.state?.status === "error"
+                      ? String(part.state.error ?? part.state.output ?? "error")
+                      : undefined,
+                }
+              : {}),
+          },
+          presentation,
+        });
+      }
     }
     return deltas;
   }

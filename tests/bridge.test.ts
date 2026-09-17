@@ -5074,4 +5074,187 @@ describe("provider bridge", () => {
       },
     });
   });
+
+  it("background task: opens delegation, skips launch close, closes on child idle", async () => {
+    const fake = installFake();
+    fake.emitIdleAfterPrompt = false;
+    let childIdled = false;
+    // Parent turn: a background task part completes (launch) but the child
+    // session keeps running until we emit its idle below.
+    fake.promptImpl = async (id, body) => {
+      fake.messages.set(id, [
+        {
+          info: { id: body.messageID, role: "user" },
+          parts: [{ type: "text", text: "go" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [
+            {
+              id: "bg-task",
+              callID: "call_bg",
+              type: "tool",
+              tool: "task",
+              state: {
+                status: "completed",
+                title: "Research things",
+                metadata: { background: true, sessionId: "ses_child" },
+                input: { description: "Research things", subagent_type: "voyager" },
+              },
+            },
+          ],
+        },
+      ]);
+      // Child session exists under the parent so reconcile sees it.
+      fake.sessions.set("ses_child", {
+        id: "ses_child",
+        directory: "/tmp/a",
+        title: "Research things",
+        parentID: id,
+      });
+      fake.messages.set("ses_child", []);
+      queueMicrotask(() => {
+        fake.emit({
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "bg-task",
+              callID: "call_bg",
+              type: "tool",
+              tool: "task",
+              sessionID: id,
+              state: {
+                status: "completed",
+                title: "Research things",
+                metadata: { background: true, sessionId: "ses_child" },
+                input: { description: "Research things", subagent_type: "voyager" },
+              },
+            },
+          },
+        });
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const delegationDeltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    // Launched: delegation row opened with background: true…
+    expect(
+      delegationDeltas.some(
+        (delta) =>
+          delta.kind === "item.open" &&
+          (delta.item as { type?: string; background?: boolean })?.type ===
+            "delegation" &&
+          (delta.item as { background?: boolean }).background === true,
+      ),
+    ).toBe(true);
+    // …and NO close at launch (the child is still running).
+    expect(
+      delegationDeltas.some(
+        (delta) =>
+          delta.kind === "item.close" &&
+          (delta.item as { type?: string })?.type === "delegation",
+      ),
+    ).toBe(false);
+    messages.length = 0;
+
+    // Parent settled (emitIdleAfterPrompt = false; settle already happened
+    // via the completed part path) — now the child finishes.
+    childIdled = true;
+    fake.emit({ type: "session.idle", properties: { sessionID: "ses_child" } });
+    await flush();
+    const closeDeltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(
+      closeDeltas.some(
+        (delta) =>
+          delta.kind === "item.close" &&
+          delta.status === "completed" &&
+          (delta.item as { type?: string; background?: boolean })?.type ===
+            "delegation" &&
+          (delta.item as { background?: boolean }).background === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("foreground task still closes at part completion", async () => {
+    const fake = installFake();
+    fake.emitIdleAfterPrompt = false;
+    fake.promptImpl = async (id, body) => {
+      fake.messages.set(id, [
+        {
+          info: { id: body.messageID, role: "user" },
+          parts: [{ type: "text", text: "go" }],
+        },
+        {
+          info: { role: "assistant" },
+          parts: [
+            {
+              id: "fg-task",
+              callID: "call_fg",
+              type: "tool",
+              tool: "task",
+              state: {
+                status: "completed",
+                title: "Quick lookup",
+                metadata: { sessionId: "ses_fg_child" },
+                input: { description: "Quick lookup", subagent_type: "atlas" },
+              },
+            },
+          ],
+        },
+      ]);
+      fake.emit({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "fg-task",
+            callID: "call_fg",
+            type: "tool",
+            tool: "task",
+            sessionID: id,
+            state: {
+              status: "completed",
+              title: "Quick lookup",
+              metadata: { sessionId: "ses_fg_child" },
+              input: { description: "Quick lookup", subagent_type: "atlas" },
+            },
+          },
+        },
+      });
+    };
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({ id: "turn", method: "turn/start", params: turnParams() });
+    await flush();
+    const deltas = messages.flatMap(
+      (message) =>
+        ((message.params as { deltas?: Array<Record<string, unknown>> })
+          ?.deltas ?? []),
+    );
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "item.open" &&
+          (delta.item as { type?: string; background?: boolean })?.type ===
+            "delegation" &&
+          (delta.item as { background?: boolean }).background === false,
+      ),
+    ).toBe(true);
+    expect(
+      deltas.some(
+        (delta) =>
+          delta.kind === "item.close" &&
+          (delta.item as { type?: string })?.type === "delegation",
+      ),
+    ).toBe(true);
+  });
 });
