@@ -65,7 +65,6 @@ import {
   filterMessagesByRevertPoint,
   hydrateDeltas,
   lastAssistantSettled,
-  lastAgent,
   lastUserMessageId,
   revertMessageIdOf,
   type HydrateMessage,
@@ -2566,15 +2565,10 @@ async function resolveSelectableAgent(args: {
   | { ok: false; reason: string }
 > {
   const agents = (await args.active.agents()) as OpenCodeAgent[];
-  const messages = await readSessionMessages(
-    args.active,
-    args.sessionId,
-    "agent",
-    PROMPT_HISTORY_LIMIT,
-  );
+  // ponytail: skip session.messages before prompt; this store wedges serve (~11GB RSS)
   return resolveContinueAgent({
     requested: args.requested,
-    lastUserAgent: lastAgent(messages),
+    lastUserAgent: undefined,
     agents,
   });
 }
@@ -2858,9 +2852,8 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       return;
     }
     void (async () => {
+      let answered = false;
       try {
-        const active = await ensureClient();
-        await active.getSession(parsed.data.providerThreadId);
         bindSession(parsed.data.threadId, {
           threadId: parsed.data.threadId,
           sessionId: parsed.data.providerThreadId,
@@ -2869,6 +2862,13 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           ...sessionPolicy(parsed.data),
         });
         respondResult(id, { providerThreadId: parsed.data.providerThreadId });
+        answered = true;
+        const active = await ensureClient();
+        try {
+          await active.getSession(parsed.data.providerThreadId);
+        } catch {
+          /* BB already has this session id; lookup must not stall resume */
+        }
         if (await active.sessionIsRunning(parsed.data.providerThreadId)) {
           await joinRunningSession(
             parsed.data.threadId,
@@ -2876,11 +2876,12 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           );
         }
       } catch (error) {
-        respondError(
-          id,
-          BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR,
-          error instanceof Error ? error.message : String(error),
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        if (!answered) {
+          respondError(id, BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR, message);
+          return;
+        }
+        debugLog(`resume follow-up ${message}`);
       } finally {
         parkStartGuardOnLive(parsed.data.threadId, startGuard);
       }
@@ -3988,17 +3989,6 @@ async function runPrompt(args: {
     );
     return;
   }
-  let priorMessages: HydrateMessage[] | undefined;
-  try {
-    priorMessages = await readSessionMessages(
-      active,
-      args.sessionId,
-      "prompt",
-      PROMPT_HISTORY_LIMIT,
-    );
-  } catch {
-    /* history is best-effort */
-  }
   const options = providerOptions(args.options);
   const requested =
     typeof options.agent === "string" ? options.agent : undefined;
@@ -4035,15 +4025,7 @@ async function runPrompt(args: {
   }
   try {
     const variant = resolved.inheritSession
-      ? lastVariantFromMessages(
-          priorMessages ??
-            (await readSessionMessages(
-              active,
-              args.sessionId,
-              "variant",
-              PROMPT_HISTORY_LIMIT,
-            )),
-        )
+      ? lastVariantFromMessages([])
       : openCodeVariantFor(reasoningLevelOf(args.options));
     const slash = parseLeadingSlash(firstTextPart(args.input));
     if (isCompactRequest(args.input)) {

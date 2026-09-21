@@ -28,6 +28,12 @@ export const LAUNCH_GUARD_FILE = "opencode.launch.guard";
 export const LAUNCH_OWNER = "bb-plugin-opencode";
 const CLAIM_WAIT_ATTEMPTS = 80;
 const SERVE_LOG_LIMIT = 40;
+const HEALTH_PROBE_MS = 800;
+/** OpenChamber health probe is 5s; an 800ms cut misses a warming serve. */
+const READY_PROBE_MS = process.env.VITEST ? 20 : 5_000;
+/** OpenChamber waits ~20s for a warming serve; tests keep a short budget. */
+const READY_WAIT_MS = process.env.VITEST ? 250 : 20_000;
+const READY_POLL_MS = process.env.VITEST ? 20 : 400;
 
 export interface OpenCodeLock {
   pid: number;
@@ -540,15 +546,32 @@ export function isAbortTimeout(error: unknown): boolean {
   );
 }
 
-async function probePort(port: number): Promise<"ok" | "slow" | "dead"> {
+async function probePort(
+  port: number,
+  timeoutMs = HEALTH_PROBE_MS,
+): Promise<"ok" | "slow" | "dead"> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/global/health`, {
-      signal: AbortSignal.timeout(800),
+      signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
     });
     return response.ok ? "ok" : "dead";
   } catch (error) {
     return isAbortTimeout(error) ? "slow" : "dead";
   }
+}
+
+async function waitUntilPortHealthy(port: number, budgetMs: number): Promise<boolean> {
+  const deadline = Date.now() + budgetMs;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const probe = await probePort(port, Math.min(READY_PROBE_MS, remaining));
+    if (probe === "ok") return true;
+    const sleep = Math.min(READY_POLL_MS, deadline - Date.now());
+    if (sleep <= 0) break;
+    await delay(sleep);
+  }
+  return false;
 }
 
 export async function portListening(port: number): Promise<boolean> {
@@ -726,9 +749,26 @@ export async function attachOrSpawn(args: {
 
   const leftoverLock = readLock(args.dataDir);
   if (leftoverLock) {
-    throw new Error(
-      `OpenCode serve on :${leftoverLock.port} did not answer in time. Not spawning another.`,
-    );
+    const leftoverMessage = `OpenCode serve on :${leftoverLock.port} did not answer in time. Not spawning another.`;
+    if (args.spawn === false) {
+      throw new Error(leftoverMessage);
+    }
+    if (await waitUntilPortHealthy(leftoverLock.port, READY_WAIT_MS)) {
+      return {
+        url: `http://127.0.0.1:${leftoverLock.port}`,
+        pid: leftoverLock.pid,
+        port: leftoverLock.port,
+        spawned: false,
+        cwd: leftoverLock.cwd,
+        startedAt: leftoverLock.startedAt,
+      };
+    }
+    await reclaimIfStale(args.dataDir);
+    const afterWait = await attachIfHealthy(args.dataDir);
+    if (afterWait) return afterWait;
+    if (readLock(args.dataDir)) {
+      throw new Error(leftoverMessage);
+    }
   }
 
   if (args.spawn === false) {

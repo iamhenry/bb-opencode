@@ -225,7 +225,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
           const response = await fetch(`${url}/global/health`, {
-            signal: AbortSignal.timeout(800),
+            signal: AbortSignal.timeout(5_000),
           });
           if (!response.ok) {
             throw new Error(`OpenCode health failed: ${response.status}`);
@@ -299,7 +299,7 @@ function wrap(url: string, sdk: SdkClient): OpenCodeClient {
           path: { id },
           ...(Object.keys(query).length === 0 ? {} : { query }),
         } as never),
-        OPENCODE_SETUP_MS,
+        OPENCODE_PROMPT_MS,
         "session.messages",
       );
       return (
