@@ -582,6 +582,44 @@ export function isLockStale(lock: OpenCodeLock): boolean {
   return !pidAlive(lock.pid);
 }
 
+/** Kill the BB lock pid only. Desktop OpenCode is never in this lock file. */
+async function replaceUnresponsiveLeftover(
+  dataDir: string,
+  lock: OpenCodeLock,
+): Promise<void> {
+  const owned = spawnedServes.get(lock.pid);
+  if (pidAlive(lock.pid)) {
+    try {
+      signalServe(lock.pid, "SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    if (!(await waitForDeath(lock.pid, owned?.child, 5_000))) {
+      try {
+        signalServe(lock.pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+      await waitForDeath(lock.pid, owned?.child, 2_000);
+    }
+  }
+  spawnedServes.delete(lock.pid);
+  if (pidAlive(lock.pid)) {
+    throw new Error(
+      `OpenCode serve on :${lock.port} did not answer in time and could not be replaced.`,
+    );
+  }
+  removeLockIfOwned(dataDir, lock);
+  const claim = readLaunchClaim();
+  if (claim && lockIdentityEqual(claim, lock)) {
+    try {
+      unlinkSync(launchPath());
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 /** Drop the lock only when the port is dead. A slow answer is not a missing serve. */
 export async function reclaimIfStale(dataDir: string): Promise<boolean> {
   const lock = readLock(dataDir);
@@ -766,8 +804,9 @@ export async function attachOrSpawn(args: {
     await reclaimIfStale(args.dataDir);
     const afterWait = await attachIfHealthy(args.dataDir);
     if (afterWait) return afterWait;
-    if (readLock(args.dataDir)) {
-      throw new Error(leftoverMessage);
+    const still = readLock(args.dataDir);
+    if (still) {
+      await replaceUnresponsiveLeftover(args.dataDir, still);
     }
   }
 
