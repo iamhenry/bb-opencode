@@ -33,7 +33,7 @@ describe("usage", () => {
         outputTokens: 80,
         reasoningOutputTokens: 20,
       },
-      used: 9200,
+      used: 9300,
       modelId: "opencode/big-pickle",
     });
   });

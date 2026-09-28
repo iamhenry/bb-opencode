@@ -83,7 +83,8 @@ export function assistantTokenUsage(info: unknown): {
   const cacheWrite = num(cache.write);
   const cached = cacheRead + cacheWrite;
   const total = input + output + reasoning + cached;
-  const used = input + cacheRead;
+  // Anthropic reports cache writes outside `input`; after a cache rebuild nearly all context is there.
+  const used = input + cacheRead + cacheWrite;
   if (total <= 0 && used <= 0) return null;
   const providerID =
     typeof record.providerID === "string" ? record.providerID : "";

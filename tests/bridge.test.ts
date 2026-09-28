@@ -147,6 +147,91 @@ describe("provider bridge", () => {
     await flush();
   }
 
+  it("keeps omitted instructions but applies explicit updates", async () => {
+    const fake = installFake();
+    const systems: string[] = [];
+    fake.promptImpl = async (_id, body) => {
+      if (typeof body.system === "string") systems.push(body.system);
+      return {};
+    };
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: { ...fullOptions, instructions: "initial policy" },
+      }),
+    });
+    await flush();
+
+    for (const [id, clientRequestId, instructions] of [
+      ["omitted", "creq_23456789ab", undefined],
+      ["updated", "creq_23456789ac", "updated policy"],
+      ["omitted-again", "creq_23456789ad", undefined],
+    ] as const) {
+      send({
+        id,
+        method: "turn/start",
+        params: turnParams({
+          clientRequestId,
+          input: [{ type: "text", text: id, mentions: [] }],
+          options: {
+            ...fullOptions,
+            ...(instructions ? { instructions } : {}),
+            providerOptions: { agent: "build" },
+          },
+        }),
+      });
+      await flush();
+    }
+
+    expect(systems).toHaveLength(3);
+    expect(systems[0]).toContain("initial policy");
+    expect(systems[1]).toContain("updated policy");
+    expect(systems[1]).not.toContain("initial policy");
+    expect(systems[2]).toContain("updated policy");
+    expect(systems.every((system) => system.includes("[BB safety]"))).toBe(true);
+  });
+
+  it("includes recorded Opus cache writes in the hydrated context meter", async () => {
+    const fake = installFake();
+    const sessionId = "ses_recorded_cache_miss";
+    fake.sessions.set(sessionId, { id: sessionId, directory: "/tmp/a" });
+    fake.messages.set(sessionId, [
+      { info: { id: "u1", role: "user" }, parts: [] },
+      {
+        info: {
+          id: "a1",
+          role: "assistant",
+          providerID: "anthropic",
+          modelID: "claude-opus-5-5",
+          tokens: {
+            input: 4,
+            output: 4,
+            reasoning: 0,
+            cache: { read: 0, write: 34245 },
+          },
+        },
+        parts: [],
+      },
+    ]);
+
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: {
+          ...fullOptions,
+          providerOptions: { adoptSessionId: sessionId },
+        },
+      }),
+    });
+    await flush();
+
+    expect(threadDeltas()).toContainEqual(
+      expect.objectContaining({ kind: "contextWindow", used: 34249 }),
+    );
+  });
+
   it("interrupts and restarts a live legacy prompt for steering", async () => {
     const fake = installFake();
     fake.emitIdleAfterPrompt = false;

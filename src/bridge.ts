@@ -1401,6 +1401,14 @@ function sessionPolicy(params: unknown): Pick<
   };
 }
 
+/** Missing instructions on a BB notice turn mean keep the bound project text;
+ * a new non-empty value is an explicit update and remains authoritative. */
+function refreshSessionPolicy(bound: BoundSession, params: unknown): void {
+  const policy = sessionPolicy(params);
+  bound.disallowedTools = policy.disallowedTools;
+  if (policy.instructions !== undefined) bound.instructions = policy.instructions;
+}
+
 async function replayHydrate(
   threadId: string,
   sessionId: string,
@@ -2967,7 +2975,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           return;
         }
         bound.permissionMode = permissionModeOf(parsed.data.options);
-        Object.assign(bound, sessionPolicy(parsed.data));
+        refreshSessionPolicy(bound, parsed.data);
         respondResult(id, {});
         // ponytail: bind-only input seeds BB display; the OpenCode turn already exists
         if (bound.bindOnly) {
@@ -3028,7 +3036,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
       return;
     }
     bound.permissionMode = permissionModeOf(parsed.data.options);
-    Object.assign(bound, sessionPolicy(parsed.data));
+    refreshSessionPolicy(bound, parsed.data);
     respondResult(id, {});
     void runSteer({
       threadId: parsed.data.threadId,
