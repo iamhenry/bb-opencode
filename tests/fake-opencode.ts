@@ -9,6 +9,10 @@ export interface FakeOpenCode {
     abort: number;
     revert: number;
     unrevert: number;
+    revertCommit: number;
+    revertTargets: Array<{ id: string; messageID: string }>;
+    unrevertTargets: string[];
+    revertCommitTargets: string[];
     reply: Array<{ requestID: string; reply: string }>;
     questionReply: Array<{ requestID: string; answers?: string[][] }>;
     questionReject: string[];
@@ -39,6 +43,7 @@ export interface FakeOpenCode {
   emit: (event: { type: string; properties?: unknown }) => void;
   promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
   abortImpl?: (id: string, directory?: string) => Promise<void>;
+  revertImpl?: (id: string, body: Record<string, unknown>) => Promise<void>;
   lastAbort?: { id: string; directory?: string };
   lastPrompt?: { id: string; body: Record<string, unknown> };
   lastRevert?: { id: string; body: Record<string, unknown> };
@@ -60,6 +65,10 @@ export function createFakeOpenCode(): FakeOpenCode {
       abort: 0,
       revert: 0,
       unrevert: 0,
+      revertCommit: 0,
+      revertTargets: [],
+      unrevertTargets: [],
+      revertCommitTargets: [],
       reply: [],
       questionReply: [],
       questionReject: [],
@@ -169,12 +178,31 @@ export function createFakeOpenCode(): FakeOpenCode {
       },
       async revert(id, body) {
         fake.calls.revert += 1;
-        fake.lastRevert = { id, body: body ?? {} };
+        const target = body ?? {};
+        fake.lastRevert = { id, body: target };
+        fake.calls.revertTargets.push({
+          id,
+          messageID: typeof target.messageID === "string" ? target.messageID : "",
+        });
+        await fake.revertImpl?.(id, target);
+        const session = fake.sessions.get(id);
+        if (session && typeof target.messageID === "string") {
+          session.revert = { messageID: target.messageID };
+        }
         return {};
       },
-      async unrevert() {
+      async unrevert(id) {
         fake.calls.unrevert += 1;
+        fake.calls.unrevertTargets.push(id);
+        const session = fake.sessions.get(id);
+        if (session) delete session.revert;
         return {};
+      },
+      async revertCommit(id) {
+        fake.calls.revertCommit += 1;
+        fake.calls.revertCommitTargets.push(id);
+        const session = fake.sessions.get(id);
+        if (session) delete session.revert;
       },
       async forkSession(id, body) {
         fake.calls.fork.push({ id, body: body ?? {} });

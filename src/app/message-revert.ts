@@ -7,6 +7,8 @@ export async function runMessageUndo(args: {
   role: "user" | "assistant";
   text: string;
 }): Promise<void> {
+  if (args.role === "assistant") return;
+
   try {
     const provider = await callPluginRpc<{ providerId: string | null }>(
       "threadProvider",
@@ -57,4 +59,3 @@ export async function runMessageRedo(args: { threadId: string }): Promise<void> 
     );
   }
 }
-

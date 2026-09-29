@@ -48,7 +48,7 @@ export default definePluginApp((app) => {
   app.slots.messageAction({
     id: "opencode-revert",
     title: "Revert from here",
-    icon: "Undo2",
+    icon: "ArrowTurnBackward",
     async run({ threadId, message }) {
       await runMessageUndo({
         threadId,

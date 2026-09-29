@@ -60,6 +60,7 @@ export interface OpenCodeClient {
   abort(id: string, directory?: string): Promise<void>;
   revert(id: string, body: Record<string, unknown>): Promise<unknown>;
   unrevert(id: string): Promise<unknown>;
+  revertCommit(id: string): Promise<void>;
   forkSession(
     id: string,
     body?: { messageID?: string },
@@ -372,10 +373,20 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
       return (result.data ?? []).map(v1Session);
     },
     async sessionChildren(id) {
-      const result = (await sdk.session.list({ parentID: id, limit: 200 } as never)) as unknown as {
-        data?: unknown[];
-      };
-      return (result.data ?? []).map(v1Session);
+      const children: unknown[] = [];
+      let cursor: string | undefined;
+      while (true) {
+        const result = (await sdk.session.list({
+          parentID: id,
+          limit: 200,
+          ...(cursor ? { cursor } : {}),
+        } as never)) as unknown as { data?: unknown[]; cursor?: { next?: string | null } };
+        const page = result.data ?? [];
+        children.push(...page);
+        if (page.length === 0 || !result.cursor?.next) break;
+        cursor = result.cursor.next;
+      }
+      return children.map(v1Session);
     },
     async sessionMessages(id, limit, before) {
       // V2 pages hold at most 200 entries and include non-chat entries (idle,
@@ -421,6 +432,9 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
     async unrevert(id) {
       await sdk.session.revert.clear({ sessionID: id });
       return true;
+    },
+    async revertCommit(id) {
+      await sdk.session.revert.commit({ sessionID: id });
     },
     async forkSession(id, body) {
       return v1Session(
