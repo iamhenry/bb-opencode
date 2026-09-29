@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { resolveRevertMessageId } from "../src/revert-target.js";
+import {
+  resolveRevertCheckpointId,
+  resolveRevertMessageId,
+} from "../src/revert-target.js";
 
 const messages = [
   {
     info: { id: "u1", role: "user" },
-    parts: [{ type: "text", text: "first" }],
+    parts: [{ type: "text", text: "same prompt" }],
   },
   {
     info: { id: "a1", role: "assistant" },
@@ -12,102 +15,149 @@ const messages = [
   },
   {
     info: { id: "u2", role: "user" },
-    parts: [{ type: "text", text: "echo ISC63_SHOULD_NOT_RUN" }],
-  },
-  {
-    info: { id: "a2", role: "assistant" },
-    parts: [{ type: "text", text: "denied" }],
+    parts: [{ type: "text", text: "same prompt" }],
   },
 ];
 
 describe("resolveRevertMessageId", () => {
-  it("uses an explicit OpenCode messageID", () => {
-    expect(
-      resolveRevertMessageId({ messages, messageID: "a1" }),
-    ).toBe("a1");
+  it("passes through an explicit user message ID", () => {
+    expect(resolveRevertMessageId({ messages, messageID: "u2" })).toBe("u2");
   });
 
-  it("matches a user bubble by text", () => {
+  it("normalizes an explicit assistant message ID to its owning user", () => {
+    expect(resolveRevertMessageId({ messages, messageID: "a1" })).toBe("u1");
+  });
+
+  it("rejects an explicit ID not present in the loaded history", () => {
+    expect(resolveRevertMessageId({ messages, messageID: "provider-id" })).toBeUndefined();
+  });
+
+  it("rejects duplicated IDs and IDs for non-user, non-assistant messages", () => {
     expect(
       resolveRevertMessageId({
-        messages,
-        role: "user",
-        text: "echo ISC63_SHOULD_NOT_RUN",
+        messages: [...messages, { info: { id: "u2", role: "user" } }],
+        messageID: "u2",
       }),
-    ).toBe("u2");
-  });
-
-  it("matches an assistant bubble by text", () => {
+    ).toBeUndefined();
     expect(
       resolveRevertMessageId({
-        messages,
-        role: "assistant",
-        text: "reply one",
-      }),
-    ).toBe("a1");
-  });
-
-  it("matches the visible user prompt after BB project instructions", () => {
-    expect(
-      resolveRevertMessageId({
-        messages: [
-          {
-            info: { id: "u-theme", role: "user" },
-            parts: [
-              { type: "text", text: "[BB project instructions]\nYou are working inside bb" },
-              {
-                type: "text",
-                text: "create a bb theme for both light and dark theme",
-              },
-            ],
-          },
-        ],
-        role: "user",
-        text: "create a bb theme for both light and dark theme",
-      }),
-    ).toBe("u-theme");
-  });
-
-  it("uses the only user message when the bubble text cannot be matched", () => {
-    expect(
-      resolveRevertMessageId({
-        messages: [
-          {
-            info: { id: "only", role: "user" },
-            parts: [
-              { type: "text", text: "[BB project instructions]\nYou are working" },
-              { type: "text", text: "sup" },
-            ],
-          },
-        ],
-        role: "user",
-        text: "sup?",
-      }),
-    ).toBe("only");
-  });
-
-  it("refuses when the clicked text matches nothing uniquely", () => {
-    expect(
-      resolveRevertMessageId({
-        messages,
-        role: "user",
-        text: "no such bubble",
+        messages: [{ info: { id: "tool-1", role: "tool" } }],
+        messageID: "tool-1",
       }),
     ).toBeUndefined();
   });
 
-  it("refuses duplicate identical texts instead of guessing", () => {
+  it("refuses an assistant ID without an earlier user message", () => {
     expect(
       resolveRevertMessageId({
-        messages: [
-          ...messages,
+        messages: [messages[1]!],
+        messageID: "a1",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("never guesses from text, role, or a single candidate", () => {
+    expect(
+      resolveRevertMessageId({
+        messages: [messages[0]!],
+        role: "user",
+        text: "same prompt",
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveRevertMessageId({
+        messages,
+        role: "user",
+        text: "same prompt",
+      }),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolveRevertCheckpointId", () => {
+  const rows = [
+    {
+      id: "turn-row",
+      kind: "turn",
+      children: [
+        {
+          id: "bb-user-row",
+          kind: "conversation",
+          role: "user",
+          turnId: "turn-1",
+        },
+        {
+          id: "bb-assistant-row",
+          kind: "conversation",
+          role: "assistant",
+          turnId: "turn-1",
+        },
+      ],
+    },
+  ];
+
+  it("maps either conversation row to that turn's user checkpoint", () => {
+    const boundaries = [
+      {
+        type: "turn/completed",
+        scope: { kind: "turn", turnId: "other-turn" },
+        data: { providerCheckpointId: "wrong-user-id" },
+      },
+      {
+        type: "turn/completed",
+        scope: { kind: "turn", turnId: "turn-1" },
+        data: { providerCheckpointId: "opencode-user-id" },
+      },
+    ];
+    expect(
+      resolveRevertCheckpointId({ rows, messageId: "bb-user-row", boundaries }),
+    ).toBe("opencode-user-id");
+    expect(
+      resolveRevertCheckpointId({ rows, messageId: "bb-assistant-row", boundaries }),
+    ).toBe("opencode-user-id");
+  });
+
+  it("maps a thread's opening prompt (no turnId) to the turn that follows it", () => {
+    const opening = [
+      { id: "seed-user", kind: "conversation", role: "user", turnId: null },
+      { id: "turn-row", kind: "turn", turnId: "turn-1" },
+      { id: "next-user", kind: "conversation", role: "user", turnId: null },
+      { id: "turn-row-2", kind: "turn", turnId: "turn-2" },
+    ];
+    const boundaries = [
+      {
+        type: "turn/completed",
+        scope: { kind: "turn", turnId: "turn-1" },
+        data: { providerCheckpointId: "opening-prompt-id" },
+      },
+    ];
+    expect(
+      resolveRevertCheckpointId({ rows: opening, messageId: "seed-user", boundaries }),
+    ).toBe("opening-prompt-id");
+    expect(
+      resolveRevertCheckpointId({ rows: opening.slice(0, 1), messageId: "seed-user", boundaries }),
+    ).toBeUndefined();
+  });
+
+  it("fails closed for missing or ambiguous turn checkpoints", () => {
+    expect(
+      resolveRevertCheckpointId({ rows, messageId: "bb-user-row", boundaries: [] }),
+    ).toBeUndefined();
+    expect(
+      resolveRevertCheckpointId({
+        rows,
+        messageId: "bb-user-row",
+        boundaries: [
           {
-            info: { id: "u3", role: "user" },
-            parts: [{ type: "text", text: "first" }],
+            type: "turn/completed",
+            scope: { kind: "turn", turnId: "turn-1" },
+          },
+          {
+            type: "turn/completed",
+            scope: { kind: "turn", turnId: "turn-1" },
+            data: { providerCheckpointId: "ambiguous" },
           },
         ],
-        role: "user",
-        text: "first",
       }),
     ).toBeUndefined();
   });

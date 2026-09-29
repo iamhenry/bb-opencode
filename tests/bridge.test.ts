@@ -1531,12 +1531,14 @@ describe("provider bridge", () => {
     });
   });
 
-  it("stamps providerCheckpointId on a completed turn", async () => {
+  it("stamps the turn's own prompt as providerCheckpointId, not a later notice", async () => {
     const fake = installFake();
-    fake.promptImpl = async (id) => {
+    let promptId = "";
+    fake.promptImpl = async (id, body) => {
+      promptId = String((body as { messageID?: unknown }).messageID);
       fake.messages.set(id, [
         {
-          info: { id: "u_chk", role: "user" },
+          info: { id: promptId, role: "user" },
           parts: [{ type: "text", text: "hi" }],
         },
         {
@@ -1554,6 +1556,10 @@ describe("provider bridge", () => {
           },
           parts: [{ type: "text", text: "yo" }],
         },
+        {
+          info: { id: "u_notice", role: "user" },
+          parts: [{ type: "text", text: "[bb system] subagent completed" }],
+        },
       ]);
       return {};
     };
@@ -1566,12 +1572,13 @@ describe("provider bridge", () => {
         ((message.params as { deltas?: Array<Record<string, unknown>> })
           ?.deltas ?? []),
     );
+    expect(promptId).toMatch(/^msg_/);
     expect(
       deltas.some(
         (delta) =>
           delta.kind === "turn.boundary" &&
           delta.status === "completed" &&
-          delta.providerCheckpointId === "a_chk",
+          delta.providerCheckpointId === promptId,
       ),
     ).toBe(true);
     expect(
@@ -1998,6 +2005,16 @@ describe("provider bridge", () => {
       ).filter((delta) => delta.kind === "turn.boundary");
     });
     expect(boundaries.some((delta) => delta.status === "interrupted")).toBe(true);
+    // A stopped turn stays revertable at the prompt that opened it.
+    const promptId = (fake.lastPrompt?.body as { messageID?: string } | undefined)?.messageID;
+    expect(promptId).toMatch(/^msg_/);
+    expect(
+      boundaries.some(
+        (delta) =>
+          delta.status === "interrupted" &&
+          (delta as { providerCheckpointId?: string }).providerCheckpointId === promptId,
+      ),
+    ).toBe(true);
   });
 
   it("isolates child session items from the parent thread (ISC-22)", async () => {

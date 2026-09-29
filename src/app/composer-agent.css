@@ -188,7 +188,7 @@
 
 .oc-revert-dock {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   width: 100%;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--foreground, currentColor) 12%, transparent);
@@ -198,7 +198,8 @@
 }
 
 .oc-revert-dock__summary,
-.oc-revert-dock__undo {
+.oc-revert-dock__restore,
+.oc-revert-dock__commit {
   min-height: 2.25rem;
   border: 0;
   background: transparent;
@@ -219,18 +220,21 @@
   text-align: left;
 }
 
-.oc-revert-dock__undo {
+.oc-revert-dock__restore,
+.oc-revert-dock__commit {
   padding: 0.45rem 0.7rem;
   border-left: 1px solid color-mix(in srgb, var(--foreground, currentColor) 10%, transparent);
   color: var(--primary, inherit);
 }
 
 .oc-revert-dock__summary:hover,
-.oc-revert-dock__undo:hover:not(:disabled) {
+.oc-revert-dock__restore:hover:not(:disabled),
+.oc-revert-dock__commit:hover:not(:disabled) {
   background: color-mix(in srgb, currentColor 6%, transparent);
 }
 
-.oc-revert-dock__undo:disabled {
+.oc-revert-dock__restore:disabled,
+.oc-revert-dock__commit:disabled {
   cursor: default;
   opacity: 0.5;
 }
@@ -329,4 +333,3 @@
   opacity: 1;
   transform: translateY(0);
 }
-

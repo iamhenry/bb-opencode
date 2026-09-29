@@ -116,7 +116,7 @@ export function assistantsAfterLastUser(
 export function completedTurnBoundary(
   messages?: readonly HydrateMessage[],
 ): ThreadDelta {
-  const checkpoint = messages ? retainThroughMessageId(messages) : undefined;
+  const checkpoint = messages ? lastUserMessageId(messages) : undefined;
   return {
     kind: "turn.boundary",
     status: "completed",
@@ -164,13 +164,15 @@ export function hydrateDeltas(args: {
           }
           deltas.push({ kind: "input.provider", text });
         }
-        if (typeof message.info.id === "string") checkpoint = message.info.id;
+        checkpoint =
+          typeof message.info.id === "string" ? message.info.id : undefined;
         continue;
       }
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
       if (text) deltas.push({ kind: "input.provider", text });
-      if (typeof message.info.id === "string") checkpoint = message.info.id;
+      checkpoint =
+        typeof message.info.id === "string" ? message.info.id : undefined;
       continue;
     }
     if (!turnOpen) {
@@ -191,7 +193,6 @@ export function hydrateDeltas(args: {
         deltas.push(...closeReasoning(part.id ?? "anon", part.text));
       }
     }
-    if (typeof message.info.id === "string") checkpoint = message.info.id;
   }
   if (!args.skipUserInput) closeTurn();
   return deltas;

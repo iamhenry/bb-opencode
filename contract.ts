@@ -140,6 +140,10 @@ export const hostContract = defineRpcContract({
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
+  revertCommit: {
+    input: z.object({ sessionId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
   revertState: {
     input: z.object({ sessionId: z.string().min(1) }).strict(),
     output: revertStateOutput,
@@ -372,6 +376,10 @@ export const rpcContract = defineRpcContract({
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },
   redo: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
+  },
+  revertCommit: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }).strict(),
   },

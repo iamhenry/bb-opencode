@@ -60,7 +60,8 @@ export function RevertDock() {
     hiddenRowIds: [],
   });
   const [expanded, setExpanded] = useState(false);
-  const [undoing, setUndoing] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [committing, setCommitting] = useState(false);
   const activeMarkerRef = useRef<string | null>(null);
   const connectedOnceRef = useRef(false);
 
@@ -133,13 +134,15 @@ export function RevertDock() {
     return () => composer.setInputLock(false);
   }, [composer, state.active, view.run.isRunning]);
 
-  const undo = useCallback(async () => {
-    if (!threadId || undoing) return;
-    setUndoing(true);
+  const restore = useCallback(async () => {
+    if (!threadId || restoring || committing || view.run.isRunning) return;
+    setRestoring(true);
     try {
       const previousDraft = readPreviousDraft(threadId);
       const result = await rpc.call("redo", { threadId });
-      if (!result.ok) throw new Error(result.error ?? "Could not undo revert");
+      if (!result.ok) {
+        throw new Error(result.error ?? "Could not restore revert");
+      }
       composer.setText(previousDraft);
       forgetPreviousDraft(threadId);
       activeMarkerRef.current = null;
@@ -150,9 +153,39 @@ export function RevertDock() {
         error: error instanceof Error ? error.message : String(error),
       }));
     } finally {
-      setUndoing(false);
+      setRestoring(false);
     }
-  }, [composer, refresh, rpc, threadId, undoing]);
+  }, [
+    committing,
+    composer,
+    refresh,
+    restoring,
+    rpc,
+    threadId,
+    view.run.isRunning,
+  ]);
+
+  const commit = useCallback(async () => {
+    if (!threadId || restoring || committing || view.run.isRunning) return;
+    setCommitting(true);
+    setState((current) => ({ ...current, error: null }));
+    try {
+      const result = await rpc.call("revertCommit", { threadId });
+      if (!result.ok) {
+        throw new Error(result.error ?? "Could not commit revert");
+      }
+      forgetPreviousDraft(threadId);
+      activeMarkerRef.current = null;
+      await refresh();
+    } catch (error) {
+      setState((current) => ({
+        ...current,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setCommitting(false);
+    }
+  }, [committing, refresh, restoring, rpc, threadId, view.run.isRunning]);
 
   if (!threadId || !state.active) return null;
   const count = state.messages.length;
@@ -174,11 +207,20 @@ export function RevertDock() {
       </button>
       <button
         type="button"
-        className="oc-revert-dock__undo"
-        disabled={undoing || view.run.isRunning}
-        onClick={() => void undo()}
+        className="oc-revert-dock__restore"
+        disabled={restoring || committing || view.run.isRunning}
+        onClick={() => void restore()}
       >
-        {undoing ? "Restoring…" : "Undo revert"}
+        {restoring ? "Restoring…" : "Restore"}
+      </button>
+      <button
+        type="button"
+        className="oc-revert-dock__commit"
+        disabled={restoring || committing || view.run.isRunning}
+        aria-busy={committing}
+        onClick={() => void commit()}
+      >
+        {committing ? "Confirming…" : "Confirm"}
       </button>
       {expanded ? (
         <div className="oc-revert-dock__messages">

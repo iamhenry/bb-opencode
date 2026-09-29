@@ -186,6 +186,8 @@ interface LiveTurn {
   bindOnly?: boolean;
   /** The user message for the prompt currently owned by this BB turn. */
   pollUserMessageId?: string;
+  /** The first prompt of this BB turn; the turn's revert checkpoint. */
+  turnUserMessageId?: string;
   settling?: boolean;
   stopping?: boolean;
   steerRestart?: SteerRestart;
@@ -850,6 +852,13 @@ function toolPartFromEvent(
   return callID && part.callID !== callID ? { ...part, callID } : part;
 }
 
+/** Stopped turns stay revertable: tag them with the prompt's OpenCode message. */
+function liveTurnCheckpoint(live: LiveTurn): { providerCheckpointId?: string } {
+  return live.promptIssued && live.turnUserMessageId
+    ? { providerCheckpointId: live.turnUserMessageId }
+    : {};
+}
+
 function closeLiveTurn(
   threadId: string,
   status: "failed" | "interrupted",
@@ -868,6 +877,7 @@ function closeLiveTurn(
     {
       kind: "turn.boundary",
       status,
+      ...liveTurnCheckpoint(live),
       ...(status === "failed" && message ? { error: { message } } : {}),
     },
   ]);
@@ -3187,7 +3197,11 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
             live.parentBoundaryEmitted = true;
             emitDeltas(parsed.data.threadId, [
               ...closeOpenedItems(live.mapState),
-              { kind: "turn.boundary", status: "interrupted" },
+              {
+                kind: "turn.boundary",
+                status: "interrupted",
+                ...liveTurnCheckpoint(live),
+              },
             ]);
             dropLiveTurn(parsed.data.threadId);
           }
@@ -3358,7 +3372,10 @@ async function settleIssuedTurn(
   dropLiveTurn(threadId);
   await rememberCatalogWindows(active);
   emitDeltas(threadId, [
-    completedTurnBoundary(messages),
+    {
+      ...completedTurnBoundary(messages),
+      ...liveTurnCheckpoint(liveAfter),
+    },
     ...usageDeltasFromMessages(messages, modelContextWindows),
   ]);
   // Native ensureTitle forks on the first prompt step and may finish after idle.
@@ -3585,6 +3602,7 @@ function promptForLiveTurn(
 ): Promise<void> {
   const messageID = nextMessageId();
   live.pollUserMessageId = messageID;
+  live.turnUserMessageId ??= messageID;
   return active.promptAsync(sessionId, { ...body, messageID }, directory);
 }
 

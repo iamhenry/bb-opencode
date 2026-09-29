@@ -16,6 +16,7 @@ import {
   handleProbe,
   handleReload,
   handleRevert,
+  handleRevertCommit,
   handleRevertState,
   handleSessionSnapshot,
   handleSettleSession,
@@ -94,6 +95,9 @@ export default experimental_defineHostEntry({
     },
     async unrevert(input, context) {
       return handleUnrevert(context.experimental_paths.dataDir, input.sessionId);
+    },
+    async revertCommit(input, context) {
+      return handleRevertCommit(context.experimental_paths.dataDir, input.sessionId);
     },
     async revertState(input, context) {
       return handleRevertState(

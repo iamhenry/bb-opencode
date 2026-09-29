@@ -105,8 +105,8 @@ describe("hydrate", () => {
         delta.kind === "turn.boundary" && delta.status === "completed",
     );
     expect(twoTurns.map((delta) => delta.providerCheckpointId)).toEqual([
-      "a1",
-      "a2",
+      "u1",
+      "u2",
     ]);
     expect(
       lastAssistantSettled([
@@ -142,7 +142,23 @@ describe("hydrate", () => {
       (delta) => delta.kind === "turn.boundary",
     );
     expect(boundaries).toHaveLength(1_000);
-    expect(boundaries.at(-1)?.providerCheckpointId).toBe("a1999");
+    expect(boundaries.at(-1)?.providerCheckpointId).toBe("u1998");
+  });
+
+  it("does not reuse an earlier checkpoint when a turn has no user message ID", () => {
+    const boundaries = hydrateDeltas({
+      sessionId: "s",
+      messages: [
+        { info: { id: "u1", role: "user" }, parts: [] },
+        { info: { id: "a1", role: "assistant" }, parts: [] },
+        { info: { role: "user" }, parts: [] },
+        { info: { id: "a2", role: "assistant" }, parts: [] },
+      ],
+    }).filter((delta) => delta.kind === "turn.boundary");
+    expect(boundaries.map((delta) => delta.providerCheckpointId)).toEqual([
+      "u1",
+      undefined,
+    ]);
   });
 
   it("hides the revert cursor and everything after it, like OpenChamber",

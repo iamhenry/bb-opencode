@@ -68,6 +68,10 @@ import {
   taskChildThreadTitle,
 } from "./src/task-thread.js";
 import {
+  resolveRevertCheckpointId,
+  revertTurnIdForMessage,
+} from "./src/revert-target.js";
+import {
   boundThreadForTaskChild,
   listLiveTaskChildren,
   rememberBoundTaskChild,
@@ -637,6 +641,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async redo({ threadId }) {
       return revertThread(bb, host, threadId, "unrevert");
+    },
+    async revertCommit({ threadId }) {
+      return revertThread(bb, host, threadId, "revertCommit");
     },
     async revertState({ threadId }) {
       try {
@@ -1655,6 +1662,45 @@ async function timelineRowsHiddenFromMessage(
   return rowIdsHiddenByRevert(timeline.rows ?? [], messageId);
 }
 
+async function revertCheckpointForMessage(
+  bb: BbPluginApi,
+  threadId: string,
+  messageId: string,
+): Promise<string | undefined> {
+  const timeline = await bb.sdk.threads.timeline({ threadId });
+  const turnId = revertTurnIdForMessage(timeline.rows, messageId);
+  if (!turnId) return undefined;
+  let afterSeq: string | undefined;
+  while (true) {
+    const boundaries = await bb.sdk.threads.events.list({
+      threadId,
+      types: ["turn/completed"],
+      order: "asc",
+      limit: "100",
+      ...(afterSeq ? { afterSeq } : {}),
+    });
+    const checkpoint = resolveRevertCheckpointId({
+      rows: timeline.rows,
+      messageId,
+      boundaries,
+    });
+    if (checkpoint) return checkpoint;
+    if (
+      boundaries.some(
+        (event) =>
+          event.type === "turn/completed" &&
+          event.scope.kind === "turn" &&
+          event.scope.turnId === turnId,
+      )
+    ) {
+      return undefined;
+    }
+    const last = boundaries.at(-1);
+    if (!last || boundaries.length < 100) return undefined;
+    afterSeq = String(last.seq);
+  }
+}
+
 async function waitForThreadRevertQuiescence(
   bb: BbPluginApi,
   threadId: string,
@@ -1683,7 +1729,7 @@ async function revertThread(
   bb: BbPluginApi,
   host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
   threadId: string,
-  kind: "revert" | "unrevert",
+  kind: "revert" | "unrevert" | "revertCommit",
   target?: {
     messageID?: string;
     bbMessageId?: string;
@@ -1717,6 +1763,17 @@ async function revertThread(
       };
     }
     await waitForThreadRevertQuiescence(bb, threadId);
+    const providerMessageID =
+      kind === "revert" && target?.bbMessageId !== undefined
+        ? await revertCheckpointForMessage(bb, threadId, target.bbMessageId)
+        : target?.messageID;
+    if (
+      kind === "revert" &&
+      target?.bbMessageId !== undefined &&
+      !providerMessageID
+    ) {
+      return { ok: false, error: "Can't revert this older message" };
+    }
     const hiddenByThisRevert =
       kind === "revert"
         ? await timelineRowsHiddenFromMessage(bb, threadId, target?.bbMessageId)
@@ -1734,7 +1791,7 @@ async function revertThread(
         "revert",
         {
           sessionId,
-          messageID: target?.messageID,
+          messageID: providerMessageID,
           role: target?.role,
           text: target?.text,
         },
@@ -1746,7 +1803,7 @@ async function revertThread(
           error: result.error ?? "Could not match that message",
         };
       }
-    } else {
+    } else if (kind === "unrevert") {
       const result = (await host.call(
         "unrevert",
         { sessionId },
@@ -1754,6 +1811,18 @@ async function revertThread(
       )) as { ok: boolean; error: string | null };
       if (!result.ok) {
         return { ok: false, error: result.error ?? "nothing to redo" };
+      }
+    } else {
+      const result = (await host.call(
+        "revertCommit",
+        { sessionId },
+        { hostId },
+      )) as { ok: boolean; error: string | null };
+      if (!result.ok) {
+        return {
+          ok: false,
+          error: result.error ?? "Could not commit the staged revert",
+        };
       }
     }
 
@@ -1763,7 +1832,9 @@ async function revertThread(
       threadId,
       kind === "revert"
         ? stageRevertProjection(projection, hiddenByThisRevert)
-        : undoRevertProjection(projection),
+        : kind === "unrevert"
+          ? undoRevertProjection(projection)
+          : commitRevertProjection(projection),
     );
     bb.realtime.publish(OPENCODE_REVERT_CHANNEL, { threadId });
     return { ok: true, error: null };

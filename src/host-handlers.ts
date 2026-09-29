@@ -1,4 +1,9 @@
-import { acquireClient, createSdkClient, type OpenCodeClient } from "./client.js";
+import {
+  acquireClient,
+  createSdkClient,
+  type OpenCodeClient,
+  type OpenCodeSession,
+} from "./client.js";
 import {
   configDefaultModelId,
   lastModelIdFromMessages,
@@ -213,6 +218,40 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
 
 const REVERT_SETTLE_TIMEOUT_MS = 15_000;
 const REVERT_SETTLE_POLL_MS = 100;
+type TimedRevertMessage = HydrateMessage & {
+  info: HydrateMessage["info"] & { time?: { created?: unknown } };
+};
+
+function createdAt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function firstUserMessageId(messages: readonly TimedRevertMessage[]): string | undefined {
+  const id = messages.find((message) => message.info.role === "user")?.info.id;
+  return typeof id === "string" &&
+    messages.filter((message) => message.info.id === id).length === 1
+    ? id
+    : undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function collectDescendants(
+  client: OpenCodeClient,
+  parentId: string,
+  seen = new Set<string>([parentId]),
+): Promise<OpenCodeSession[]> {
+  const descendants: OpenCodeSession[] = [];
+  for (const child of await client.sessionChildren(parentId)) {
+    if (seen.has(child.id)) continue;
+    seen.add(child.id);
+    descendants.push(...(await collectDescendants(client, child.id, seen)));
+    descendants.push(child);
+  }
+  return descendants;
+}
 
 async function settleOpenCodeSession(
   client: OpenCodeClient,
@@ -249,32 +288,168 @@ export async function handleRevert(
   sessionId: string,
   target?: { messageID?: string; role?: "user" | "assistant"; text?: string },
 ) {
-  const attached = await attachOrSpawn({ dataDir });
-  const client = acquire(attached.url);
-  await settleOpenCodeSession(client, sessionId);
-  const messages = (await readCompleteHistory(client, sessionId)).messages as Array<{
-    info: { id?: string; role?: string };
-    parts: Array<{ type?: string; text?: string }>;
-  }>;
-  const messageID = resolveRevertMessageId({
-    messages,
-    messageID: target?.messageID,
-    role: target?.role,
-    text: target?.text,
-  });
-  if (!messageID) {
-    return { ok: false, error: "Could not uniquely match that message" };
+  try {
+    const attached = await attachOrSpawn({ dataDir });
+    const client = acquire(attached.url);
+    await settleOpenCodeSession(client, sessionId);
+    const messages = (await readCompleteHistory(client, sessionId))
+      .messages as TimedRevertMessage[];
+    const messageID = resolveRevertMessageId({
+      messages,
+      messageID: target?.messageID,
+      role: target?.role,
+      text: target?.text,
+    });
+    if (!messageID) {
+      return { ok: false, error: "Could not uniquely match that message" };
+    }
+
+    const descendants = await collectDescendants(client, sessionId);
+    const targetTime = createdAt(
+      messages.find((message) => message.info.id === messageID)?.info.time?.created,
+    );
+    if (descendants.length > 0 && targetTime === undefined) {
+      return {
+        ok: false,
+        error: "Could not determine the reverted message time for descendant sessions",
+      };
+    }
+
+    const applicableChildren: OpenCodeSession[] = [];
+    for (const child of descendants) {
+      const childCreated = createdAt(child.time?.created);
+      if (childCreated === undefined) {
+        return { ok: false, error: `Could not determine when descendant session ${child.id} started` };
+      }
+      if (targetTime !== undefined && childCreated < targetTime) continue;
+      applicableChildren.push(child);
+    }
+
+    const alreadyStaged = applicableChildren.find((child) => revertMessageIdOf(child));
+    if (alreadyStaged) {
+      return {
+        ok: false,
+        error: `Descendant session ${alreadyStaged.id} already has a staged revert`,
+      };
+    }
+
+    for (const child of applicableChildren) await settleOpenCodeSession(client, child.id);
+
+    const childTargets: Array<{ sessionId: string; messageID: string }> = [];
+    for (const child of applicableChildren) {
+      const childMessages = (await readCompleteHistory(client, child.id))
+        .messages as TimedRevertMessage[];
+      const childMessageID = firstUserMessageId(childMessages);
+      if (!childMessageID) {
+        return {
+          ok: false,
+          error: `Could not uniquely identify the first user message in descendant session ${child.id}`,
+        };
+      }
+      childTargets.push({ sessionId: child.id, messageID: childMessageID });
+    }
+
+    const staged: string[] = [];
+    try {
+      for (const child of childTargets) {
+        await client.revert(child.sessionId, { messageID: child.messageID });
+        staged.push(child.sessionId);
+      }
+      await client.revert(sessionId, { messageID });
+      return { ok: true, error: null };
+    } catch (error) {
+      const cleanupErrors: string[] = [];
+      for (const stagedSessionId of staged.reverse()) {
+        try {
+          await client.unrevert(stagedSessionId);
+        } catch (cleanupError) {
+          cleanupErrors.push(`${stagedSessionId}: ${errorMessage(cleanupError)}`);
+        }
+      }
+      const detail = errorMessage(error);
+      return {
+        ok: false,
+        error: cleanupErrors.length
+          ? `${detail}; failed to clear staged descendants (${cleanupErrors.join("; ")})`
+          : detail,
+      };
+    }
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
   }
-  await client.revert(sessionId, { messageID });
-  return { ok: true, error: null };
 }
 
 export async function handleUnrevert(dataDir: string, sessionId: string) {
-  const attached = await attachOrSpawn({ dataDir });
-  const client = acquire(attached.url);
-  await settleOpenCodeSession(client, sessionId);
-  await client.unrevert(sessionId);
-  return { ok: true, error: null };
+  return handleStagedRevertMutation(dataDir, sessionId, "clear");
+}
+
+export async function handleRevertCommit(dataDir: string, sessionId: string) {
+  return handleStagedRevertMutation(dataDir, sessionId, "commit");
+}
+
+async function handleStagedRevertMutation(
+  dataDir: string,
+  sessionId: string,
+  mutation: "clear" | "commit",
+) {
+  try {
+    const attached = await attachOrSpawn({ dataDir });
+    const client = acquire(attached.url);
+    const descendants = await collectDescendants(client, sessionId);
+    await settleOpenCodeSession(client, sessionId);
+    const parent = await client.getSession(sessionId);
+    const stagedDescendants = await ownedStagedDescendants(
+      client,
+      sessionId,
+      descendants,
+      revertMessageIdOf(parent),
+    );
+    for (const child of stagedDescendants) await settleOpenCodeSession(client, child.id);
+    for (const child of stagedDescendants) {
+      if (mutation === "clear") await client.unrevert(child.id);
+      else await client.revertCommit(child.id);
+    }
+    if (mutation === "clear") await client.unrevert(sessionId);
+    else await client.revertCommit(sessionId);
+    return { ok: true, error: null };
+  } catch (error) {
+    return { ok: false, error: errorMessage(error) };
+  }
+}
+
+async function ownedStagedDescendants(
+  client: OpenCodeClient,
+  parentSessionId: string,
+  descendants: OpenCodeSession[],
+  parentMessageID?: string,
+): Promise<OpenCodeSession[]> {
+  if (!parentMessageID || descendants.length === 0) return [];
+
+  const parentMessages = (await readCompleteHistory(client, parentSessionId))
+    .messages as TimedRevertMessage[];
+  const parentMatches = parentMessages.filter((message) => message.info.id === parentMessageID);
+  if (parentMatches.length !== 1) {
+    throw new Error("Could not uniquely identify the parent staged message");
+  }
+  const targetTime = createdAt(parentMatches[0]?.info.time?.created);
+  if (targetTime === undefined) {
+    throw new Error("Could not determine the parent staged message time");
+  }
+
+  const owned: OpenCodeSession[] = [];
+  for (const child of descendants) {
+    const childCreated = createdAt(child.time?.created);
+    if (childCreated === undefined) {
+      throw new Error(`Could not determine when descendant session ${child.id} started`);
+    }
+    if (childCreated < targetTime) continue;
+    const stagedMessageID = revertMessageIdOf(child);
+    if (!stagedMessageID) continue;
+    const childMessages = (await readCompleteHistory(client, child.id))
+      .messages as TimedRevertMessage[];
+    if (firstUserMessageId(childMessages) === stagedMessageID) owned.push(child);
+  }
+  return owned;
 }
 
 export async function handleRevertState(dataDir: string, sessionId: string) {
