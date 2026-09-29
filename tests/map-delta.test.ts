@@ -494,4 +494,62 @@ describe("map-delta", () => {
     });
     expect(remint).toEqual([]);
   });
+
+  describe("DCP message-id echo at the end of a reply", () => {
+    const tag = "@10@";
+    const body = "Reply 1 or 2.";
+    const run = (chunks: string[]) => {
+      const state = createMapDeltaState();
+      const deltas = [
+        ...chunks.flatMap((delta) =>
+          mapSessionNextEvent({
+            type: "session.next.text.delta",
+            properties: { textID: "t", delta },
+            state,
+            sessionId: "s",
+          }),
+        ),
+        ...mapSessionNextEvent({
+          type: "session.next.text.ended",
+          properties: { textID: "t", text: chunks.join("") },
+          state,
+          sessionId: "s",
+        }),
+      ];
+      return {
+        streamed: deltas
+          .filter((d) => d.kind === "item.textDelta")
+          .map((d) => d.text)
+          .join(""),
+        closed: deltas.find((d) => d.kind === "item.close") as
+          | { item: { text: string } }
+          | undefined,
+      };
+    };
+
+    it("never shows or stores a trailing tag, even when it arrives split", () => {
+      const { streamed, closed } = run([body, "\n\n", "@", "10", "@"]);
+      expect(streamed).not.toContain("@");
+      expect(closed?.item.text).toBe(body);
+    });
+
+    it("keeps a tag quoted mid-text and a non-tag @mention at the end", () => {
+      const quoted = `The tail said ${tag} here.`;
+      expect(run([quoted]).closed?.item.text).toBe(quoted);
+      const mention = "ping @thread";
+      expect(run(["ping ", "@thread"]).closed?.item.text).toBe(mention);
+    });
+
+    it("strips the tag from replayed history too", () => {
+      const state = createMapDeltaState();
+      const deltas = mapPartDelta({
+        state,
+        sessionId: "s",
+        part: { id: "p", type: "text", text: `${body}\n\n${tag}` },
+      });
+      expect(deltas.find((d) => d.kind === "item.textDelta")).toMatchObject({
+        text: `${body}\n\n`,
+      });
+    });
+  });
 });

@@ -1,4 +1,5 @@
 import { isBashToolName } from "./permissions/map.js";
+import { stripTrailingDcpTags, visibleStreamingText } from "./dcp-tags.js";
 import {
   taskChildSessionId,
   taskDelegationLabel,
@@ -311,7 +312,12 @@ export function mapPartDelta(args: {
       channel = `assistant:${args.state.nextTextSeq++}`;
       args.state.textChannelByPart.set(partId, channel);
     }
-    const chunk = nextTextChunk(args.state, channel, part.text, args.delta);
+    const before = args.state.emittedText.get(channel) ?? "";
+    nextTextChunk(args.state, channel, part.text, args.delta);
+    // emittedText keeps raw text; only the visible part (minus a possible DCP tag tail) streams out
+    const shown = visibleStreamingText(before);
+    const next = visibleStreamingText(args.state.emittedText.get(channel) ?? "");
+    const chunk = next.startsWith(shown) ? next.slice(shown.length) : "";
     if (!chunk) return [];
     // ponytail: BB keeps only the newest text key resolvable; seal the previous bubble first
     const sealed = sealOpenTextChannel(args.state, channel, parentRef);
@@ -622,7 +628,7 @@ export function closeText(
       kind: "item.close",
       key: deltaKey({ providerItemId: partId }, parentRef),
       status: "completed",
-      item: { type: "agentMessage", text },
+      item: { type: "agentMessage", text: stripTrailingDcpTags(text) },
     },
   ];
 }
