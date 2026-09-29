@@ -1,7 +1,9 @@
 /* Same paint trick as bb-plugin-message-timestamps: attributes + pseudos, no nodes. */
 
 .group\/message > .mt-1.flex.justify-end[data-oc-run]::after,
-.group\/message[data-oc-run]::after {
+.group\/message[data-oc-align="end"][data-oc-run]::after,
+.group\/message[data-oc-align="start"][data-oc-run]::before,
+button[data-oc-align="start"][data-oc-run]::after {
   color: var(--muted-foreground);
   content: attr(data-oc-run);
   font-size: 0.6875rem;
@@ -38,10 +40,21 @@
   top: auto;
 }
 
-/* LLM message: bottom-left, under the prose. */
-.group\/message[data-oc-align="start"][data-oc-run]::after {
+/* LLM message: beside the duration, or above prose while no duration is shown. */
+button[data-oc-align="start"][data-oc-run]::after {
+  margin-left: 0.5rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button[data-oc-align="start"][data-oc-run] > :first-child {
+  flex-shrink: 0;
+}
+
+.group\/message[data-oc-align="start"][data-oc-run]::before {
   display: block;
   line-height: 1.2;
-  margin-top: 0.45rem;
+  margin-bottom: 0.45rem;
   text-align: left;
 }

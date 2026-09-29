@@ -34,6 +34,21 @@ function visibleThreadIds(): string[] {
 function findTimeHost(row: HTMLElement): HTMLElement | null {
   const group = row.querySelector<HTMLElement>(".group\\/message");
   if (!group) return null;
+  if (!group.classList.contains("ml-auto")) {
+    // A turn's chip belongs to its last response; the duration can precede earlier prose.
+    for (
+      let previous = row.previousElementSibling;
+      previous;
+      previous = previous.previousElementSibling
+    ) {
+      if (previous.querySelector(".group\\/message.ml-auto")) break;
+      const header = previous
+        .querySelector('[title^="Worked for"]')
+        ?.closest("button");
+      if (header) return header;
+    }
+    return group;
+  }
   return (
     group.querySelector<HTMLElement>(":scope > .mt-1.flex.justify-end") ?? group
   );
