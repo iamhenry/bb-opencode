@@ -13,15 +13,12 @@ import {
 import { messageMetaFromInfo } from "./run-chip.js";
 import { readCompleteHistory } from "./history-pages.js";
 import {
+  activeSessionIds,
   attachOrSpawn,
-  launchGuardBlockMessage,
-  pidAlive,
-  portListening,
-  readLaunchClaim,
-  readLock,
   recentServeLog,
-  spawnOwnership,
-  stopServeIf,
+  resolveOpenCodeBinary,
+  restartService,
+  serviceInfo,
 } from "./process.js";
 import {
   acquireExclusive,
@@ -37,7 +34,6 @@ import {
   type RevertStateMessage,
 } from "./revert-state.js";
 import { splitModelRef } from "./task-thread.js";
-import { runningSessionIdsFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
 import { writeLivePermissionMode } from "./permission-mode-live.js";
 import type { LivePermissionMode } from "./permission-mode.js";
@@ -79,27 +75,9 @@ export async function handleReload(
       };
     }
     try {
-      const guardMsg = launchGuardBlockMessage();
-      if (guardMsg) return { ok: false, error: guardMsg };
-      const lock = readLock(dataDir);
-      if (!lock) return { ok: false, error: "No BB-owned OpenCode lock" };
-      const claim = readLaunchClaim();
-      const owned = spawnOwnership(
-        lock.pid,
-        lock.port,
-        lock.startedAt,
-        claim?.token,
-      );
-      if (!owned.ok || !claim?.token) {
-        return { ok: false, error: owned.ok ? "OpenCode pid is not a BB-launched serve" : owned.error };
-      }
-      if (!pidAlive(lock.pid)) {
-        return { ok: false, error: "BB OpenCode lock pid is not alive" };
-      }
-      if (!(await portListening(lock.port))) {
-        return { ok: false, error: "BB OpenCode server health is unknown" };
-      }
-      const idle = await bbSessionsIdle(lock.port);
+      const info = await serviceInfo();
+      if (!info) return { ok: false, error: "OpenCode service is not running" };
+      const idle = await bbSessionsIdle(info.url);
       if (idle !== true) {
         return {
           ok: false,
@@ -109,21 +87,7 @@ export async function handleReload(
               : "BB session idleness is unknown",
         };
       }
-      const stop = await stopServeIf(dataDir, lock, claim.token);
-      if (stop !== "stopped") {
-        return {
-          ok: false,
-          error:
-            stop === "replaced"
-              ? "OpenCode lock was replaced; not signaling the new pid"
-              : stop === "unowned"
-                ? (launchGuardBlockMessage() ??
-                  "OpenCode pid is not a BB-launched serve")
-                : stop === "alive"
-                  ? "OpenCode serve did not exit"
-                  : "BB OpenCode lock disappeared before reload",
-        };
-      }
+      await restartService(resolveOpenCodeBinary() ?? "opencode");
       return { ok: true, error: null };
     } finally {
       releaseExclusive(token);
@@ -165,18 +129,7 @@ export async function handleListSessions(
   } else {
     sessions = await client.listSessions();
   }
-  let statuses = new Set<string>();
-  try {
-    const query = directory
-      ? `?directory=${encodeURIComponent(directory)}`
-      : "";
-    const response = await fetch(`${attached.url}/session/status${query}`);
-    if (response.ok) {
-      statuses = runningSessionIdsFromStatus((await response.json()) as unknown);
-    }
-  } catch {
-    /* status is best-effort */
-  }
+  const statuses = (await activeSessionIds(attached.url)) ?? new Set<string>();
   const mapped = sessions.map((session) => ({
     id: session.id,
     title: session.title ?? null,
@@ -374,10 +327,6 @@ export async function handleSummarize(
   }
   await client.summarize(sessionId, parsed);
   return { ok: true, error: null };
-}
-
-export function currentLock(dataDir: string) {
-  return readLock(dataDir);
 }
 
 export function handleStampPermissionMode(

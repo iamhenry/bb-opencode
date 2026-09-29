@@ -20,25 +20,17 @@ import {
   releaseExclusive,
 } from "./hold.js";
 import {
-  attachIfHealthy,
-  attachOrSpawn,
   canonicalPath,
-  launchGuardBlockMessage,
-  lockIdentityEqual,
-  pidAlive,
-  portListening,
-  readLaunchClaim,
-  readLock,
   resolveOpenCodeBinary,
-  spawnOwnership,
-  stopServeIf,
-  type OpenCodeLock,
+  restartService,
+  serviceIdle,
+  serviceInfo,
 } from "./process.js";
-import { sessionsIdleFromStatus } from "./session-status.js";
 import { listLiveTaskChildren } from "./task-live.js";
 
-const GITHUB_LATEST_RELEASE =
-  "https://api.github.com/repos/anomalyco/opencode/releases/latest";
+// V2 releases are published through OpenCode's update service, not GitHub
+// releases (GitHub "latest" still tracks the 1.x line).
+const LATEST_RELEASE = "https://opencode.ai/update/api/latest/cli/npm";
 const VERSION_TIMEOUT_MS = 5_000;
 export const LATEST_OK_CACHE_MS = 5 * 60_000;
 export const LATEST_FAIL_CACHE_MS = 15_000;
@@ -183,7 +175,8 @@ export function readCliVersion(binaryPath: string): string | null {
   });
   if (result.status !== 0) return null;
   const line = `${result.stdout ?? ""}`.trim().split(/\r?\n/)[0] ?? "";
-  return parseExactVersion(line);
+  // V2 prints "opencode v2.0.18"; V1 printed the bare version.
+  return parseExactVersion(line.split(/\s+/).pop() ?? "");
 }
 
 let latestCache: { at: number; value: string | null; ok: boolean } | null = null;
@@ -226,46 +219,24 @@ async function loadHighestEligibleRelease(): Promise<{
   ok: boolean;
 }> {
   try {
-    const response = await fetch(GITHUB_LATEST_RELEASE, {
-      headers: { accept: "application/vnd.github+json" },
+    const response = await fetch(LATEST_RELEASE, {
       signal: AbortSignal.timeout(8_000),
     });
     if (!response.ok) return { value: null, ok: false };
-    const body = (await response.json()) as {
-      tag_name?: unknown;
-      prerelease?: unknown;
-    };
-    return { value: pickHighestEligibleRelease([body]), ok: true };
+    const body = (await response.json()) as { version?: unknown };
+    return { value: pickHighestEligibleRelease([{ tag_name: body.version }]), ok: true };
   } catch {
     return { value: null, ok: false };
   }
 }
 
-async function readRunning(dataDir: string): Promise<{
+async function readRunning(_dataDir: string): Promise<{
   version: string;
   healthy: boolean;
 } | null> {
-  const attached = await attachIfHealthy(dataDir);
-  if (!attached) return null;
-  try {
-    const response = await fetch(`${attached.url}/global/health`, {
-      signal: AbortSignal.timeout(800),
-    });
-    if (!response.ok) return null;
-    const body = (await response.json()) as {
-      version?: unknown;
-      healthy?: unknown;
-    };
-    const version =
-      typeof body.version === "string" ? parseExactVersion(body.version) : null;
-    if (!version) return null;
-    return {
-      version,
-      healthy: body.healthy === true,
-    };
-  } catch {
-    return null;
-  }
+  const info = await serviceInfo();
+  const version = info ? parseExactVersion(info.version) : null;
+  return version ? { version, healthy: true } : null;
 }
 
 let platformForTests: NodeJS.Platform | undefined;
@@ -324,13 +295,7 @@ export async function readUpdateStatus(dataDir: string): Promise<UpdateStatus> {
       parseExactVersion(running.version) &&
       (compareVersionStrings(diskVersion, running.version) ?? 0) > 0,
   );
-  const lock = readLock(dataDir);
-  const ownership = lock
-    ? spawnOwnership(lock.pid, lock.port, lock.startedAt)
-    : { ok: false as const, error: "No BB-owned OpenCode lock" };
-  const guardMsg = launchGuardBlockMessage();
-  const canRestart =
-    versionCanRestart && !blocked && !guardMsg && ownership.ok;
+  const canRestart = versionCanRestart && !blocked;
   const error = blocked
     ? blocked
     : !installTreeSupported()
@@ -345,10 +310,6 @@ export async function readUpdateStatus(dataDir: string): Promise<UpdateStatus> {
             ? "Upgrade method is unknown or interactive"
             : !latestVersion
               ? "Latest supported version is unknown"
-              : guardMsg
-                ? guardMsg
-              : versionCanRestart && !ownership.ok
-                ? ownership.error
               : !running?.healthy
                 ? "Running OpenCode version is unknown"
                 : null;
@@ -418,7 +379,7 @@ export async function providerInstallationStatus(): Promise<{
     currentVersion: diskVersion,
     latestVersion,
     minimumSupportedVersion: SERVER_VERSION_MIN,
-    npmPackageName: method === "npm" ? "opencode-ai" : null,
+    npmPackageName: method === "npm" ? "@opencode/cli" : null,
     npmGlobalPackageVersion: method === "npm" ? diskVersion : null,
     installAction: null,
     needsUpdate: false,
@@ -662,7 +623,7 @@ export async function runInstallWrap(
   if (
     !adopt(token, child.pid) ||
     child.exitCode !== null ||
-    !pidAlive(child.pid)
+    !processGroupAlive(child.pid)
   ) {
     dropWaiter();
     releaseExclusive(token);
@@ -778,18 +739,10 @@ export function summarizeInstallEvents(
 }
 
 export async function bbSessionsIdle(
-  port: number,
+  url: string,
 ): Promise<true | false | "unknown"> {
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/session/status`, {
-      signal: AbortSignal.timeout(800),
-    });
-    if (!response.ok) return "unknown";
-    const idle = sessionsIdleFromStatus(await response.json());
-    if (idle !== true) return idle ?? "unknown";
-  } catch {
-    return "unknown";
-  }
+  const idle = await serviceIdle(url);
+  if (idle !== true) return idle;
   if (listLiveTaskChildren().some((row) => row.running)) return false;
   return true;
 }
@@ -845,7 +798,7 @@ export async function restartToApply(dataDir: string): Promise<MutationResult> {
         }
         if (!status.runningVersion) {
           return refuseRestart(
-            "No healthy BB-owned OpenCode server is running",
+            "No healthy OpenCode service is running",
             { ...status, diskVersion: expectedDisk },
           );
         }
@@ -856,39 +809,14 @@ export async function restartToApply(dataDir: string): Promise<MutationResult> {
             diskVersion: expectedDisk,
           });
         }
-        const lock = readLock(dataDir);
-        if (!lock) {
-          return refuseRestart("No BB-owned OpenCode lock", {
+        const info = await serviceInfo();
+        if (!info) {
+          return refuseRestart("OpenCode service is not running", {
             ...status,
             diskVersion: expectedDisk,
           });
         }
-        const claim = readLaunchClaim();
-        const owned = spawnOwnership(
-          lock.pid,
-          lock.port,
-          lock.startedAt,
-          claim?.token,
-        );
-        if (!owned.ok) {
-          return refuseRestart(owned.error, {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        if (!pidAlive(lock.pid)) {
-          return refuseRestart("BB OpenCode lock pid is not alive", {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        if (!(await portListening(lock.port))) {
-          return refuseRestart("BB OpenCode server health is unknown", {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        const idle = await bbSessionsIdle(lock.port);
+        const idle = await bbSessionsIdle(info.url);
         if (idle !== true) {
           return refuseRestart(
             idle === false
@@ -897,77 +825,7 @@ export async function restartToApply(dataDir: string): Promise<MutationResult> {
             { ...status, diskVersion: expectedDisk },
           );
         }
-        const expected: OpenCodeLock = lock;
-        const still = readLock(dataDir);
-        if (!still || !lockIdentityEqual(still, expected)) {
-          return refuseRestart("OpenCode lock was replaced; not signaling the new pid", {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        if (!claim?.token) {
-          return refuseRestart("OpenCode pid is not a BB-launched serve", {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        const stop = await stopServeIf(dataDir, expected, claim.token);
-        if (stop !== "stopped") {
-          return refuseRestart(
-            stop === "replaced"
-              ? "OpenCode lock was replaced; not signaling the new pid"
-              : stop === "unowned"
-                ? (launchGuardBlockMessage() ??
-                  "OpenCode pid is not a BB-launched serve")
-                : stop === "alive"
-                  ? "OpenCode serve did not exit"
-                  : "BB OpenCode lock disappeared before restart",
-            { ...status, diskVersion: expectedDisk },
-          );
-        }
-        const after = readLock(dataDir);
-        if (after && !lockIdentityEqual(after, expected)) {
-          return refuseRestart("OpenCode lock was replaced; not spawning over it", {
-            ...status,
-            diskVersion: expectedDisk,
-          });
-        }
-        const spawned = await attachOrSpawn({
-          dataDir,
-          binary,
-          spawn: true,
-          during: "restart",
-        });
-        const spawnedLock = readLock(dataDir);
-        const spawnedClaim = readLaunchClaim();
-        const spawnedOwned = spawnedLock
-          ? spawnOwnership(
-              spawnedLock.pid,
-              spawnedLock.port,
-              spawnedLock.startedAt,
-              spawnedClaim?.token,
-            )
-          : { ok: false as const, error: "Restarted serve is not the BB-owned spawn identity" };
-        if (
-          !spawned.startedAt ||
-          !spawnedLock ||
-          !lockIdentityEqual(spawnedLock, {
-            pid: spawned.pid,
-            port: spawned.port,
-            startedAt: spawned.startedAt,
-          }) ||
-          !spawnedOwned.ok
-        ) {
-          return refuseRestart(
-            !spawnedOwned.ok
-              ? spawnedOwned.error
-              : "Restarted serve is not the BB-owned spawn identity",
-            {
-              ...status,
-              diskVersion: expectedDisk,
-            },
-          );
-        }
+        await restartService(binary);
         const diskAfter = readCliVersion(binary);
         const running = await readRunning(dataDir);
         if (!diskAfter || diskAfter !== expectedDisk) {

@@ -45,7 +45,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const dir = path.dirname(process.argv[1]);
 if (process.argv[2] === "--version") {
-  process.stdout.write(fs.readFileSync(path.join(dir, "version"), "utf8"));
+  process.stdout.write("opencode v" + fs.readFileSync(path.join(dir, "version"), "utf8"));
   process.exit(0);
 }
 if (process.argv[2] === "upgrade") {
@@ -87,15 +87,15 @@ describe("install wrap packaging", () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("api.github.com")) {
-        return new Response(JSON.stringify({ tag_name: "v1.18.29" }), {
+      if (url.includes("opencode.ai/update")) {
+        return new Response(JSON.stringify({ version: "2.0.19" }), {
           status: 200,
         });
       }
       return originalFetch(input);
     }) as typeof fetch;
     try {
-      const bin = writeFakeBinary(home, "1.18.21");
+      const bin = writeFakeBinary(home, "2.0.18");
       const plan = await providerInstallationRun("update");
       expect(plan.available).toBe(true);
       if (!plan.available) return;
@@ -115,12 +115,12 @@ describe("install wrap packaging", () => {
         cwd,
       });
       expect(ok.status, ok.stderr || ok.stdout).toBe(0);
-      expect(readCliVersion(bin)).toBe("1.18.29");
+      expect(readCliVersion(bin)).toBe("2.0.19");
       expect(exclusiveKind()).toBeNull();
       expect(readFileSync(join(home, ".opencode", "bin", "argv"), "utf8")).toBe(
-        "upgrade\n1.18.29\n--method\ncurl\n",
+        "upgrade\n2.0.19\n--method\ncurl\n",
       );
-      writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
+      writeFileSync(join(home, ".opencode", "bin", "version"), "2.0.19\n");
       const again = spawnSync(plan.command.command, cachedArgs, {
         encoding: "utf8",
         timeout: 20_000,
@@ -128,9 +128,9 @@ describe("install wrap packaging", () => {
         cwd,
       });
       expect(again.status).toBe(1);
-      expect(readCliVersion(bin)).toBe("1.18.29");
+      expect(readCliVersion(bin)).toBe("2.0.19");
 
-      writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.21\n");
+      writeFileSync(join(home, ".opencode", "bin", "version"), "2.0.18\n");
       unlinkSync(join(home, ".opencode", "bin", "argv"));
       mkdirSync(join(home, ".bb", "plugins", "opencode"), { recursive: true });
       const mutex = join(home, ".bb", "plugins", "opencode", "opencode.hold.mutex");
@@ -172,7 +172,7 @@ while (Date.now() - start < 8000) {
           cwd,
         });
         expect(blocked.status).toBe(1);
-        expect(readCliVersion(bin)).toBe("1.18.21");
+        expect(readCliVersion(bin)).toBe("2.0.18");
         expect(existsSync(join(home, ".opencode", "bin", "argv"))).toBe(false);
       } finally {
         try {

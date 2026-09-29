@@ -1,8 +1,8 @@
 {
   "name": "bb-plugin-opencode",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "license": "MIT",
-    "description": "Use OpenCode to run BB threads — with import, agents, and a restart control.",
+  "description": "Use OpenCode to run BB threads — with import, agents, and a restart control.",
   "type": "module",
   "engines": {
     "bb": ">=0.39",
@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@get-bb/plugin-sdk": "0.4.16",
-    "@opencode-ai/sdk": "1.18.21",
+    "@opencode/client": "^2.0.18",
     "zod": "^4.3.6"
   },
   "devDependencies": {

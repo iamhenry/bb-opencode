@@ -17,10 +17,11 @@ describe("shipped import rules", () => {
     }
   });
 
-  it("imports @opencode-ai/sdk only from the host client module (ISC-4)", () => {
-    expect(read("server.ts")).not.toContain("@opencode-ai/sdk");
-    expect(read("app.tsx")).not.toContain("@opencode-ai/sdk");
-    expect(read("src/client.ts")).toContain("@opencode-ai/sdk");
+  it("uses the OpenCode V2 client only on the host side (ISC-4)", () => {
+    expect(read("server.ts")).not.toContain("@opencode/client");
+    expect(read("app.tsx")).not.toContain("@opencode/client");
+    expect(read("src/client.ts")).toContain("@opencode/client");
+    expect(read("package.json")).not.toContain("@opencode-ai/sdk");
   });
 
   it("keeps conformance off the shipped graph (ISC-5)", () => {

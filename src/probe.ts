@@ -8,9 +8,9 @@ import {
 import type { OpenCodeClient } from "./client.js";
 import {
   attachOrSpawn,
-  readLock,
   recentServeLog,
   resolveOpenCodeBinary,
+  serviceInfo,
 } from "./process.js";
 
 export interface ProbeResult {
@@ -70,7 +70,7 @@ export async function probeOpenCode(args: {
       sdkPin: SDK_PIN,
       error: "OpenCode binary not found on PATH",
       needsConfiguration: true,
-      serveLog: recentServeLog(),
+      serveLog: recentServeLog(10),
     };
   }
 
@@ -91,7 +91,7 @@ export async function probeOpenCode(args: {
     } catch {
       /* config is diagnostic-only */
     }
-    const lock = readLock(args.dataDir);
+    const pid = (await serviceInfo())?.pid || undefined;
     if (!isVersionInWindow(health.version)) {
       return {
         binaryPath,
@@ -99,14 +99,13 @@ export async function probeOpenCode(args: {
         attached: true,
         spawned: false,
         port: attached.port,
-        pid: attached.pid,
+        pid,
         supportedRange: range,
         sdkPin: SDK_PIN,
         error: versionSkewMessage(health.version),
         needsConfiguration: true,
-        serveCwd: attached.cwd ?? lock?.cwd,
         configSummary,
-        serveLog: recentServeLog(),
+        serveLog: recentServeLog(10),
       };
     }
     let authError: string | undefined;
@@ -124,30 +123,27 @@ export async function probeOpenCode(args: {
       attached: true,
       spawned: false,
       port: attached.port,
-      pid: lock?.pid ?? attached.pid,
+      pid,
       supportedRange: range,
       sdkPin: SDK_PIN,
       authError,
       needsConfiguration: false,
-      serveCwd: attached.cwd ?? lock?.cwd,
       configSummary,
-      serveLog: recentServeLog(),
+      serveLog: recentServeLog(10),
     };
   } catch (error) {
-    const lock = readLock(args.dataDir);
     return {
       binaryPath,
       serverVersion: undefined,
       attached: false,
       spawned: false,
-      port: lock?.port,
-      pid: lock?.pid,
+      port: undefined,
+      pid: undefined,
       supportedRange: range,
       sdkPin: SDK_PIN,
       error: error instanceof Error ? error.message : String(error),
       needsConfiguration: true,
-      serveCwd: lock?.cwd,
-      serveLog: recentServeLog(),
+      serveLog: recentServeLog(10),
     };
   }
 }

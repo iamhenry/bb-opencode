@@ -20,15 +20,7 @@ import {
   releaseStartGuard,
   resetHoldForTests,
 } from "../src/hold.js";
-import {
-  attachOrSpawn,
-  canonicalPath,
-  ownsSpawnedServe,
-  pidAlive,
-  readLock,
-  resetSpawnedServesForTests,
-  writeLock,
-} from "../src/process.js";
+import { attachOrSpawn, canonicalPath } from "../src/process.js";
 import { noteLiveTaskChild } from "../src/task-live.js";
 import {
   ageLatestCacheForTests,
@@ -56,12 +48,21 @@ const originalFetch = globalThis.fetch;
 const originalHome = process.env.HOME;
 const originalBin = process.env.OPENCODE_BIN;
 const originalLive = process.env.OC_TASK_LIVE_PATH;
+const originalState = process.env.XDG_STATE_HOME;
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   resetHoldForTests();
   resetLatestCacheForTests();
-  resetSpawnedServesForTests();
   setPlatformForTests();
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
@@ -69,6 +70,8 @@ afterEach(() => {
   else process.env.OPENCODE_BIN = originalBin;
   if (originalLive === undefined) delete process.env.OC_TASK_LIVE_PATH;
   else process.env.OC_TASK_LIVE_PATH = originalLive;
+  if (originalState === undefined) delete process.env.XDG_STATE_HOME;
+  else process.env.XDG_STATE_HOME = originalState;
 });
 
 function withHome(): { home: string; dataDir: string } {
@@ -76,6 +79,8 @@ function withHome(): { home: string; dataDir: string } {
   process.env.HOME = home;
   delete process.env.OPENCODE_BIN;
   process.env.OC_TASK_LIVE_PATH = join(home, "task-live.json");
+  // Service discovery must never see the developer's real shared service.
+  delete process.env.XDG_STATE_HOME;
   return { home, dataDir: join(home, "data") };
 }
 
@@ -95,7 +100,7 @@ const versionFile = path.join(dir, "version");
 const readVersion = () => fs.readFileSync(versionFile, "utf8").trim();
 const startedVersion = readVersion();
 if (process.argv[2] === "--version") {
-  process.stdout.write(readVersion() + "\\n");
+  process.stdout.write("opencode v" + readVersion() + "\\n");
   process.exit(0);
 }
 if (process.argv[2] === "upgrade") {
@@ -133,15 +138,11 @@ function mockGithubPages(
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     calls.push(url);
-    if (url.includes("api.github.com/repos/anomalyco/opencode/releases")) {
+    if (url.includes("opencode.ai/update/api/latest")) {
       const item = pages[0]?.[0];
-      return new Response(
-        JSON.stringify(item ? {
-          tag_name: item.tag,
-          prerelease: item.prerelease === true,
-        } : {}),
-        { status: 200 },
-      );
+      return new Response(JSON.stringify(item ? { version: item.tag } : {}), {
+        status: 200,
+      });
     }
     return originalFetch(input);
   }) as typeof fetch;
@@ -186,13 +187,13 @@ describe("selectEnrolledHost", () => {
 describe("planInstall identity", () => {
   it("fails closed when realpath cannot be resolved and rejects symlink retargeting", () => {
     const { home } = withHome();
-    const real = writeFakeBinary(home, "1.18.21");
+    const real = writeFakeBinary(home, "2.0.18");
     expect(
       planInstall({
         binaryPath: join(home, "missing"),
         resolvedPath: join(home, "missing"),
-        diskVersion: "1.18.21",
-        targetVersion: "1.18.29",
+        diskVersion: "2.0.18",
+        targetVersion: "2.0.19",
         method: "curl",
       }).ok,
     ).toBe(false);
@@ -208,8 +209,8 @@ describe("planInstall identity", () => {
       planInstall({
         binaryPath: link,
         resolvedPath: decoy,
-        diskVersion: "1.18.21",
-        targetVersion: "1.18.29",
+        diskVersion: "2.0.18",
+        targetVersion: "2.0.19",
         method: "curl",
       }).ok,
     ).toBe(false);
@@ -219,8 +220,8 @@ describe("planInstall identity", () => {
       planInstall({
         binaryPath: link,
         resolvedPath: real,
-        diskVersion: "1.18.21",
-        targetVersion: "1.18.29",
+        diskVersion: "2.0.18",
+        targetVersion: "2.0.19",
         method: "curl",
       }).ok,
     ).toBe(false);
@@ -233,20 +234,20 @@ describe("release selection", () => {
   it("picks the highest strict in-window release and ignores junk", () => {
     expect(
       pickHighestEligibleRelease([
-        { tag_name: "v1.19.0", prerelease: false },
-        { tag_name: "v1.18.21foo", prerelease: false },
-        { tag_name: "v1.18.29", prerelease: false },
+        { tag_name: "v3.0.0", prerelease: false },
+        { tag_name: "v2.0.18foo", prerelease: false },
+        { tag_name: "v2.0.19", prerelease: false },
       ]),
-    ).toBe("1.18.29");
+    ).toBe("2.0.19");
   });
 
-  it("fetches GitHub's latest release and caches success and failures briefly", async () => {
-    const { calls } = mockGithubPages([[{ tag: "v1.18.29" }]]);
-    expect(await fetchLatestSupported()).toBe("1.18.29");
+  it("fetches OpenCode's latest V2 release and caches success and failures briefly", async () => {
+    const { calls } = mockGithubPages([[{ tag: "v2.0.19" }]]);
+    expect(await fetchLatestSupported()).toBe("2.0.19");
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain("/releases/latest");
+    expect(calls[0]).toContain("/update/api/latest/cli/npm");
     const after = calls.length;
-    expect(await fetchLatestSupported()).toBe("1.18.29");
+    expect(await fetchLatestSupported()).toBe("2.0.19");
     expect(calls.length).toBe(after);
     resetLatestCacheForTests();
     let fails = 0;
@@ -264,10 +265,10 @@ describe("release selection", () => {
 
   it("treats a failed latest-release request as unknown and never current", async () => {
     const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
+    writeFakeBinary(home, "2.0.18");
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (!url.includes("api.github.com")) return originalFetch(input);
+      if (!url.includes("opencode.ai/update")) return originalFetch(input);
       return new Response("nope", { status: 500 });
     }) as typeof fetch;
     expect(await fetchLatestSupported()).toBeNull();
@@ -280,8 +281,8 @@ describe("release selection", () => {
 describe("provider installation contract", () => {
   it("returns a guarded update plan only when target > disk on the canonical binary", async () => {
     const { home } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.19" }]]);
     const status = await providerInstallationStatus();
     expect(status.needsUpdate).toBe(false);
     expect(status.installAction).toBeNull();
@@ -301,7 +302,7 @@ describe("provider installation contract", () => {
       ]);
       expect(run.command.args.slice(-4)).toEqual([
         "upgrade",
-        "1.18.29",
+        "2.0.19",
         "--method",
         "curl",
       ]);
@@ -314,13 +315,13 @@ describe("provider installation contract", () => {
 
   it("offers an update while a normal thread start guard is active", async () => {
     const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.19" }]]);
     const token = acquireStartGuard();
     expect(token).toBeTruthy();
     expect(await readUpdateStatus(dataDir)).toMatchObject({
       eligible: true,
-      targetVersion: "1.18.29",
+      targetVersion: "2.0.19",
       error: "Running OpenCode version is unknown",
     });
     releaseStartGuard(token!);
@@ -328,33 +329,33 @@ describe("provider installation contract", () => {
 
   it("wrapper acquires hold before mutation and loses to restart", async () => {
     const { home } = withHome();
-    const bin = writeFakeBinary(home, "1.18.21");
+    const bin = writeFakeBinary(home, "2.0.18");
     const restartToken = acquireExclusive("restart");
     expect(restartToken).toBeTruthy();
     expect(
-      await runInstallWrap([bin, "upgrade", "1.18.29", "--method", "curl"]),
+      await runInstallWrap([bin, "upgrade", "2.0.19", "--method", "curl"]),
     ).toBe(1);
-    expect(readCliVersion(bin)).toBe("1.18.21");
+    expect(readCliVersion(bin)).toBe("2.0.18");
     releaseExclusive(restartToken!);
-    expect(await runInstallWrap([bin, "upgrade", "1.18.29", "--method", "curl"])).toBe(
+    expect(await runInstallWrap([bin, "upgrade", "2.0.19", "--method", "curl"])).toBe(
       0,
     );
-    expect(readCliVersion(bin)).toBe("1.18.29");
+    expect(readCliVersion(bin)).toBe("2.0.19");
     expect(exclusiveKind()).toBeNull();
   });
 
   it("refuses a stale target after a racing disk advance", async () => {
     const { home } = withHome();
-    const bin = writeFakeBinary(home, "1.18.29");
+    const bin = writeFakeBinary(home, "2.0.19");
     expect(
-      await runInstallWrap([bin, "upgrade", "1.18.29", "--method", "curl"]),
+      await runInstallWrap([bin, "upgrade", "2.0.19", "--method", "curl"]),
     ).toBe(1);
-    expect(readCliVersion(bin)).toBe("1.18.29");
+    expect(readCliVersion(bin)).toBe("2.0.19");
   });
 
   it("does not release another hold token from a failed restart", async () => {
     const { dataDir } = withHome();
-    const installToken = acquireExclusive("install", "1.18.29");
+    const installToken = acquireExclusive("install", "2.0.19");
     expect(installToken).toBeTruthy();
     expect(await restartToApply(dataDir)).toMatchObject({ ok: false });
     expect(exclusiveKind()).toBe("install");
@@ -364,20 +365,20 @@ describe("provider installation contract", () => {
 
   it("does not start the CLI when hold adoption fails", async () => {
     const { home } = withHome();
-    const bin = writeFakeBinary(home, "1.18.21");
+    const bin = writeFakeBinary(home, "2.0.18");
     expect(
-      await runInstallWrap([bin, "upgrade", "1.18.29", "--method", "curl"], {
+      await runInstallWrap([bin, "upgrade", "2.0.19", "--method", "curl"], {
         adopt: () => false,
       }),
     ).toBe(1);
-    expect(readCliVersion(bin)).toBe("1.18.21");
+    expect(readCliVersion(bin)).toBe("2.0.18");
     expect(existsSync(join(home, ".opencode", "bin", "argv"))).toBe(false);
   });
 
   it("hides install on Windows and reports an unsupported message", async () => {
     const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.19" }]]);
     setPlatformForTests("win32");
     const status = await readUpdateStatus(dataDir);
     expect(status.eligible).toBe(false);
@@ -392,8 +393,8 @@ describe("provider installation contract", () => {
 
   it("reports stuck pending hold without auto-clearing it", async () => {
     const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.19" }]]);
     const dir = join(home, ".bb", "plugins", "opencode");
     mkdirSync(dir, { recursive: true });
     const stuck = `${JSON.stringify({
@@ -444,7 +445,7 @@ describe("provider installation contract", () => {
     const blocked = holdBlockMessage();
     expect(blocked).toMatch(/opencode\.hold\.json/);
     expect(blocked).not.toContain(home);
-    expect(acquireExclusive("install", "1.18.29")).toBeNull();
+    expect(acquireExclusive("install", "2.0.19")).toBeNull();
     expect(acquireStartGuard()).toBeNull();
     expect((await readUpdateStatus(dataDir)).error).toBe(blocked);
     const run = await providerInstallationRun("update");
@@ -462,18 +463,18 @@ describe("provider installation contract", () => {
 
   it("requires exact disk target after daemon events, not version_at_least", () => {
     const { home } = withHome();
-    const path = writeFakeBinary(home, "1.18.28");
+    const path = writeFakeBinary(home, "2.0.20");
     expect(
       exactPostInstall({
         events: [{ type: "completed", success: true, exitCode: 0 }],
         expectedPath: path,
-        expectedTarget: "1.18.29",
+        expectedTarget: "2.0.19",
         after: {
           binaryPath: path,
-          diskVersion: "1.18.28",
+          diskVersion: "2.0.20",
           runningVersion: null,
-          latestVersion: "1.18.29",
-          targetVersion: "1.18.29",
+          latestVersion: "2.0.19",
+          targetVersion: "2.0.19",
           method: "curl",
           eligible: false,
           canRestart: false,
@@ -486,13 +487,13 @@ describe("provider installation contract", () => {
       exactPostInstall({
         events: [{ type: "completed", success: true, exitCode: 0 }],
         expectedPath: "/remote-host/bin/opencode",
-        expectedTarget: "1.18.29",
+        expectedTarget: "2.0.19",
         after: {
           binaryPath: "/remote-host/bin/opencode",
-          diskVersion: "1.18.29",
-          runningVersion: "1.18.28",
-          latestVersion: "1.18.29",
-          targetVersion: "1.18.29",
+          diskVersion: "2.0.19",
+          runningVersion: "2.0.20",
+          latestVersion: "2.0.19",
+          targetVersion: "2.0.19",
           method: "curl",
           eligible: false,
           canRestart: false,
@@ -522,8 +523,8 @@ describe("provider installation contract", () => {
 describe("bridge installation wiring", () => {
   it("answers provider/installation/status and run", async () => {
     const { home } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.19" }]]);
     const messages: Array<Record<string, unknown>> = [];
     resetBridgeForTests({
       acquire: () => {
@@ -557,7 +558,7 @@ describe("bridge installation wiring", () => {
     expect(run?.result?.available).toBe(true);
     expect(run?.result?.command?.args?.slice(-4)).toEqual([
       "upgrade",
-      "1.18.29",
+      "2.0.19",
       "--method",
       "curl",
     ]);
@@ -567,72 +568,19 @@ describe("bridge installation wiring", () => {
 describe("readUpdateStatus", () => {
   it("is not current when disk matches latest but nothing healthy is running", async () => {
     const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.21" }]]);
+    writeFakeBinary(home, "2.0.18");
+    mockGithubPages([[{ tag: "v2.0.18" }]]);
     const status = await readUpdateStatus(dataDir);
     expect(status.eligible).toBe(false);
     expect(status.current).toBe(false);
   });
 
-  it("is current when healthy disk is ahead of latest and running matches disk", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.28");
-    mockGithubPages([[{ tag: "v1.18.21" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    try {
-      const status = await readUpdateStatus(dataDir);
-      expect(status.diskVersion).toBe("1.18.28");
-      expect(status.latestVersion).toBe("1.18.21");
-      expect(status.runningVersion).toBe("1.18.28");
-      expect(status.current).toBe(true);
-      expect(status.eligible).toBe(false);
-      expect(status.canRestart).toBe(false);
-      const provider = await providerInstallationStatus();
-      expect(provider.needsUpdate).toBe(false);
-      expect(provider.installAction).toBeNull();
-    } finally {
-      try {
-        process.kill(-attached.pid, "SIGKILL");
-      } catch {
-        try {
-          process.kill(attached.pid, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
-    }
-  });
-
-  it("never treats an unsupported disk/running version as current", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.19.0");
-    mockGithubPages([[{ tag: "v1.18.21" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    try {
-      const status = await readUpdateStatus(dataDir);
-      expect(status.diskVersion).toBe("1.19.0");
-      expect(status.runningVersion).toBe("1.19.0");
-      expect(status.current).toBe(false);
-      expect(status.eligible).toBe(false);
-      expect(status.error).toMatch(/outside the pinned window/i);
-    } finally {
-      try {
-        process.kill(-attached.pid, "SIGKILL");
-      } catch {
-        try {
-          process.kill(attached.pid, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
-    }
-  });
 });
 
 describe("restart exclusion", () => {
   it("blocks attach/spawn, reload, and bridge turns while exclusive hold is active", async () => {
     const { dataDir } = withHome();
-    const installToken = acquireExclusive("install", "1.18.29");
+    const installToken = acquireExclusive("install", "2.0.19");
     expect(installToken).toBeTruthy();
     await expect(attachOrSpawn({ dataDir, spawn: true })).rejects.toThrow(
       /already in progress/,
@@ -687,7 +635,7 @@ describe("restart exclusion", () => {
 
   it("does not age-expire a live owner and reclaims a dead owner", () => {
     const { home } = withHome();
-    expect(acquireExclusive("install", "1.18.29")).toBeTruthy();
+    expect(acquireExclusive("install", "2.0.19")).toBeTruthy();
     expect(exclusiveKind()).toBe("install");
     const dir = join(home, ".bb", "plugins", "opencode");
     writeFileSync(
@@ -707,261 +655,12 @@ describe("restart exclusion", () => {
     expect(acquireExclusive("restart")).toBeNull();
     expect(await restartToApply(dataDir)).toMatchObject({ ok: false });
     await expect(attachOrSpawn({ dataDir, spawn: false })).rejects.toThrow(
-      /not attached/,
+      /service is not running/,
     );
     releaseStartGuard(token!);
     const restartToken = acquireExclusive("restart");
     expect(restartToken).toBeTruthy();
     releaseExclusive(restartToken!);
-  });
-});
-
-describe("restartToApply", () => {
-  it("refuses unknown ownership and preserves unrelated processes", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.29");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
-    const { spawn } = await import("node:child_process");
-    const stranger = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-      stdio: "ignore",
-    });
-    const pid = stranger.pid!;
-    try {
-      writeLock(dataDir, {
-        pid,
-        port: 9,
-        startedAt: new Date().toISOString(),
-      });
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("api.github.com")) {
-          return new Response(JSON.stringify([{ tag_name: "v1.18.29" }]), {
-            status: 200,
-          });
-        }
-        if (url.includes("/global/health")) {
-          return new Response(
-            JSON.stringify({ healthy: true, version: "1.18.21" }),
-            { status: 200 },
-          );
-        }
-        if (url.includes("/session/status")) {
-          return new Response("{}", { status: 200 });
-        }
-        return originalFetch(input);
-      }) as typeof fetch;
-      const result = await restartToApply(dataDir);
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/not a BB-launched serve/);
-      expect(pidAlive(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
-  });
-
-  it("refuses when BB sessions are busy and does not kill the lock pid", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
-    const { spawn } = await import("node:child_process");
-    const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-      stdio: "ignore",
-    });
-    const unrelatedPid = unrelated.pid!;
-    try {
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("api.github.com")) {
-          return new Response(JSON.stringify([{ tag_name: "v1.18.29" }]), {
-            status: 200,
-          });
-        }
-        if (url.includes("/session/status")) {
-          return new Response(
-            JSON.stringify({ ses_busy: { type: "busy" } }),
-            { status: 200 },
-          );
-        }
-        return originalFetch(input);
-      }) as typeof fetch;
-      const result = await restartToApply(dataDir);
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/busy/i);
-      expect(pidAlive(attached.pid)).toBe(true);
-      expect(pidAlive(unrelatedPid)).toBe(true);
-      expect(ownsSpawnedServe(attached.pid, attached.port, attached.startedAt ?? "")).toBe(true);
-    } finally {
-      try {
-        process.kill(attached.pid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-      try {
-        process.kill(unrelatedPid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
-  });
-
-  it("refuses when live task children are running", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
-    const pid = attached.pid;
-    try {
-      noteLiveTaskChild({
-        parentSessionId: "ses_parent",
-        childSessionId: "ses_child",
-        running: true,
-      });
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("api.github.com")) {
-          return new Response(JSON.stringify([{ tag_name: "v1.18.29" }]), {
-            status: 200,
-          });
-        }
-        if (url.includes("/global/health")) {
-          return new Response(
-            JSON.stringify({ healthy: true, version: "1.18.21" }),
-            { status: 200 },
-          );
-        }
-        if (url.includes("/session/status")) {
-          return new Response("{}", { status: 200 });
-        }
-        return originalFetch(input);
-      }) as typeof fetch;
-      const result = await restartToApply(dataDir);
-      expect(result.ok).toBe(false);
-      expect(result.error).toMatch(/busy/i);
-      expect(pidAlive(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
-  });
-
-  it("refuses a replacement lock before sending any signal", async () => {
-    const { home, dataDir } = withHome();
-    writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
-    const { spawn } = await import("node:child_process");
-    const replacement = spawn(
-      process.execPath,
-      ["-e", "setInterval(()=>{},1000)"],
-      { stdio: "ignore" },
-    );
-    const originalPid = attached.pid;
-    const replacementPid = replacement.pid!;
-    try {
-      globalThis.fetch = (async (input: RequestInfo | URL) => {
-        const url = String(input);
-        if (url.includes("api.github.com")) {
-          return new Response(JSON.stringify([{ tag_name: "v1.18.29" }]), {
-            status: 200,
-          });
-        }
-        if (url.includes("/session/status")) {
-          writeLock(dataDir, {
-            pid: replacementPid,
-            port: 10,
-            startedAt: new Date().toISOString(),
-          });
-          return new Response("{}", { status: 200 });
-        }
-        return originalFetch(input);
-      }) as typeof fetch;
-      const originalKill = process.kill.bind(process);
-      const signaled: number[] = [];
-      process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-        if (signal && signal !== 0) signaled.push(pid);
-        return originalKill(pid, signal);
-      }) as typeof process.kill;
-      try {
-        const result = await restartToApply(dataDir);
-        expect(result.ok).toBe(false);
-        expect(result.error).toMatch(/replaced/i);
-        expect(signaled).not.toContain(-originalPid);
-        expect(signaled).not.toContain(originalPid);
-        expect(pidAlive(originalPid)).toBe(true);
-        expect(pidAlive(replacementPid)).toBe(true);
-      } finally {
-        process.kill = originalKill;
-      }
-    } finally {
-      for (const pid of [originalPid, replacementPid]) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          /* already dead */
-        }
-      }
-    }
-  });
-
-  it("restarts the idle BB-owned serve onto the disk version without touching others", async () => {
-    const { home, dataDir } = withHome();
-    const bin = writeFakeBinary(home, "1.18.21");
-    mockGithubPages([[{ tag: "v1.18.29" }]]);
-    const attached = await attachOrSpawn({ dataDir, spawn: true });
-    const oldPid = attached.pid;
-    const { spawn } = await import("node:child_process");
-    const unrelated = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
-      stdio: "ignore",
-    });
-    const unrelatedPid = unrelated.pid!;
-    try {
-      writeFileSync(join(home, ".opencode", "bin", "version"), "1.18.29\n");
-      expect(readCliVersion(bin)).toBe("1.18.29");
-      expect(ownsSpawnedServe(oldPid, attached.port, attached.startedAt ?? "")).toBe(true);
-      const result = await restartToApply(dataDir);
-      expect(result.ok).toBe(true);
-      expect(result.diskVersion).toBe("1.18.29");
-      expect(result.runningVersion).toBe("1.18.29");
-      expect(pidAlive(oldPid)).toBe(false);
-      expect(pidAlive(unrelatedPid)).toBe(true);
-      const next = readLock(dataDir);
-      expect(next?.pid).toBeDefined();
-      expect(next?.pid).not.toBe(oldPid);
-      expect(pidAlive(next!.pid)).toBe(true);
-      if (next?.pid) {
-        try {
-          process.kill(-next.pid, "SIGKILL");
-        } catch {
-          try {
-            process.kill(next.pid, "SIGKILL");
-          } catch {
-            /* already dead */
-          }
-        }
-      }
-    } finally {
-      try {
-        process.kill(oldPid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-      try {
-        process.kill(unrelatedPid, "SIGKILL");
-      } catch {
-        /* already dead */
-      }
-    }
   });
 });
 
@@ -1013,7 +712,7 @@ describe("process group signals", () => {
       }
       const descendant = Number(readFileSync(pidFile, "utf8"));
       expect(descendant).toBeGreaterThan(0);
-      const token = acquireExclusive("install", "1.18.29");
+      const token = acquireExclusive("install", "2.0.19");
       expect(token).toBeTruthy();
       expect(adoptExclusive(token!, pgid)).toBe(true);
       expect(inspectHold()).toEqual({ status: "live", kind: "install" });
