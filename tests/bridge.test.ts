@@ -3725,7 +3725,7 @@ describe("provider bridge", () => {
   });
 
   it("lists OpenCode models and never agent ids (ISC-27, ISC-27.1)", async () => {
-    installFake();
+    const fake = installFake();
     send({
       id: "models",
       method: "model/list",
@@ -3743,6 +3743,8 @@ describe("provider bridge", () => {
       (model) => (model as { displayName?: string }).displayName,
     );
     expect(names).toContain("opencode/gpt-4.1");
+    expect(fake.lastProvidersDirectory).toBe("/tmp/a");
+    expect(fake.lastConfigDirectory).toBe("/tmp/a");
   });
 
   it("runs a new root stamped with a subagent as the default primary", async () => {

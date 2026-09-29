@@ -66,7 +66,9 @@ export interface OpenCodeClient {
     body?: { messageID?: string },
   ): Promise<OpenCodeSession>;
   agents(): Promise<OpenCodeAgentInfo[]>;
-  providers(): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
+  providers(
+    directory?: string,
+  ): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
   listCommands(directory?: string): Promise<Array<{ name: string; description?: string }>>;
   sessionCommand(
     id: string,
@@ -122,6 +124,7 @@ export function directoryQuery(directory?: string): string {
 export const OPENCODE_SETUP_MS = 8_000;
 export const OPENCODE_REPLY_MS = 8_000;
 export const OPENCODE_PROMPT_MS = 30_000;
+const MODEL_CATALOG_WARMUP_RETRY_MS = 150;
 /** V2 rejects `limit` above 200 on message lists. */
 const MESSAGE_PAGE_MAX = 200;
 
@@ -466,11 +469,24 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
         return {};
       }
     },
-    async providers() {
-      const [models, providers] = await Promise.all([
-        sdk.model.list() as unknown as Promise<{ data?: Rec[] }>,
-        (sdk.provider.list() as unknown as Promise<{ data?: Rec[] }>).catch(() => ({ data: [] })),
-      ]);
+    async providers(directory) {
+      const request = location(directory) as never;
+      const providers = await (
+        sdk.provider.list(request) as unknown as Promise<{ data?: Rec[] }>
+      ).catch(() => ({ data: [] }));
+      let models = (await sdk.model.list(request)) as unknown as {
+        data?: Rec[];
+      };
+      if ((models.data?.length ?? 0) === 0) {
+        // A cold OpenCode location can publish model.updated just after its
+        // first successful model.list response, so retry the empty snapshot.
+        await new Promise((resolve) =>
+          setTimeout(resolve, MODEL_CATALOG_WARMUP_RETRY_MS),
+        );
+        models = (await sdk.model.list(request)) as unknown as {
+          data?: Rec[];
+        };
+      }
       const names = new Map((providers.data ?? []).map((p) => [String(p.id), p.name]));
       const grouped = new Map<string, { id: string; name?: string; models: Record<string, unknown> }>();
       for (const model of models.data ?? []) {

@@ -2734,8 +2734,9 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
     }
     void (async () => {
       try {
+        const directory = parsed.data.cwd;
         const active = await ensureClient();
-        const catalog = await active.providers();
+        const catalog = await active.providers(directory);
         rememberModelWindows(modelContextWindows, catalog.providers ?? []);
         const models = listPickerModels(catalog.providers ?? []).map((row) => {
           const supportedReasoningEfforts = supportedReasoningEffortsForModel(
@@ -2756,7 +2757,7 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         });
         let configured: string | undefined;
         try {
-          configured = configDefaultModelId(await active.getConfig());
+          configured = configDefaultModelId(await active.getConfig(directory));
         } catch {
           configured = undefined;
         }

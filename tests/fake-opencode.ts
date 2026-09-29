@@ -50,6 +50,8 @@ export interface FakeOpenCode {
   lastPermissionDirectory?: string;
   lastQuestionDirectory?: string;
   lastSubscribeDirectory?: string;
+  lastConfigDirectory?: string;
+  lastProvidersDirectory?: string;
   pendingPermissions: unknown[];
   healthy: boolean;
   emitIdleAfterPrompt: boolean;
@@ -220,10 +222,12 @@ export function createFakeOpenCode(): FakeOpenCode {
       async agents() {
         return fake.agents;
       },
-      async getConfig() {
+      async getConfig(directory) {
+        fake.lastConfigDirectory = directory;
         return { model: "opencode/gpt-4.1" };
       },
-      async providers() {
+      async providers(directory) {
+        fake.lastProvidersDirectory = directory;
         return {
           providers: [
             {
