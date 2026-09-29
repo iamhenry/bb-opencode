@@ -97,7 +97,7 @@ export function createFakeOpenCode(): FakeOpenCode {
     client: {
       url: "http://127.0.0.1:9",
       async health() {
-        return { healthy: fake.healthy, version: "1.18.21" };
+        return { healthy: fake.healthy, version: "2.0.18" };
       },
       async createSession(args) {
         fake.calls.create += 1;

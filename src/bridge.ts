@@ -239,6 +239,7 @@ function parkStartGuardOnLive(threadId: string, token: string): void {
 }
 let configuredSkillRoots: SkillConfigureRoot[] = [];
 const openingTurns = new Map<string, Promise<void>>();
+const forkHydrations = new Map<string, Promise<void>>();
 const pendingPermission = new Map<
   string,
   { requestId: string; sessionId: string; threadId: string }
@@ -593,8 +594,12 @@ function isAmbiguousCreateTimeout(error: unknown): boolean {
 async function restoreDefaultOpenCodeTitle(
   active: OpenCodeClient,
   sessionId: string,
+  createdAt?: number,
 ): Promise<void> {
-  await active.updateSession(sessionId, { title: defaultOpenCodeRootTitle() });
+  // V2 only auto-titles a session whose title is exactly the fallback for its
+  // own creation time, so stamp that time rather than "now".
+  const created = typeof createdAt === "number" ? new Date(createdAt) : undefined;
+  await active.updateSession(sessionId, { title: defaultOpenCodeRootTitle(created) });
 }
 
 async function createOrReconcileSession(
@@ -612,7 +617,7 @@ async function createOrReconcileSession(
       title: correlationTitle,
     });
     const sessionId = requireSessionId(created.id, "session.create");
-    await restoreDefaultOpenCodeTitle(active, sessionId);
+    await restoreDefaultOpenCodeTitle(active, sessionId, created.time?.created);
     return sessionId;
   } catch (error) {
     if (!isAmbiguousCreateTimeout(error)) {
@@ -639,7 +644,7 @@ async function createOrReconcileSession(
   }
   logRecoveryDecision("session-create", elapsed(), "recovered", "none");
   const sessionId = matches[0]!.id;
-  await restoreDefaultOpenCodeTitle(active, sessionId);
+  await restoreDefaultOpenCodeTitle(active, sessionId, matches[0]!.time?.created);
   return sessionId;
 }
 
@@ -1439,7 +1444,8 @@ async function replayHydrate(
   try {
     const todos = parseOpenCodeTodos(await active.sessionTodos(sessionId));
     lastTodos.set(sessionId, todoSnapshotKey(todos));
-    emitDeltas(threadId, todoPlanDeltas(todos) as ThreadDelta[]);
+    // V2 has no todos; an empty plan would render a blank "Updating plan" row.
+    if (todos.length > 0) emitDeltas(threadId, todoPlanDeltas(todos) as ThreadDelta[]);
   } catch {
     /* todos are best-effort */
   }
@@ -2314,7 +2320,10 @@ async function handleQuestionAsked(
   const live = threadId ? liveTurns.get(threadId) : undefined;
   const requestId = ask?.id;
   const payload = ask ? toUserQuestionPayload(ask) : undefined;
-  if (!threadId || !live || !requestId || !payload || !client) {
+  // Every BB bridge process sees the shared V2 event stream; a session this
+  // bridge does not own belongs to another bridge, so leave its form alone.
+  if (!threadId) return;
+  if (!live || !requestId || !payload || !client) {
     if (client && requestId) {
       await client
         .rejectQuestion({
@@ -2933,8 +2942,17 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           permissionMode: permissionModeOf(parsed.data.options),
           ...sessionPolicy(parsed.data),
         });
+        // BB may send the fork's first prompt as soon as it has the id; that
+        // turn must wait until the copied history is replayed, or the replayed
+        // turn boundaries close it and its live output is lost.
+        const hydrated = replayHydrate(parsed.data.threadId, forked.id, active);
+        forkHydrations.set(parsed.data.threadId, hydrated.catch(() => undefined));
         respondResult(id, { providerThreadId: forkedId });
-        await replayHydrate(parsed.data.threadId, forked.id, active);
+        try {
+          await hydrated;
+        } finally {
+          forkHydrations.delete(parsed.data.threadId);
+        }
       } catch (error) {
         respondError(
           id,
@@ -2977,6 +2995,10 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
         bound.permissionMode = permissionModeOf(parsed.data.options);
         refreshSessionPolicy(bound, parsed.data);
         respondResult(id, {});
+        // Only a fresh fork waits; an unconditional await would let a steer
+        // that races turn/start run ahead of the first prompt.
+        const forkHydration = forkHydrations.get(parsed.data.threadId);
+        if (forkHydration) await forkHydration;
         // ponytail: bind-only input seeds BB display; the OpenCode turn already exists
         if (bound.bindOnly) {
           bound.bindOnly = false;
@@ -3597,23 +3619,31 @@ async function flushSteerBody(
 }
 
 function steerPromptBody(args: {
+  threadId: string;
   sessionId: string;
   input: readonly PromptInput[];
   options: unknown;
 }): { ok: true; body: Record<string, unknown> } | { ok: false; reason: string } {
   const options = providerOptions(args.options);
-  const agent = typeof options.agent === "string" ? options.agent : "build";
+  // V2 agent/model/instructions are sticky session state: a follow-up that
+  // names no agent must not switch the running session back to build, and
+  // must keep the bound project instructions.
+  const explicitAgent = typeof options.agent === "string" ? options.agent : undefined;
   const model =
     typeof (args.options as { model?: unknown })?.model === "string"
       ? ((args.options as { model: string }).model as string)
       : (lastPromptedModels.get(args.sessionId) ?? lastPromptedModel);
-  const built = buildPrompt({ agent, input: args.input, model });
+  const built = buildPrompt({
+    agent: explicitAgent ?? "build",
+    input: args.input,
+    model,
+    instructions: sessions.get(args.threadId)?.instructions ?? instructionsOf(args.options),
+  });
   if (!built.ok) return built;
   const variant = openCodeVariantFor(reasoningLevelOf(args.options));
-  return {
-    ok: true,
-    body: { ...built.prompt, ...(variant ? { variant } : {}) },
-  };
+  const body: Record<string, unknown> = { ...built.prompt, ...(variant ? { variant } : {}) };
+  if (!explicitAgent) delete body.agent;
+  return { ok: true, body };
 }
 
 async function waitForSteerRunnerRelease(
@@ -3669,84 +3699,28 @@ async function runSteer(args: {
     return;
   }
 
-  const restart: SteerRestart = {
-    phase: "persisting",
-    idleSeen: false,
-  };
-  const previousPollUserMessageId = live.pollUserMessageId;
-  live.steerRestart = restart;
-  let active: OpenCodeClient | undefined;
-  const directory = boundDirectory(args.sessionId);
-  let stable: ReturnType<typeof stableSteerPrompt> | undefined;
+  // OpenCode V2 steers natively: the inbox delivers the correction into the
+  // running turn at the next step, so the live turn simply keeps streaming.
   try {
     await openingTurns.get(args.threadId);
     if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-    active = await ensureClient();
-    stable = stableSteerPrompt(built.body);
-    live.pollUserMessageId = stable.messageID;
-    await active.prompt(
+    const active = await ensureClient();
+    await active.promptAsync(
       args.sessionId,
-      { ...stable.body, noReply: true },
-      directory,
+      { ...built.body, delivery: "steer" },
+      boundDirectory(args.sessionId),
     );
+    acknowledgeInput();
   } catch (error) {
-    if (liveTurns.get(args.threadId) === live && !live.stopping) {
-      if (live.steerRestart === restart) live.steerRestart = undefined;
-      live.pollUserMessageId = previousPollUserMessageId;
-    }
     emitDeltas(args.threadId, [
       {
         kind: "provider.warning",
         category: "general",
-        summary: "Could not persist correction",
+        summary: "Could not deliver follow-up",
         details: error instanceof Error ? error.message : String(error),
         vouchedTurn: true,
       },
     ]);
-    if (active && liveTurns.get(args.threadId) === live && !live.stopping) {
-      try {
-        if (!(await active.sessionIsRunning(args.sessionId, directory))) {
-          await settleIssuedTurn(args.threadId, args.sessionId, active);
-        }
-      } catch (settleError) {
-        unknownLogLines.push(`steer-persist-settle-error ${String(settleError)}`);
-      }
-    }
-    return;
-  }
-  if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-  restart.phase = "aborting";
-  acknowledgeInput();
-  let aborted = false;
-  try {
-    if (await active.sessionIsRunning(args.sessionId, directory)) {
-      await active.abort(args.sessionId, directory);
-      aborted = true;
-      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-      await waitForSteerRunnerRelease(active, args.sessionId, directory);
-      if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-    }
-    restart.phase = "replaying";
-    await active.promptAsync(args.sessionId, stable.body, directory);
-    if (usableSteerLive(args.threadId, args.sessionId) !== live) {
-      try {
-        await active.abort(args.sessionId, boundDirectory(args.sessionId));
-      } catch {
-        /* already idle */
-      }
-      return;
-    }
-    restart.phase = "running";
-    await settleIssuedTurn(args.threadId, args.sessionId, active);
-  } catch (error) {
-    if (usableSteerLive(args.threadId, args.sessionId) !== live) return;
-    live.steerRestart = undefined;
-    const details = error instanceof Error ? error.message : String(error);
-    if (aborted) {
-      failIssuedTurn(args.threadId, `Could not start follow-up: ${details}`);
-      return;
-    }
-    throw error;
   }
 }
 
@@ -4062,7 +4036,8 @@ async function runPrompt(args: {
           },
           cwd,
         );
-        await settleIssuedTurn(args.threadId, args.sessionId, active);
+        // V2 `command` returns once queued; live events stream the run and
+        // `session.idle` closes the turn, exactly like a normal prompt.
         return;
       }
     }

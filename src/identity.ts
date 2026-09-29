@@ -1,8 +1,8 @@
 export const PROVIDER_ID = "opencode" as const;
 export const PROVIDER_DISPLAY_NAME = "OpenCode";
-export const SDK_PIN = "1.18.21";
-export const SERVER_VERSION_MIN = "1.18.0";
-export const SERVER_VERSION_MAX_EXCLUSIVE = "1.19.0";
+export const SDK_PIN = "2.0.18";
+export const SERVER_VERSION_MIN = "2.0.0";
+export const SERVER_VERSION_MAX_EXCLUSIVE = "3.0.0";
 
 const SYSTEM_AGENT_NAMES = new Set(["title", "compaction", "summary"]);
 

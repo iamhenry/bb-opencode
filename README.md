@@ -2,9 +2,9 @@
 
 First-class OpenCode provider for [BB](https://github.com/get-bb/bb).
 
-This is **not** BB’s built-in ACP guest (`acp-opencode` / plugin `provider-acp`). That path runs `opencode acp`. This plugin talks to a detached `opencode serve` as provider id `opencode`, shown in the picker as **OpenCode**. Existing ACP threads stay ACP; they are not migrated.
+This is **not** BB’s built-in ACP guest (`acp-opencode` / plugin `provider-acp`). That path runs `opencode acp`. This plugin talks to OpenCode V2's shared background service (the one the OpenCode TUI uses) as provider id `opencode`, shown in the picker as **OpenCode**. Existing ACP threads stay ACP; they are not migrated.
 
-One detached `opencode serve` per host. BB threads bind 1:1 to OpenCode sessions. Work is scoped to the project directory. Import is a button you press. Deleting a BB thread does not delete the OpenCode session.
+One shared OpenCode background service per host; the plugin attaches to it, or starts it with `opencode serve --service` if none is running. BB threads bind 1:1 to OpenCode sessions. Work is scoped to the project directory. Import is a button you press. Deleting a BB thread does not delete the OpenCode session.
 
 ## What you can do
 
@@ -41,7 +41,7 @@ Pick **OpenCode** and use it like Claude-in-BB.
 - Attach local files and images. One unsupported type fails the whole send. A slash plus an attachment is a normal prompt, not a command.
 
 **Timeline**
-- Streaming text and thinking. Live bash. File reads, edits/diffs, search/glob, web search/fetch. Todos as plan steps. Retries and errors show as themselves.
+- Streaming text and thinking. Live bash. File reads, edits/diffs, search/glob, web search/fetch. Retries and errors show as themselves. (OpenCode V2 has no todo tool, so there are no plan steps.)
 - Task / `@subagent` work is a nested card on the **parent**. Child thinking and prose stay off the parent. Open a Task child as its own thread when you choose; it is not auto-created.
 
 **Import**
@@ -49,7 +49,7 @@ Pick **OpenCode** and use it like Claude-in-BB.
 
 **Auth and health**
 - `opencode auth` on this machine, then send again.
-- Tools → OpenCode: binary, version, attach state, port. CLI below. Override the binary with `OPENCODE_BIN`.
+- Tools → OpenCode: binary, version, attach state, port. Reload restarts the shared service only when no OpenCode session is running. CLI below. Override the binary with `OPENCODE_BIN`.
 
 ## What is left out
 
@@ -63,12 +63,12 @@ Still true from V1, plus a few later cuts.
 - Native **iOS app** does not run plugin UI: no Agent chip, slash banner, or bubble Revert/Redo. Pick OpenCode, send as usual, long-press **Fork** or **Edit**, answer Allow/Deny on the native card, set default agent in Tools → OpenCode. The mobile PWA is the web app (compact composers use a banner above the prompt).
 - OpenCode TUI/desktop, MCP/LSP settings, session share, worktrees, background Task, and keybinds stay in OpenCode.
 - OpenChamber chrome is not this plugin (goals, multi-run, fusion, walkthrough, preview, relay, second transcript).
-- Pinned to OpenCode `1.18.x`. Out-of-window servers are rejected.
+- Pinned to OpenCode `2.x`. Out-of-window servers are rejected.
 
 ## Requirements
 
 - BB `>=0.39` / plugin SDK `>=0.4.16`
-- OpenCode `>=1.18.0 <1.19.0` (SDK pin `1.18.21`)
+- OpenCode `>=2.0.0 <3.0.0` (client pin `@opencode/client` `2.0.18`)
 
 ## Install
 

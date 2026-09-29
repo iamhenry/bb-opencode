@@ -849,7 +849,6 @@ export default async function plugin(bb: BbPluginApi) {
               `sdk: ${probe.sdkPin}`,
               probe.authError ? `auth: ${probe.authError}` : "",
               probe.error ? `error: ${probe.error}` : "",
-              `serveCwd: ${probe.serveCwd ?? "-"}`,
               probe.configSummary ? `config: ${probe.configSummary}` : "",
               probe.serveLog.length > 0
                 ? `serveLog:\n${probe.serveLog.join("\n")}`

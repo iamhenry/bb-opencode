@@ -42,7 +42,7 @@ describe("probe needsConfiguration (ISC-53)", () => {
           },
         });
         expect(result.spawned).toBe(false);
-        expect(result.error).toMatch(/serve exited/i);
+        expect(result.error).toMatch(/exited/i);
         expect(
           result.serveLog.some((line) => line.length > 0),
         ).toBe(false);

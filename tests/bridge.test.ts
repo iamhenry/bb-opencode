@@ -52,62 +52,6 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 30));
 }
 
-function seedCorrectedReply(fake: FakeOpenCode, body: Record<string, unknown>): void {
-  const messageID = body.messageID;
-  if (typeof messageID !== "string") throw new Error("test correction has no message ID");
-  fake.messages.set("ses_1", [
-    {
-      info: { id: messageID, role: "user" },
-      parts: [{ type: "text", text: "corrected" }],
-    },
-    {
-      info: { id: "assistant-corrected", role: "assistant" },
-      parts: [{ id: "part-corrected", type: "text", text: "corrected" }],
-    },
-  ]);
-}
-
-type SteerTerminalEvent = "idle" | "status-idle" | "error";
-
-async function emitSteerTerminalEvent(
-  kind: SteerTerminalEvent,
-): Promise<void> {
-  await ingestOpenCodeEvent(
-    kind === "idle"
-      ? { type: "session.idle", properties: { sessionID: "ses_1" } }
-      : kind === "status-idle"
-        ? {
-            type: "session.status",
-            properties: { sessionID: "ses_1", status: { type: "idle" } },
-          }
-        : {
-            type: "session.error",
-            properties: {
-              sessionID: "ses_1",
-              error: {
-                name: "MessageAbortedError",
-                data: { message: "aborted" },
-              },
-            },
-          },
-  );
-}
-
-const steerTerminalScenarios: Array<{
-  name: string;
-  events: SteerTerminalEvent[];
-  delayed: boolean;
-}> = [
-  { name: "zero abort terminals", events: [], delayed: false },
-  { name: "one abort terminal", events: ["idle"], delayed: false },
-  {
-    name: "extra abort terminals",
-    events: ["error", "status-idle", "idle", "error"],
-    delayed: false,
-  },
-  { name: "delayed abort terminals", events: ["error", "idle"], delayed: true },
-];
-
 describe("provider bridge", () => {
   const messages: Array<Record<string, unknown>> = [];
 
@@ -146,6 +90,30 @@ describe("provider bridge", () => {
     send({ id: "turn", method: "turn/start", params: turnParams() });
     await flush();
   }
+
+  it("steers a live turn natively without aborting or switching agent", async () => {
+    const fake = installFake();
+    await startLiveTurn(fake);
+    const before = fake.calls.promptAsync;
+    send({
+      id: "steer",
+      method: "turn/steer",
+      params: turnParams({
+        expectedTurnId: "turn_1",
+        input: [{ type: "text", text: "change course", mentions: [] }],
+        options: { ...fullOptions, providerOptions: { steerDelivery: "inject" } },
+      }),
+    });
+    await flush();
+    expect(fake.calls.abort).toBe(0);
+    expect(fake.calls.promptAsync).toBe(before + 1);
+    expect(fake.lastPrompt?.body).toMatchObject({
+      delivery: "steer",
+      parts: [{ type: "text", text: "change course" }],
+    });
+    expect(fake.lastPrompt?.body).not.toHaveProperty("agent");
+    expect(String(fake.lastPrompt?.body.system)).toContain("[BB safety]");
+  });
 
   it("keeps omitted instructions but applies explicit updates", async () => {
     const fake = installFake();
@@ -232,105 +200,6 @@ describe("provider bridge", () => {
     );
   });
 
-  it("interrupts and restarts a live legacy prompt for steering", async () => {
-    const fake = installFake();
-    fake.emitIdleAfterPrompt = false;
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({ input: [{ type: "text", text: "go", mentions: [] }] }),
-    });
-    await flush();
-    const asyncPrompts = fake.calls.promptAsync;
-    const operations: string[] = [];
-    const steerBodies: Record<string, unknown>[] = [];
-    fake.runningIds.add("ses_1");
-    fake.promptImpl = async (_id, body) => {
-      steerBodies.push(body);
-      operations.push(body.noReply === true ? "persist" : "replay");
-    };
-    fake.abortImpl = async () => {
-      operations.push("abort");
-      setTimeout(() => {
-        operations.push("released");
-        fake.runningIds.delete("ses_1");
-      }, 5);
-    };
-    messages.length = 0;
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_steer",
-        input: [
-          { type: "text", text: "change course", mentions: [] },
-          {
-            type: "localImage",
-            path: "/tmp/shot.png",
-            name: "shot.png",
-            mentions: [],
-          },
-        ],
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    await flush();
-    expect(fake.calls.prompt).toBe(1);
-    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
-    expect(steerBodies).toHaveLength(2);
-    const [persisted, replayed] = steerBodies;
-    expect(persisted).toEqual(
-      expect.objectContaining({
-        agent: "build",
-        messageID: expect.stringMatching(/^msg_/),
-        noReply: true,
-        parts: [
-          expect.objectContaining({
-            id: expect.stringMatching(/^prt_/),
-            type: "text",
-            text: "change course",
-          }),
-          expect.objectContaining({
-            id: expect.stringMatching(/^prt_/),
-            type: "file",
-            mime: "image/png",
-            filename: "shot.png",
-            url: "file:///tmp/shot.png",
-          }),
-        ],
-      }),
-    );
-    expect(replayed).toEqual(
-      expect.objectContaining({
-        messageID: persisted.messageID,
-        parts: persisted.parts,
-      }),
-    );
-    expect(replayed).not.toHaveProperty("noReply");
-    expect(fake.calls.abort).toBe(1);
-    expect(fake.lastAbort).toEqual({ id: "ses_1", directory: "/tmp/a" });
-    expect(operations).toEqual(["persist", "abort", "released", "replay"]);
-    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as { deltas?: Array<Record<string, unknown>> })
-            ?.deltas ?? []),
-      ),
-    ).toContainEqual({
-      kind: "input.accepted",
-      clientRequestId: "req_steer",
-    });
-  });
-
   it("queues turn/steer until the live turn settles", async () => {
     const fake = installFake();
     fake.emitIdleAfterPrompt = false;
@@ -382,132 +251,6 @@ describe("provider bridge", () => {
     expect(fake.calls.prompt).toBe(persistedPrompts);
   });
 
-  it("holds settlement until a live correction is persisted", async () => {
-    const fake = installFake();
-    fake.emitIdleAfterPrompt = false;
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({ id: "turn", method: "turn/start", params: turnParams() });
-    await flush();
-
-    const readMessages = fake.client.sessionMessages.bind(fake.client);
-    let releaseRead: (() => void) | undefined;
-    fake.client.sessionMessages = (id, limit, before) =>
-      new Promise((resolve) => {
-        releaseRead = () => {
-          fake.client.sessionMessages = readMessages;
-          void readMessages(id, limit, before).then(resolve);
-        };
-      });
-    let releasePersist: (() => void) | undefined;
-    fake.promptImpl = async (_id, body) => {
-      if (body.noReply === true) {
-        await new Promise<void>((resolve) => {
-          releasePersist = resolve;
-        });
-        return;
-      }
-      seedCorrectedReply(fake, body);
-    };
-
-    messages.length = 0;
-    const settling = ingestOpenCodeEvent({
-      type: "session.idle",
-      properties: { sessionID: "ses_1" },
-    });
-    await flush();
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_persisting",
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-    releaseRead?.();
-    await settling;
-    await ingestOpenCodeEvent({
-      type: "session.idle",
-      properties: { sessionID: "ses_1" },
-    });
-
-    let deltas = messages.flatMap(
-      (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? []),
-    );
-    expect(deltas.some((delta) => delta.kind === "input.accepted")).toBe(false);
-    expect(deltas.some((delta) => delta.kind === "turn.boundary")).toBe(false);
-
-    releasePersist?.();
-    await flush();
-    deltas = messages.flatMap(
-      (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? []),
-    );
-    expect(deltas).toContainEqual({
-      kind: "input.accepted",
-      clientRequestId: "req_persisting",
-    });
-    expect(deltas).toContainEqual(
-      expect.objectContaining({ kind: "turn.boundary", status: "completed" }),
-    );
-  });
-
-  it("resumes settlement without accepting a correction that fails to persist", async () => {
-    const fake = installFake();
-    fake.emitIdleAfterPrompt = false;
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({ id: "turn", method: "turn/start", params: turnParams() });
-    await flush();
-    const asyncPrompts = fake.calls.promptAsync;
-    fake.promptImpl = async (_id, body) => {
-      if (body.noReply !== true) return;
-      await ingestOpenCodeEvent({
-        type: "session.idle",
-        properties: { sessionID: "ses_1" },
-      });
-      throw new Error("persist failed");
-    };
-
-    messages.length = 0;
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_persist_failure",
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-
-    const deltas = messages.flatMap(
-      (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? []),
-    );
-    expect(deltas.some((delta) => delta.kind === "input.accepted")).toBe(false);
-    expect(deltas).toContainEqual(
-      expect.objectContaining({
-        kind: "provider.warning",
-        summary: "Could not persist correction",
-        details: "persist failed",
-      }),
-    );
-    expect(deltas).toContainEqual(
-      expect.objectContaining({ kind: "turn.boundary", status: "completed" }),
-    );
-    expect(fake.calls.promptAsync).toBe(asyncPrompts);
-  });
-
   it("queues during initial prompt submission", async () => {
     const fake = installFake();
     let releaseInitial: (() => void) | undefined;
@@ -544,186 +287,6 @@ describe("provider bridge", () => {
     expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
   });
 
-  it("reconciles corrected completion observed before replay returns", async () => {
-    const fake = installFake();
-    await startLiveTurn(fake);
-    fake.runningIds.add("ses_1");
-    fake.abortImpl = async () => {
-      fake.runningIds.delete("ses_1");
-    };
-    let releaseReplay: (() => void) | undefined;
-    let completionBeforeReplayReturns = false;
-    fake.promptImpl = async (_id, body) => {
-      if (body.noReply === true) return;
-      seedCorrectedReply(fake, body);
-      await ingestOpenCodeEvent({
-        type: "session.idle",
-        properties: { sessionID: "ses_1" },
-      });
-      completionBeforeReplayReturns = true;
-      await new Promise<void>((resolve) => {
-        releaseReplay = resolve;
-      });
-    };
-    messages.length = 0;
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_steer",
-        input: [{ type: "text", text: "nudge", mentions: [] }],
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-    expect(completionBeforeReplayReturns).toBe(true);
-    expect(fake.calls.promptAsync).toBe(2);
-    expect(turnBoundaries()).toEqual([]);
-    expect(threadDeltas()).toContainEqual({
-      kind: "input.accepted",
-      clientRequestId: "req_steer",
-    });
-
-    releaseReplay?.();
-    await flush();
-    expect(turnBoundaries()).toContainEqual(
-      expect.objectContaining({ kind: "turn.boundary", status: "completed" }),
-    );
-  });
-
-  it("fails the live turn when the post-abort restart fails", async () => {
-    const fake = installFake();
-    fake.emitIdleAfterPrompt = false;
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({ id: "turn", method: "turn/start", params: turnParams() });
-    await flush();
-    fake.runningIds.add("ses_1");
-    fake.abortImpl = async () => {
-      fake.runningIds.delete("ses_1");
-    };
-    let rejectSteer: ((error: Error) => void) | undefined;
-    fake.promptImpl = (_id, body) =>
-      body.noReply === true
-        ? Promise.resolve()
-        : new Promise<void>((_resolve, reject) => {
-            rejectSteer = reject;
-          });
-    messages.length = 0;
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_steer",
-        input: [{ type: "text", text: "nudge", mentions: [] }],
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-    expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
-    expect(
-      messages
-        .flatMap(
-          (message) =>
-            ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ??
-              []),
-        )
-        .some((delta) => delta.kind === "input.accepted"),
-    ).toBe(true);
-    await ingestOpenCodeEvent({
-      type: "session.idle",
-      properties: { sessionID: "ses_1" },
-    });
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as { deltas?: Array<{ kind: string }> })?.deltas ?? []),
-      ).some((delta) => delta.kind === "turn.boundary"),
-    ).toBe(false);
-
-    rejectSteer?.(new Error("steer failed"));
-    await flush();
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as { deltas?: Array<Record<string, unknown>> })
-            ?.deltas ?? []),
-      ),
-    ).toContainEqual(
-      expect.objectContaining({
-        kind: "turn.boundary",
-        status: "failed",
-        error: { message: "Could not start follow-up: steer failed" },
-      }),
-    );
-  });
-
-  for (const scenario of steerTerminalScenarios) {
-    it(`completes corrected steering with ${scenario.name}`, async () => {
-      const fake = installFake();
-      await startLiveTurn(fake);
-      fake.runningIds.add("ses_1");
-
-      let releaseReplay: (() => void) | undefined;
-      fake.promptImpl = async (_id, body) => {
-        if (body.noReply === true) return;
-        seedCorrectedReply(fake, body);
-        if (scenario.delayed) {
-          await new Promise<void>((resolve) => {
-            releaseReplay = resolve;
-          });
-        }
-      };
-      fake.abortImpl = async () => {
-        fake.runningIds.delete("ses_1");
-        if (scenario.delayed) {
-          setTimeout(() => {
-            void (async () => {
-              for (const event of scenario.events) {
-                await emitSteerTerminalEvent(event);
-              }
-              releaseReplay?.();
-            })();
-          }, 5);
-          return;
-        }
-        for (const event of scenario.events) {
-          await emitSteerTerminalEvent(event);
-        }
-      };
-
-      messages.length = 0;
-      send({
-        id: "steer",
-        method: "turn/steer",
-        params: turnParams({
-          expectedTurnId: "turn_1",
-          options: {
-            ...fullOptions,
-            providerOptions: { agent: "build", steerDelivery: "inject" },
-          },
-        }),
-      });
-      await flush();
-      await flush();
-
-      expect(turnBoundaries()).toContainEqual(
-        expect.objectContaining({ kind: "turn.boundary", status: "completed" }),
-      );
-      expect(
-        turnBoundaries().some((boundary) => boundary.status !== "completed"),
-      ).toBe(false);
-    });
-  }
-
   it("tracks steer work that starts without a live turn", async () => {
     const fake = installFake();
     fake.emitIdleAfterPrompt = false;
@@ -753,76 +316,6 @@ describe("provider bridge", () => {
             ?.deltas ?? []),
       ),
     ).toContainEqual(expect.objectContaining({ kind: "turn.boundary", status: "completed" }));
-  });
-
-  it("does not restart work when stop overlaps steer submission", async () => {
-    const fake = installFake();
-    fake.emitIdleAfterPrompt = false;
-    send({ id: "start", method: "thread/start", params: sessionParams() });
-    await flush();
-    send({ id: "turn", method: "turn/start", params: turnParams() });
-    await flush();
-
-    const asyncPrompts = fake.calls.promptAsync;
-    let releaseSteer: (() => void) | undefined;
-    fake.promptImpl = () =>
-      new Promise<void>((resolve) => {
-        releaseSteer = resolve;
-      });
-    send({
-      id: "steer",
-      method: "turn/steer",
-      params: turnParams({
-        expectedTurnId: "turn_1",
-        clientRequestId: "req_stop_race",
-        options: {
-          ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "inject" },
-        },
-      }),
-    });
-    await flush();
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as { deltas?: Array<Record<string, unknown>> })
-            ?.deltas ?? []),
-      ).some(
-        (delta) =>
-          delta.kind === "input.accepted" &&
-          delta.clientRequestId === "req_stop_race",
-      ),
-    ).toBe(false);
-    messages.length = 0;
-    send({
-      id: "stop",
-      method: "thread/stop",
-      params: {
-        threadId: "thr_1",
-        providerThreadId: "ses_1",
-        intent: "interrupt",
-      },
-    });
-    await flush();
-    releaseSteer?.();
-    await flush();
-
-    expect(fake.calls.promptAsync).toBe(asyncPrompts);
-    const deltas = messages.flatMap(
-      (message) =>
-        ((message.params as { deltas?: Array<Record<string, unknown>> })?.deltas ?? []),
-    );
-    expect(
-      deltas.filter(
-        (delta) => delta.kind === "turn.boundary" && delta.status === "interrupted",
-      ),
-    ).toHaveLength(1);
-    expect(
-      deltas.some(
-        (delta) => delta.kind === "turn.boundary" && delta.status === "completed",
-      ),
-    ).toBe(false);
-    expect(deltas.filter((delta) => delta.kind === "input.accepted")).toHaveLength(0);
   });
 
   it("cancels corrected work when stop overlaps replay", async () => {
@@ -1013,7 +506,7 @@ describe("provider bridge", () => {
           { name: "TimeoutError" },
         );
       }
-      return { healthy: true, version: "1.18.21" };
+      return { healthy: true, version: "2.0.18" };
     };
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
@@ -1210,7 +703,7 @@ describe("provider bridge", () => {
         // Warm cached probe stalls (attempt 1 of the shared budget).
         throw new Error("OpenCode serve did not answer health (timed out)");
       }
-      return { healthy: true, version: "1.18.21" };
+      return { healthy: true, version: "2.0.18" };
     };
     resetBridgeForTests({
       acquire: () => fake.client,
@@ -1256,7 +749,7 @@ describe("provider bridge", () => {
     fake.client.health = async () => {
       healthCalls += 1;
       if (healthCalls === 1) {
-        return { healthy: true, version: "1.18.21" };
+        return { healthy: true, version: "2.0.18" };
       }
       // Warm cached probe: auth failure wrapped in the same envelope.
       throw new Error("OpenCode serve did not answer health (OpenCode health failed: 401)");
@@ -1320,7 +813,7 @@ describe("provider bridge", () => {
       if (healthCalls <= 2) {
         throw new Error("OpenCode serve did not answer health (timed out)");
       }
-      return { healthy: true, version: "1.18.21" };
+      return { healthy: true, version: "2.0.18" };
     };
     resetBridgeForTests({
       acquire: () => {
@@ -1657,7 +1150,7 @@ describe("provider bridge", () => {
       if (healthCalls === 1) {
         throw new Error("OpenCode serve did not answer health (timed out)");
       }
-      return { healthy: true, version: "1.18.21" };
+      return { healthy: true, version: "2.0.18" };
     };
     let attachCalls = 0;
     resetBridgeForTests({
@@ -3328,60 +2821,6 @@ describe("provider bridge", () => {
     expect(texts).toContain("SMOKE_OK");
   });
 
-  it("keeps inherited variant when the last-user snapshot fails", async () => {
-    const fake = installFake();
-    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
-    fake.messages.set("ses_1", [
-      {
-        info: {
-          id: "u1",
-          role: "user",
-          agent: "explore",
-          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
-        },
-        parts: [{ type: "text", text: "explore" }],
-      },
-    ]);
-    send({
-      id: "start",
-      method: "thread/start",
-      params: sessionParams({
-        options: {
-          ...fullOptions,
-          providerOptions: { adoptSessionId: "ses_1" },
-        },
-      }),
-    });
-    await flush();
-    const inner = fake.client.sessionMessages.bind(fake.client);
-    let failSeed = true;
-    fake.client.sessionMessages = async (id) => {
-      if (failSeed) {
-        failSeed = false;
-        throw new Error("snapshot down");
-      }
-      return inner(id);
-    };
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({
-        input: [{ type: "text", text: "continue", mentions: [] }],
-        options: {
-          ...fullOptions,
-          model: "xai/grok-4.6",
-          reasoningLevel: "medium",
-          providerOptions: { agent: "build" },
-        },
-      }),
-    });
-    await flush();
-    expect(fake.lastPrompt?.body).toMatchObject({
-      agent: "explore",
-      variant: "high",
-    });
-  });
-
   it("recovers a title when OpenCode ensureTitle never lands", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -4764,98 +4203,6 @@ describe("provider bridge", () => {
     await flush();
     expect(fake.calls.prompt).toBe(0);
     expect(fake.calls.promptAsync).toBe(0);
-  });
-
-  it("follow-up on a subagent child keeps that agent's model", async () => {
-    const fake = installFake();
-    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
-    fake.messages.set("ses_1", [
-      {
-        info: {
-          id: "u1",
-          role: "user",
-          agent: "explore",
-          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
-        },
-        parts: [{ type: "text", text: "explore" }],
-      },
-    ]);
-    send({
-      id: "start",
-      method: "thread/start",
-      params: sessionParams({
-        options: {
-          ...fullOptions,
-          providerOptions: { adoptSessionId: "ses_1" },
-        },
-      }),
-    });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({
-        input: [{ type: "text", text: "continue", mentions: [] }],
-        options: {
-          ...fullOptions,
-          model: "xai/grok-4.6",
-          reasoningLevel: "medium",
-          providerOptions: { agent: "build" },
-        },
-      }),
-    });
-    await flush();
-    expect(fake.lastPrompt?.body).toMatchObject({
-      agent: "explore",
-      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
-      variant: "high",
-    });
-  });
-
-  it("keeps a subagent from an assistant-only bounded history", async () => {
-    const fake = installFake();
-    fake.sessions.set("ses_1", { id: "ses_1", directory: "/tmp/a" });
-    fake.messages.set("ses_1", [
-      {
-        info: {
-          id: "a1",
-          role: "assistant",
-          agent: "explore",
-          model: { providerID: "openai", modelID: "gpt-5.6-luna", variant: "high" },
-        },
-        parts: [{ type: "text", text: "working" }],
-      },
-    ]);
-    send({
-      id: "start",
-      method: "thread/start",
-      params: sessionParams({
-        options: {
-          ...fullOptions,
-          providerOptions: { adoptSessionId: "ses_1" },
-        },
-      }),
-    });
-    await flush();
-    send({
-      id: "turn",
-      method: "turn/start",
-      params: turnParams({
-        input: [{ type: "text", text: "continue", mentions: [] }],
-        options: {
-          ...fullOptions,
-          model: "xai/grok-4.6",
-          reasoningLevel: "medium",
-          providerOptions: { agent: "build" },
-        },
-      }),
-    });
-    await flush();
-    expect(fake.lastPrompt?.body).toMatchObject({
-      agent: "explore",
-      model: { providerID: "openai", modelID: "gpt-5.6-luna" },
-      variant: "high",
-    });
   });
 
   it("follow-up on a bound build child uses its spawned custom model", async () => {
