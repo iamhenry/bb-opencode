@@ -105,8 +105,8 @@ export default experimental_defineHostEntry({
         input.sessionId,
       );
     },
-    async listAgents(_input, context) {
-      return handleListAgents(context.experimental_paths.dataDir);
+    async listAgents(input, context) {
+      return handleListAgents(context.experimental_paths.dataDir, input.directory);
     },
     async listCommands(input, context) {
       return handleListCommands(

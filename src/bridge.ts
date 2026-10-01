@@ -2594,6 +2594,22 @@ async function resolveSelectableAgent(args: {
   const agents = (await args.active.agents(
     boundDirectory(args.sessionId),
   )) as OpenCodeAgent[];
+  if (
+    !args.requested ||
+    agents.some(
+      (agent) => agent.name === args.requested && agent.mode === "subagent",
+    )
+  ) {
+    const session = await args.active.getSession(args.sessionId);
+    if (
+      session.parentID &&
+      session.agent &&
+      (!args.requested || args.requested === session.agent)
+    ) {
+      // Keep the child's agent without ignoring an explicit model/reasoning pick.
+      return { ok: true, agent: session.agent, inheritSession: false };
+    }
+  }
   // An empty list means OpenCode's workspace was still booting, not that the
   // agent is unknown. Trust the picked agent and let OpenCode validate it.
   if (agents.length === 0) {

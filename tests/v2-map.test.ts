@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createV2EventState, translateV2Event, v1Messages } from "../src/v2-map.js";
+import { createV2EventState, translateV2Event, v1Messages, v1Session } from "../src/v2-map.js";
 
 // Event shapes are the ones OpenCode 2.0.18 emitted in the live BB smokes.
 const ses = "ses_1";
@@ -9,6 +9,24 @@ function translate(events: Array<{ type: string; data: Record<string, unknown> }
   const state = createV2EventState();
   return events.flatMap((event) => translateV2Event(state, { id: "e", created: 1, ...event }));
 }
+
+describe("V2 session translation", () => {
+  it("preserves current child settings without message history", () => {
+    const session = v1Session({
+      id: "ses_child",
+      parentID: "ses_parent",
+      location: { directory: "/project" },
+      agent: "smoke-child",
+      model: { providerID: "anthropic", id: "claude-haiku-4-5", variant: "high" },
+    });
+    expect(session).toMatchObject({
+      parentID: "ses_parent",
+      directory: "/project",
+      agent: "smoke-child",
+      model: { providerID: "anthropic", modelID: "claude-haiku-4-5", variant: "high" },
+    });
+  });
+});
 
 describe("V2 event translation", () => {
   it("streams assistant text under a stable per-message id", () => {

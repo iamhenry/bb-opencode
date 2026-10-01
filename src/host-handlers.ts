@@ -179,10 +179,10 @@ export async function handleListCommands(
   };
 }
 
-export async function handleListAgents(dataDir: string) {
+export async function handleListAgents(dataDir: string, directory?: string) {
   const attached = await attachOrSpawn({ dataDir });
   const client = acquire(attached.url);
-  const agents = await client.agents();
+  const agents = await client.agents(directory);
   return {
     agents: agents.map((agent) => ({
       name: agent.name,
@@ -209,10 +209,14 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
     title: session.title ?? null,
     directory: session.directory ?? null,
     parentID: session.parentID ?? null,
-    lastUserAgent: lastAgent(messages) ?? null,
-    model: lastModelIdFromMessages(messages) ?? null,
+    lastUserAgent: session.agent ?? lastAgent(messages) ?? null,
+    model: session.model
+      ? `${session.model.providerID}/${session.model.modelID}`
+      : lastModelIdFromMessages(messages) ?? null,
     reasoningLevel:
-      bbReasoningLevelForVariant(lastVariantFromMessages(messages)) ?? null,
+      bbReasoningLevelForVariant(
+        session.model ? session.model.variant : lastVariantFromMessages(messages),
+      ) ?? null,
   };
 }
 

@@ -337,11 +337,14 @@ export function v1Session(raw: unknown): {
   directory?: string;
   parentID?: string;
   projectID?: string;
+  agent?: string;
+  model?: { providerID: string; modelID: string; variant?: string };
   time?: { created?: number; updated?: number };
   revert?: unknown;
 } {
   const s = rec(raw);
   const location = rec(s.location);
+  const model = rec(s.model);
   const time = rec(s.time);
   const revert = s.revert && typeof s.revert === "object" ? rec(s.revert) : undefined;
   return {
@@ -350,6 +353,16 @@ export function v1Session(raw: unknown): {
     ...(str(location.directory) ? { directory: location.directory as string } : {}),
     ...(str(s.parentID) ? { parentID: s.parentID as string } : {}),
     ...(str(s.projectID) ? { projectID: s.projectID as string } : {}),
+    ...(str(s.agent) ? { agent: s.agent as string } : {}),
+    ...(str(model.providerID) && str(model.id)
+      ? {
+          model: {
+            providerID: model.providerID as string,
+            modelID: model.id as string,
+            ...(str(model.variant) ? { variant: model.variant as string } : {}),
+          },
+        }
+      : {}),
     time: { created: time.created as number, updated: time.updated as number },
     ...(revert ? { revert: { ...revert, messageID: revert.messageID ?? revert.to } } : {}),
   };

@@ -168,7 +168,11 @@ export const hostContract = defineRpcContract({
       .strict(),
   },
   listAgents: {
-    input: z.object({}).strict(),
+    input: z
+      .object({
+        directory: z.string().min(1).optional(),
+      })
+      .strict(),
     output: z
       .object({
         agents: z.array(

@@ -399,23 +399,17 @@ export default async function plugin(bb: BbPluginApi) {
             error: null,
           };
         }
-        const agents = await loadAgents(host, hostId);
         const sessionId = await resolveSessionId(
           bb,
           threadId,
           thread.providerThreadId,
         );
-        const lastUserAgent = sessionId
-          ? (
-              await host.call(
-                "sessionSnapshot",
-                { sessionId },
-                { hostId },
-              )
-            ).lastUserAgent
+        const snapshot = sessionId
+          ? await host.call("sessionSnapshot", { sessionId }, { hostId })
           : null;
+        const agents = await loadAgents(host, hostId, snapshot?.directory ?? undefined);
         const hydrated = hydratePickerAgent({
-          lastUserAgent: lastUserAgent ?? undefined,
+          lastUserAgent: snapshot?.lastUserAgent ?? undefined,
           agents,
         });
         const options = listSelectablePrimaries(agents).map((agent) => ({
@@ -1205,6 +1199,12 @@ async function spawnBoundTaskChild(
       title: taskChildThreadTitle(args.title),
       ...(args.model ? { model: args.model } : {}),
       ...(args.reasoningLevel ? { reasoningLevel: args.reasoningLevel } : {}),
+      // Native session settings are adoption seeds, not project preferences.
+      executionInputSources: {
+        providerId: "explicit",
+        ...(args.model ? { model: "explicit" as const } : {}),
+        ...(args.reasoningLevel ? { reasoningLevel: "explicit" as const } : {}),
+      },
       input: taskChildBindInput(args.bindInput),
       environment: args.environmentId
         ? { type: "reuse", environmentId: args.environmentId }
@@ -1441,6 +1441,7 @@ async function loadComposerChrome(
     let threadProviderId: string | null = null;
     let environmentId: string | null = null;
     let lastUserAgent: string | undefined;
+    let directory: string | undefined;
     if (args.threadId) {
       const thread = threadFields(await bb.sdk.threads.get({ threadId: args.threadId }));
       threadProviderId = thread.providerId;
@@ -1456,8 +1457,9 @@ async function loadComposerChrome(
           "sessionSnapshot",
           { sessionId },
           { hostId },
-        )) as { lastUserAgent: string | null };
+        )) as { lastUserAgent: string | null; directory: string | null };
         lastUserAgent = snapshot.lastUserAgent ?? undefined;
+        directory = snapshot.directory ?? undefined;
       }
     }
     let projectDefaultProviderId: string | null = null;
@@ -1494,7 +1496,7 @@ async function loadComposerChrome(
     }
     const hostId = await resolveHostId(bb, environmentId);
     const listed = hostId
-      ? await loadAgents(host, hostId).catch(() => fallbackSelectableAgents())
+      ? await loadAgents(host, hostId, directory).catch(() => fallbackSelectableAgents())
       : fallbackSelectableAgents();
     const agents =
       listSelectablePrimaries(listed).length > 0
@@ -1544,8 +1546,9 @@ function fallbackSelectableAgents(): OpenCodeAgent[] {
 async function loadAgents(
   host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
   hostId: string,
+  directory?: string,
 ): Promise<OpenCodeAgent[]> {
-  const listed = (await host.call("listAgents", {}, { hostId })) as {
+  const listed = (await host.call("listAgents", { directory }, { hostId })) as {
     agents: Array<{
       name: string;
       mode: string | null;

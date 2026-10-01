@@ -20,6 +20,8 @@ export interface OpenCodeSession {
   directory?: string;
   parentID?: string;
   projectID?: string;
+  agent?: string;
+  model?: { providerID: string; modelID: string; variant?: string };
   time?: { created?: number; updated?: number };
   revert?: unknown;
 }
