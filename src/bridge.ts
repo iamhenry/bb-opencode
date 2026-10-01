@@ -2591,7 +2591,14 @@ async function resolveSelectableAgent(args: {
   | { ok: true; agent: string; inheritSession: boolean }
   | { ok: false; reason: string }
 > {
-  const agents = (await args.active.agents()) as OpenCodeAgent[];
+  const agents = (await args.active.agents(
+    boundDirectory(args.sessionId),
+  )) as OpenCodeAgent[];
+  // An empty list means OpenCode's workspace was still booting, not that the
+  // agent is unknown. Trust the picked agent and let OpenCode validate it.
+  if (agents.length === 0) {
+    return { ok: true, agent: args.requested || "build", inheritSession: false };
+  }
   // ponytail: skip session.messages before prompt; this store wedges serve (~11GB RSS)
   return resolveContinueAgent({
     requested: args.requested,

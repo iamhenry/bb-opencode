@@ -65,7 +65,7 @@ export interface OpenCodeClient {
     id: string,
     body?: { messageID?: string },
   ): Promise<OpenCodeSession>;
-  agents(): Promise<OpenCodeAgentInfo[]>;
+  agents(directory?: string): Promise<OpenCodeAgentInfo[]>;
   providers(
     directory?: string,
   ): Promise<{ providers: Array<{ id: string; models?: unknown }> }>;
@@ -447,8 +447,8 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
         }),
       );
     },
-    async agents() {
-      const result = (await sdk.agent.list()) as unknown as { data?: Rec[] };
+    async agents(directory) {
+      const result = (await sdk.agent.list(location(directory) as never)) as unknown as { data?: Rec[] };
       return (result.data ?? []).map((agent) => ({
         name: String(agent.id),
         mode: typeof agent.mode === "string" ? agent.mode : undefined,

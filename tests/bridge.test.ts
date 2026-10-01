@@ -4337,6 +4337,27 @@ describe("provider bridge", () => {
     expect(fake.calls.prompt).toBe(0);
   });
 
+  it("sends with the picked agent when OpenCode returns no agents yet, asking the thread's folder", async () => {
+    const fake = installFake();
+    const askedDirs: Array<string | undefined> = [];
+    fake.client.agents = async (directory?: string) => {
+      askedDirs.push(directory);
+      return [];
+    };
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        input: [{ type: "text", text: "hello", mentions: [] }],
+        options: { ...fullOptions, providerOptions: { agent: "build" } },
+      }),
+    });
+    await flush();
+    expect(askedDirs).toEqual(["/tmp/a"]);
+    expect(fake.calls.promptAsync).toBe(1);
+    expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
+  });
+
   it("pins BB bare model ids as provider/model on the first prompt", async () => {
     const fake = installFake();
     fake.client.providers = async () => ({
