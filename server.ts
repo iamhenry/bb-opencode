@@ -93,7 +93,6 @@ const stamps = createAgentStampStore();
 const nextAdopts = createNextAdoptStore();
 const nextAgents = createNextAgentStore();
 const seenThreadIds = new Set<string>();
-let steerActiveThreadOnEnter = false;
 const DEFAULT_AGENT_KEY = "default-agent";
 const taskPollTimers = ((globalThis as {
   __ocTaskPollTimers?: Set<ReturnType<typeof setInterval>>;
@@ -106,24 +105,6 @@ export default async function plugin(bb: BbPluginApi) {
     typeof storedAgent === "string" && storedAgent.trim()
       ? storedAgent.trim()
       : "build";
-  const refreshSteerSetting = async () => {
-    try {
-      const config = await bb.sdk.system.config();
-      steerActiveThreadOnEnter = Boolean(
-        config.generalSettings.steerActiveThreadOnEnter,
-      );
-    } catch {
-      steerActiveThreadOnEnter = false;
-    }
-  };
-  await refreshSteerSetting();
-  bb.sdk.subscribe({
-    event: "system:config-changed",
-    callback: () => {
-      void refreshSteerSetting();
-    },
-  });
-
   bb.providers.register({
     id: PROVIDER_ID,
     displayName: PROVIDER_DISPLAY_NAME,
@@ -177,7 +158,6 @@ export default async function plugin(bb: BbPluginApi) {
             }
           : {}),
         permissionMode: ctx.permissionMode,
-        steerDelivery: steerActiveThreadOnEnter ? "inject" : "queue",
       };
     },
   });

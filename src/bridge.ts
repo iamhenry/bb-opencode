@@ -1377,10 +1377,6 @@ function providerOptions(options: unknown): Record<string, unknown> {
   return record.providerOptions as Record<string, unknown>;
 }
 
-function steerDeliveryOf(options: unknown): "inject" | "queue" {
-  return providerOptions(options).steerDelivery === "inject" ? "inject" : "queue";
-}
-
 function permissionModeOf(options: unknown): string | undefined {
   if (!options || typeof options !== "object") return undefined;
   const mode = (options as { permissionMode?: unknown }).permissionMode;
@@ -3730,11 +3726,8 @@ async function runSteer(args: {
   };
   const present = liveTurns.get(args.threadId);
   const live = usableSteerLive(args.threadId, args.sessionId);
-  if (steerDeliveryOf(args.options) === "queue" && live) {
-    live.pendingPrompts.push(built.body);
-    acknowledgeInput();
-    return;
-  }
+  // turn/steer means the sender chose steer: always inject. "Queue" is a
+  // separate BB message mode that BB delivers as a new turn after idle.
   if (!live) {
     if (present) return;
     await runPrompt(args);

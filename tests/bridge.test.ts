@@ -200,7 +200,7 @@ describe("provider bridge", () => {
     );
   });
 
-  it("queues turn/steer until the live turn settles", async () => {
+  it("injects turn/steer into the live turn immediately", async () => {
     const fake = installFake();
     fake.emitIdleAfterPrompt = false;
     send({ id: "start", method: "thread/start", params: sessionParams() });
@@ -221,12 +221,12 @@ describe("provider bridge", () => {
         ],
         options: {
           ...fullOptions,
-          providerOptions: { agent: "build", steerDelivery: "queue" },
+          providerOptions: { agent: "build" },
         },
       }),
     });
     await flush();
-    expect(fake.calls.promptAsync).toBe(asyncPrompts);
+    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
     expect(messages).toContainEqual(expect.objectContaining({ id: "steer", result: {} }));
     expect(
       messages.flatMap(
@@ -236,14 +236,9 @@ describe("provider bridge", () => {
       ),
     ).toContainEqual({ kind: "input.accepted", clientRequestId: "req_queue" });
 
-    await ingestOpenCodeEvent({
-      type: "session.idle",
-      properties: { sessionID: "ses_1" },
-    });
-    expect(fake.calls.promptAsync).toBe(asyncPrompts + 1);
     expect(fake.lastPrompt?.body).toEqual(
       expect.objectContaining({
-        messageID: expect.stringMatching(/^msg_/),
+        delivery: "steer",
         parts: [{ type: "text", text: "after this, update the README" }],
       }),
     );
