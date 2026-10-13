@@ -3,6 +3,10 @@ export function OpenCodeProviderIcon({ className }: { className?: string }) {
   return (
     <svg
       viewBox="-72 -42 384 384"
+      // Intrinsic size: without it iOS WebKit sizes BB's `min-w-max` icon slot
+      // at the 300px SVG default and squeezes the model label to nothing (#37).
+      width="16"
+      height="16"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
