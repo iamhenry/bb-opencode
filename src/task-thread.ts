@@ -36,15 +36,23 @@ export function isOpenCodeParentThread(thread: {
   );
 }
 
+/** OpenCode prepends this to a Task child's first prompt (core tool/plugin/subagent.ts). */
+const SUBAGENT_PREFIX = "You are a subagent spawned by another session.\n";
+
+export function stripSubagentPrefix(text: string): string {
+  return (text.startsWith(SUBAGENT_PREFIX) ? text.slice(SUBAGENT_PREFIX.length) : text).trim();
+}
+
 export function taskChildBindInput(prompt?: string): Array<{
   type: "text";
   text: string;
   mentions: [];
 }> {
+  const text = prompt ? stripSubagentPrefix(prompt) : "";
   return [
     {
       type: "text",
-      text: prompt ?? TASK_CHILD_BIND_TEXT,
+      text: text || TASK_CHILD_BIND_TEXT,
       mentions: [],
     },
   ];
