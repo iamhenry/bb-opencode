@@ -522,6 +522,7 @@ export default async function plugin(bb: BbPluginApi) {
           model: snapshot.model,
           agent: snapshot.lastUserAgent,
           reasoningLevel: snapshot.reasoningLevel,
+          bindInput: snapshot.firstUserText ?? undefined,
         });
         await bb.storage.kv.delete(
           pendingAdoptStorageKey({
@@ -1124,6 +1125,7 @@ type SessionSnapshot = {
   model: string | null;
   lastUserAgent: string | null;
   reasoningLevel: BbReasoningLevel | null;
+  firstUserText?: string | null;
 };
 
 const spawningTaskChildren = new Set<string>();
@@ -1261,7 +1263,8 @@ async function ensureRunningTaskChildThreads(
         model: snapshot.model,
         agent: snapshot.lastUserAgent,
         reasoningLevel: snapshot.reasoningLevel,
-        bindInput: live.prompt ?? undefined,
+        // Stored first message is what hydrate compares; streamed Task input may be partial.
+        bindInput: snapshot.firstUserText ?? live.prompt ?? undefined,
       });
       rememberBoundTaskChild(live.childSessionId, childThreadId);
       bb.log.info(
@@ -1373,6 +1376,7 @@ async function openTaskChildThread(
       model: snapshot.model,
       agent: snapshot.lastUserAgent,
       reasoningLevel: snapshot.reasoningLevel,
+      bindInput: snapshot.firstUserText ?? undefined,
     });
     return { threadId, created: true, error: null };
   } catch (error) {

@@ -5,6 +5,7 @@ import {
   mapPartDelta,
   type ThreadDelta,
 } from "./map-delta.js";
+import { stripSubagentPrefix } from "./task-thread.js";
 
 export interface HydrateMessage {
   info: {
@@ -132,15 +133,24 @@ function userText(message: HydrateMessage): string {
     .trim();
 }
 
+export function firstUserText(messages: readonly HydrateMessage[]): string | undefined {
+  const first = messages.find((message) => message.info.role === "user");
+  return (first && userText(first)) || undefined;
+}
+
 export function hydrateDeltas(args: {
   sessionId: string;
   messages: readonly HydrateMessage[];
   skipUserInput?: boolean;
+  /** Task child prompt BB already shows as the spawn bubble; not echoed again. */
+  seededPrompt?: string;
 }): ThreadDelta[] {
   const state = createMapDeltaState();
   const deltas: ThreadDelta[] = [{ kind: "session.reset" }];
   let turnOpen = false;
   let checkpoint: string | undefined;
+  const seed = args.seededPrompt?.trim();
+  let firstUser = true;
   const closeTurn = () => {
     if (!turnOpen) return;
     deltas.push({
@@ -156,13 +166,15 @@ export function hydrateDeltas(args: {
     if (message.info.role === "user") {
       closeTurn();
       const text = userText(message);
+      const seeded = firstUser && !!seed && stripSubagentPrefix(text) === seed;
+      firstUser = false;
       if (args.skipUserInput) {
         if (text) {
           if (!turnOpen) {
             deltas.push({ kind: "turn.open" });
             turnOpen = true;
           }
-          deltas.push({ kind: "input.provider", text });
+          if (!seeded) deltas.push({ kind: "input.provider", text });
         }
         checkpoint =
           typeof message.info.id === "string" ? message.info.id : undefined;
@@ -170,7 +182,7 @@ export function hydrateDeltas(args: {
       }
       deltas.push({ kind: "turn.open" });
       turnOpen = true;
-      if (text) deltas.push({ kind: "input.provider", text });
+      if (text && !seeded) deltas.push({ kind: "input.provider", text });
       checkpoint =
         typeof message.info.id === "string" ? message.info.id : undefined;
       continue;

@@ -43,7 +43,7 @@ import {
   isCompactionSkipError,
   isOpenCodeCompactCommand,
 } from "./compaction.js";
-import { splitModelRef } from "./task-thread.js";
+import { splitModelRef, stripSubagentPrefix } from "./task-thread.js";
 import {
   parseOpenCodeTodos,
   todoPlanDeltas,
@@ -63,6 +63,7 @@ import {
   assistantsAfterLastUser,
   completedTurnBoundary,
   filterMessagesByRevertPoint,
+  firstUserText,
   hydrateDeltas,
   lastAssistantSettled,
   lastUserMessageId,
@@ -199,6 +200,8 @@ interface BoundSession {
   sessionId: string;
   cwd: string;
   bindOnly?: boolean;
+  /** Task child prompt BB shows as the spawn bubble; hydrate must not echo it. */
+  seededPrompt?: string;
   permissionMode?: string;
   instructions?: string;
   disallowedTools: string[];
@@ -1439,11 +1442,18 @@ async function replayHydrate(
     `history hydrate-complete ses=${sessionId} count=${messages.length} pages=${complete.pages} paginated=${complete.paginated} durationMs=${Math.max(0, (deps.now?.() ?? Date.now()) - startedAt)} bytes~=${estimateHistoryBytes(messages)} rssMb=${Math.round(process.memoryUsage().rss / 1024 / 1024)}`,
   );
   await rememberCatalogWindows(active);
+  const bound = sessions.get(threadId);
+  // Task child threads are spawned with the first prompt as their BB bubble;
+  // parentID keeps that true after a plugin restart lost the in-memory seed.
+  if (bound && !bound.seededPrompt && (options?.skipUserInput || session.parentID)) {
+    bound.seededPrompt = stripSubagentPrefix(firstUserText(complete.messages) ?? "") || undefined;
+  }
   emitDeltas(threadId, [
     ...hydrateDeltas({
       sessionId,
       messages,
       skipUserInput: options?.skipUserInput,
+      seededPrompt: bound?.seededPrompt,
     }),
     ...usageDeltasFromMessages(messages, modelContextWindows),
   ]);
@@ -1710,14 +1720,8 @@ async function onOpenCodeEvent(event: {
       compactIssued.delete(sessionId);
       return;
     }
+    // Marker only: the transcript is unchanged, so replaying it would duplicate replies.
     emitDeltas(bound, [{ kind: "context.compacted" }]);
-    if (!liveTurns.get(bound)?.promptIssued) {
-      try {
-        if (client) await replayHydrate(bound, sessionId, client);
-      } catch {
-        /* hydrate is best-effort after OpenCode auto-compact */
-      }
-    }
     return;
   }
 
@@ -3920,8 +3924,8 @@ async function runCompact(args: {
     ]);
     live.parentBoundaryEmitted = true;
     dropLiveTurn(args.threadId);
+    // BB already shows the history; replaying it here appended every reply again.
     emitDeltas(args.threadId, [completedTurnBoundary()]);
-    await replayHydrate(args.threadId, args.sessionId, args.active);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (isCompactionSkipError(message)) {

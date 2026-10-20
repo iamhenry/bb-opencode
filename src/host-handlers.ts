@@ -10,6 +10,7 @@ import {
   lastVariantFromMessages,
 } from "./catalog.js";
 import {
+  firstUserText,
   lastAgent,
   lastUserAgent,
   revertMessageIdOf,
@@ -217,6 +218,10 @@ export async function handleSessionSnapshot(dataDir: string, sessionId: string) 
       bbReasoningLevelForVariant(
         session.model ? session.model.variant : lastVariantFromMessages(messages),
       ) ?? null,
+    // A Task child's prompt for its spawn bubble; the latest-100 window may miss it.
+    firstUserText: session.parentID
+      ? firstUserText((await client.sessionMessages(sessionId)) as HydrateMessage[]) ?? null
+      : null,
   };
 }
 

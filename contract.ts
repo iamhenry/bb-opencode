@@ -106,6 +106,7 @@ export const hostContract = defineRpcContract({
         parentID: z.string().nullable(),
         lastUserAgent: z.string().nullable(),
         model: z.string().nullable(),
+        firstUserText: z.string().nullable().optional(),
         reasoningLevel: z
           .enum([
             "none",

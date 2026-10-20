@@ -4026,6 +4026,36 @@ describe("provider bridge", () => {
     expect(fake.calls.prompt).toBe(0);
   });
 
+  it("re-hydrating a Task child shows its prompt once and keeps later turns", async () => {
+    const fake = installFake();
+    fake.sessions.set("child", { id: "child", directory: "/tmp/a", parentID: "parent" });
+    fake.messages.set("child", [
+      {
+        info: { id: "m1", role: "user" },
+        parts: [{ type: "text", text: "You are a subagent spawned by another session.\nexplore" }],
+      },
+      { info: { id: "a1", role: "assistant" }, parts: [{ id: "t1", type: "text", text: "done" }] },
+      { info: { id: "m2", role: "user" }, parts: [{ type: "text", text: "and more" }] },
+    ]);
+    // No bindOnly: the path a restarted plugin takes, with no in-memory seed.
+    send({
+      id: "start",
+      method: "thread/start",
+      params: sessionParams({
+        options: { ...fullOptions, providerOptions: { adoptSessionId: "child" } },
+      }),
+    });
+    await flush();
+    const inputs = messages.flatMap((message) =>
+      message.method === "thread/delta"
+        ? ((message.params as { deltas?: Array<{ kind: string; text?: string }> }).deltas ?? [])
+            .filter((delta) => delta.kind === "input.provider")
+            .map((delta) => delta.text)
+        : [],
+    );
+    expect(inputs).toEqual(["and more"]);
+  });
+
   it("bind-only running child stays open until idle", async () => {
     const fake = installFake();
     fake.sessions.set("child", { id: "child", directory: "/tmp/a" });
@@ -4447,6 +4477,32 @@ describe("provider bridge", () => {
     });
     expect(fake.calls.summarize.length).toBe(before);
     expect(deltaKinds()).toContain("context.compacted");
+  });
+
+  it("does not replay earlier replies after a compact", async () => {
+    const fake = installFake();
+    fake.commands.push({ name: "compact" });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    fake.messages.set("ses_1", [
+      { info: { id: "u1", role: "user" }, parts: [{ type: "text", text: "hi" }] },
+      { info: { id: "a1", role: "assistant" }, parts: [{ id: "t1", type: "text", text: "PONG" }] },
+    ]);
+    messages.length = 0;
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({ input: [{ type: "text", text: "/compact" }] }),
+    });
+    await flush();
+    await ingestOpenCodeEvent({ type: "session.compacted", properties: { sessionID: "ses_1" } });
+    await ingestOpenCodeEvent({ type: "session.compacted", properties: { sessionID: "ses_1" } });
+    expect(fake.calls.summarize.length).toBe(1);
+    expect(deltaKinds()).toContain("context.compacted");
+    expect(JSON.stringify(messages)).not.toContain("PONG");
+    send({ id: "next", method: "turn/start", params: turnParams({ input: [{ type: "text", text: "after" }] }) });
+    await flush();
+    expect(JSON.stringify(fake.lastPrompt?.body)).toContain("after");
   });
 
   it("maps todo.updated onto native planSteps (ISC-93)", async () => {

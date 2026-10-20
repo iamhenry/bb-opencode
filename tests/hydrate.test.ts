@@ -12,6 +12,31 @@ import {
 } from "../src/hydrate.js";
 
 describe("hydrate", () => {
+  it("does not echo a Task child's spawn prompt, but keeps later user turns", () => {
+    const messages = [
+      {
+        info: { id: "u1", role: "user" },
+        parts: [{ type: "text", text: "You are a subagent spawned by another session.\nDo X" }],
+      },
+      { info: { role: "assistant" }, parts: [{ id: "a", type: "text", text: "done" }] },
+      { info: { id: "u2", role: "user" }, parts: [{ type: "text", text: "Now Y" }] },
+    ];
+    for (const skipUserInput of [true, false]) {
+      const deltas = hydrateDeltas({ sessionId: "s", messages, skipUserInput, seededPrompt: "Do X" });
+      expect(deltas.filter((delta) => delta.kind === "input.provider")).toEqual([
+        { kind: "input.provider", text: "Now Y" },
+      ]);
+      expect(deltas[1]).toEqual({ kind: "turn.open" });
+      expect(deltas).toContainEqual({
+        kind: "turn.boundary",
+        status: "completed",
+        providerCheckpointId: "u1",
+      });
+    }
+    const mismatch = hydrateDeltas({ sessionId: "s", messages, seededPrompt: "Other" });
+    expect(mismatch.filter((delta) => delta.kind === "input.provider")).toHaveLength(2);
+  });
+
   it("replays a full refetch starting with session.reset (ISC-11)", () => {
     const deltas = hydrateDeltas({
       sessionId: "s",
