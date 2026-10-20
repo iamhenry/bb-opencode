@@ -365,11 +365,25 @@ export async function providerInstallationStatus(): Promise<{
     method,
   });
   const installed = Boolean(canonical && diskVersion);
-  const blocked = holdBlockMessage();
-  const allowed = plan.ok && installTreeSupported() && !blocked;
-  const args = allowed
-    ? (["upgrade", plan.target, "--method", plan.method] as const)
-    : null;
+  const versionUnsupported = Boolean(diskVersion && !isVersionInWindow(diskVersion));
+  const newer =
+    diskVersion && latestVersion ? compareVersionStrings(latestVersion, diskVersion) : null;
+  const needsUpdate = installed && newer !== null && newer > 0;
+  // Advertise the action whenever the plan is installable; run re-checks the
+  // hold so a busy moment is reported on click instead of hiding the button.
+  const installAction =
+    plan.ok && installTreeSupported() && (needsUpdate || versionUnsupported)
+      ? {
+          kind: "update" as const,
+          label: "Update" as const,
+          command: displayCommand(plan.binaryPath, [
+            "upgrade",
+            plan.target,
+            "--method",
+            plan.method,
+          ]),
+        }
+      : null;
   return {
     executableName: "opencode",
     executablePath: canonical ?? null,
@@ -381,9 +395,9 @@ export async function providerInstallationStatus(): Promise<{
     minimumSupportedVersion: SERVER_VERSION_MIN,
     npmPackageName: method === "npm" ? "@opencode/cli" : null,
     npmGlobalPackageVersion: method === "npm" ? diskVersion : null,
-    installAction: null,
-    needsUpdate: false,
-    versionUnsupported: Boolean(diskVersion && !isVersionInWindow(diskVersion)),
+    installAction,
+    needsUpdate,
+    versionUnsupported,
   };
 }
 
@@ -402,7 +416,7 @@ export async function providerInstallationRun(
   if (!installTreeSupported()) {
     return { available: false, message: WINDOWS_INSTALL_MESSAGE };
   }
-  const blocked = holdBlockMessage();
+  const blocked = holdBlockMessage({ ignoreStarts: true });
   if (blocked) {
     return { available: false, message: blocked };
   }

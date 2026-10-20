@@ -198,7 +198,9 @@ export function inspectHold(): HoldView {
   return { status: "clear" };
 }
 
-export function holdBlockMessage(): string | null {
+// Installs pass ignoreStarts: the upgrade renames a new binary into place, so
+// running sessions keep the old one. Restarts must still wait for starts.
+export function holdBlockMessage(opts?: { ignoreStarts?: boolean }): string | null {
   const view = inspectHold();
   if (view.status === "live") {
     return `OpenCode ${view.kind} already in progress`;
@@ -206,7 +208,9 @@ export function holdBlockMessage(): string | null {
   if (view.status === "ambiguous") {
     return `OpenCode hold is stuck. Confirm no updater or process group is alive, then remove ${HOLD_FILE_NAME} from the plugin data directory.`;
   }
-  if (startGuardsActive()) return "OpenCode start already in progress";
+  if (!opts?.ignoreStarts && startGuardsActive()) {
+    return "OpenCode start already in progress";
+  }
   return null;
 }
 
@@ -234,7 +238,7 @@ export function acquireExclusive(
   const token = newToken();
   const result = withMutex((state) => {
     if (state.exclusive) return false;
-    if (Object.keys(state.starts).length > 0) return false;
+    if (kind !== "install" && Object.keys(state.starts).length > 0) return false;
     state.exclusive = {
       token,
       pid: process.pid,

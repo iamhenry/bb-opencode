@@ -25,6 +25,8 @@ type UpdateStatus = {
   diskVersion: string | null;
   runningVersion: string | null;
   latestVersion: string | null;
+  targetVersion: string | null;
+  eligible: boolean;
   current: boolean;
   canRestart: boolean;
   error: string | null;
@@ -44,6 +46,7 @@ export function SettingsSection() {
   const [savingAgent, setSavingAgent] = useState(false);
   const [agentMessage, setAgentMessage] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const [reloadMessage, setReloadMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,6 +77,27 @@ export function SettingsSection() {
       setReloadMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setReloading(false);
+    }
+  }
+
+  async function installUpdate() {
+    setUpdating(true);
+    setReloadMessage(null);
+    try {
+      const result = await rpc.call("installUpdate", {});
+      setUpdate(await rpc.call("updateStatus", {}));
+      setProbe(await rpc.call("probe", null));
+      setReloadMessage(
+        result.pendingRestart
+          ? `Updated to ${result.diskVersion}. ${result.error ?? "Restart pending"}.`
+          : result.ok
+            ? `Updated to ${result.diskVersion ?? "the latest version"}.`
+            : (result.error ?? "Update failed"),
+      );
+    } catch (error) {
+      setReloadMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setUpdating(false);
     }
   }
 
@@ -131,6 +155,27 @@ export function SettingsSection() {
             {reloading ? "Reloading…" : "Reload OpenCode"}
           </button>
         </div>
+        {update?.eligible && !update.current ? (
+          <div className="oc-settings__actions">
+            <span>
+              Update available: {update.diskVersion} → {update.targetVersion}
+            </span>
+            <button
+              type="button"
+              className="oc-settings__btn"
+              disabled={updating || reloading}
+              onClick={() => void installUpdate()}
+            >
+              {updating ? "Updating…" : "Update OpenCode"}
+            </button>
+          </div>
+        ) : null}
+        {update?.canRestart ? (
+          <p className="oc-settings__msg" data-ok="true">
+            Installed {update.diskVersion}, running {update.runningVersion}. Reload
+            OpenCode when no session is busy to apply.
+          </p>
+        ) : null}
         <ImportControl />
       </div>
       {defaultAgent?.error ? (
@@ -148,7 +193,7 @@ export function SettingsSection() {
       {reloadMessage ? (
         <p
           className="oc-settings__msg"
-          data-ok={reloadMessage === "Reloaded."}
+          data-ok={reloadMessage === "Reloaded." || reloadMessage.startsWith("Updated")}
         >
           {reloadMessage}
         </p>

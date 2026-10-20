@@ -56,7 +56,7 @@ Pick **OpenCode** and use it like Claude-in-BB.
 Still true from V1, plus a few later cuts.
 
 - Not the ACP guest. No migration of `acp-opencode` threads.
-- OpenCode CLI updates: plugin footer control (and Settings → Updates) start BB’s provider-installation run on the enrolled host. Disk install does not restart servers; Tools → OpenCode offers restart-to-apply for an idle BB-owned serve only. No login or account quota from BB. No `bb opencode restart`.
+- OpenCode CLI updates: BB’s own footer update pill and Settings → Updates show OpenCode when a newer 2.x exists and run `opencode upgrade` on the enrolled host, even while chats run. The install swaps the binary on disk only; Tools → OpenCode then shows the pending version and Reload applies it once no session is busy. No login or account quota from BB. No `bb opencode restart`.
 - No service tiers. No thread archive.
 - No auto-import. No header “Open Task”. No custom Task card.
 - Agent picker does not list subagents. Changing the chip does not interrupt the current turn.

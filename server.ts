@@ -1041,7 +1041,8 @@ async function enrolledHostId(
   requested?: string,
 ): Promise<{ ok: true; hostId: string } | { ok: false; error: string }> {
   const hosts = await bb.sdk.hosts.list();
-  return selectEnrolledHost(hosts, requested);
+  // Settings → OpenCode shows and reloads hosts[0]; update the same machine.
+  return selectEnrolledHost(hosts, requested ?? hosts[0]?.id);
 }
 
 async function resolveSessionId(

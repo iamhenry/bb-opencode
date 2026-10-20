@@ -284,8 +284,9 @@ describe("provider installation contract", () => {
     writeFakeBinary(home, "2.0.18");
     mockGithubPages([[{ tag: "v2.0.19" }]]);
     const status = await providerInstallationStatus();
-    expect(status.needsUpdate).toBe(false);
-    expect(status.installAction).toBeNull();
+    expect(status.needsUpdate).toBe(true);
+    expect(status.installAction).toMatchObject({ kind: "update", label: "Update" });
+    expect(status.installAction?.command).toMatch(/upgrade 2\.0\.19 --method curl$/);
     const run = await providerInstallationRun("update");
     const wrap = hostWrapEntry();
     if (!wrap) {
@@ -384,7 +385,7 @@ describe("provider installation contract", () => {
     expect(status.eligible).toBe(false);
     expect(status.error).toMatch(/Windows/);
     const provider = await providerInstallationStatus();
-    expect(provider.needsUpdate).toBe(false);
+    expect(provider.needsUpdate).toBe(true);
     expect(provider.installAction).toBeNull();
     const run = await providerInstallationRun("update");
     expect(run.available).toBe(false);
@@ -420,8 +421,8 @@ describe("provider installation contract", () => {
     expect(status.canRestart).toBe(false);
     expect(status.error).toBe(blocked);
     const provider = await providerInstallationStatus();
-    expect(provider.needsUpdate).toBe(false);
-    expect(provider.installAction).toBeNull();
+    expect(provider.needsUpdate).toBe(true);
+    expect(provider.installAction?.kind).toBe("update");
     const run = await providerInstallationRun("update");
     expect(run.available).toBe(false);
     if (!run.available) expect(run.message).toBe(blocked);
@@ -542,7 +543,7 @@ describe("bridge installation wiring", () => {
     const status = messages.find((row) => row.id === "st") as {
       result?: { needsUpdate?: boolean };
     };
-    expect(status?.result?.needsUpdate).toBe(false);
+    expect(status?.result?.needsUpdate).toBe(true);
     handleLine(
       JSON.stringify({
         jsonrpc: "2.0",
