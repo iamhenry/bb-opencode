@@ -145,12 +145,18 @@ export default async function plugin(bb: BbPluginApi) {
         next: adopt?.agent ?? next,
         configured: configuredAgent,
       });
+      // Only a real pick switches the session. Otherwise the bridge keeps the
+      // agent OpenCode saved on the session and uses `defaultAgent` only for a
+      // session that has none yet; a restart that wipes `stamps` must not
+      // overwrite it (#39).
+      const picked = Boolean(stamped || adopt?.agent || next);
       bb.log.info(
-        `agent.derive thread=${ctx.threadId} project=${ctx.projectId} stamped=${stamped ?? "-"} next=${next ?? "-"} agent=${agent}`,
+        `agent.derive thread=${ctx.threadId} project=${ctx.projectId} stamped=${stamped ?? "-"} next=${next ?? "-"} agent=${picked ? agent : `session-or-${agent}`}`,
       );
       seenThreadIds.add(ctx.threadId);
       return {
-        agent,
+        ...(picked ? { agent } : {}),
+        defaultAgent: agent,
         ...(adopt
           ? {
               adoptSessionId: adopt.opencodeSessionId,

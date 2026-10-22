@@ -1504,6 +1504,32 @@ describe("provider bridge", () => {
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
   });
 
+  it("keeps the session's saved agent when the turn carries no pick (#39)", async () => {
+    const fake = installFake();
+    fake.agents = [
+      { name: "build", mode: "primary" },
+      { name: "plan", mode: "primary" },
+    ];
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    const noPick = {
+      options: { ...fullOptions, providerOptions: { defaultAgent: "build" } },
+    };
+    send({ id: "fresh", method: "turn/start", params: turnParams(noPick) });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
+
+    const session = fake.sessions.get("ses_1");
+    fake.sessions.set("ses_1", { ...session!, agent: "plan" });
+    send({
+      id: "after-restart",
+      method: "turn/start",
+      params: turnParams({ ...noPick, clientRequestId: "creq_23456789ae" }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({ agent: "plan" });
+  });
+
   it("pins the composer model on every session.prompt", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
