@@ -2586,6 +2586,8 @@ async function handlePermissionAsked(
 async function resolveSelectableAgent(args: {
   active: OpenCodeClient;
   requested: string | undefined;
+  /** Agent for a session OpenCode has no saved agent for yet. */
+  fallback?: string;
   sessionId: string;
 }): Promise<
   | { ok: true; agent: string; inheritSession: boolean }
@@ -2609,15 +2611,29 @@ async function resolveSelectableAgent(args: {
       // Keep the child's agent without ignoring an explicit model/reasoning pick.
       return { ok: true, agent: session.agent, inheritSession: false };
     }
+    // No pick this turn: keep the agent OpenCode saved on the session, as the
+    // OpenCode TUI and OpenChamber do (#39).
+    if (
+      !args.requested &&
+      session.agent &&
+      (agents.length === 0 ||
+        agents.some(
+          (agent) => agent.name === session.agent && agent.hidden !== true,
+        ))
+    ) {
+      debugLog(`agent.keep session=${args.sessionId} agent=${session.agent}`);
+      return { ok: true, agent: session.agent, inheritSession: false };
+    }
   }
+  const requested = args.requested ?? args.fallback;
   // An empty list means OpenCode's workspace was still booting, not that the
   // agent is unknown. Trust the picked agent and let OpenCode validate it.
   if (agents.length === 0) {
-    return { ok: true, agent: args.requested || "build", inheritSession: false };
+    return { ok: true, agent: requested || "build", inheritSession: false };
   }
   // ponytail: skip session.messages before prompt; this store wedges serve (~11GB RSS)
   return resolveContinueAgent({
-    requested: args.requested,
+    requested,
     lastUserAgent: undefined,
     agents,
   });
@@ -4016,6 +4032,8 @@ async function runPrompt(args: {
   const resolved = await resolveSelectableAgent({
     active,
     requested,
+    fallback:
+      typeof options.defaultAgent === "string" ? options.defaultAgent : undefined,
     sessionId: args.sessionId,
   });
   if (!resolved.ok) {
