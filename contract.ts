@@ -183,6 +183,8 @@ export const hostContract = defineRpcContract({
               mode: z.string().nullable(),
               hidden: z.boolean(),
               description: z.string().nullable(),
+              model: z.string().nullable().optional(),
+              variant: z.string().nullable().optional(),
             })
             .strict(),
         ),

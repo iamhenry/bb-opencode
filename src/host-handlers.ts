@@ -190,6 +190,8 @@ export async function handleListAgents(dataDir: string, directory?: string) {
       mode: agent.mode ?? null,
       hidden: agent.hidden === true,
       description: agent.description ?? null,
+      model: agent.model ?? null,
+      variant: agent.variant ?? null,
     })),
   };
 }

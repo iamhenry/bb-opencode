@@ -20,7 +20,7 @@ import {
 import {
   armNextAgent,
   createNextAgentStore,
-  peekNextAgent,
+  takeNextAgent,
   resolveComposerProvider,
   resolvePromptAgent,
   UNBOUND_NEXT_AGENT_KEY,
@@ -38,6 +38,7 @@ import {
 import { sessionIdFromThreadEvents } from "./src/session-bind.js";
 import {
   BB_REASONING_ORDER,
+  bbReasoningLevelForVariant,
   type BbReasoningLevel,
 } from "./src/reasoning.js";
 import {
@@ -137,9 +138,10 @@ export default async function plugin(bb: BbPluginApi) {
         isNewThread,
       });
       const stamped = peekAgent(stamps, ctx.threadId);
-      const next = stamped
-        ? undefined
-        : peekNextAgent(nextAgents, ctx.projectId);
+      const next =
+        stamped || adopt || !isNewThread
+          ? undefined
+          : takeNextAgent(nextAgents, ctx.projectId);
       const agent = resolvePromptAgent({
         stamped,
         next: adopt?.agent ?? next,
@@ -154,6 +156,14 @@ export default async function plugin(bb: BbPluginApi) {
         `agent.derive thread=${ctx.threadId} project=${ctx.projectId} stamped=${stamped ?? "-"} next=${next ?? "-"} agent=${picked ? agent : `session-or-${agent}`}`,
       );
       seenThreadIds.add(ctx.threadId);
+      // A new thread taking a helper agent starts on that agent's settings.
+      // Later turns keep whatever the thread shows, so a manual pick sticks.
+      if (isNewThread && (next || adopt?.agent)) {
+        void syncThreadToAgent(bb, host, {
+          threadId: ctx.threadId,
+          agent,
+        });
+      }
       return {
         ...(picked ? { agent } : {}),
         defaultAgent: agent,
@@ -340,6 +350,7 @@ export default async function plugin(bb: BbPluginApi) {
           agent: input.agent,
           queued: input.queued,
         });
+        void syncOnAgentSwitch(bb, host, { threadId, agent: input.agent });
       } else {
         armNextAgent(
           nextAgents,
@@ -1091,6 +1102,7 @@ function fullThreadFields(thread: unknown): {
   providerThreadId: string | null;
   environmentId: string | null;
   model: string | null;
+  reasoningLevel: string | null;
   status: string | null;
 } {
   const record = thread as {
@@ -1101,6 +1113,7 @@ function fullThreadFields(thread: unknown): {
     providerThreadId?: string | null;
     environmentId?: string | null;
     model?: string | null;
+    reasoningLevel?: string | null;
     status?: string | null;
   };
   return {
@@ -1111,6 +1124,7 @@ function fullThreadFields(thread: unknown): {
     providerThreadId: record.providerThreadId ?? null,
     environmentId: record.environmentId ?? null,
     model: record.model ?? null,
+    reasoningLevel: record.reasoningLevel ?? null,
     status: record.status ?? null,
   };
 }
@@ -1545,6 +1559,8 @@ async function loadAgents(
       mode: string | null;
       hidden: boolean;
       description: string | null;
+      model?: string | null;
+      variant?: string | null;
     }>;
   };
   return listed.agents.map((agent) => ({
@@ -1552,7 +1568,89 @@ async function loadAgents(
     mode: agent.mode ?? undefined,
     hidden: agent.hidden,
     description: agent.description ?? undefined,
+    model: agent.model ?? undefined,
+    variant: agent.variant ?? undefined,
   }));
+}
+
+const syncingAgentThreads = new Set<string>();
+
+/**
+ * Switching a thread to another agent loads that agent's model and reasoning,
+ * like OpenCode's and OpenChamber's pickers. Re-stamping the same agent (the
+ * composer does it on every mount) leaves a manual model pick alone.
+ */
+async function syncOnAgentSwitch(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+  args: { threadId: string; agent: string },
+): Promise<void> {
+  try {
+    const thread = fullThreadFields(
+      await bb.sdk.threads.get({ threadId: args.threadId }),
+    );
+    if (thread.providerId !== PROVIDER_ID) return;
+    const hostId = await resolveHostId(bb, thread.environmentId);
+    const sessionId = await resolveSessionId(
+      bb,
+      args.threadId,
+      thread.providerThreadId,
+    );
+    if (!hostId || !sessionId) return;
+    const snapshot = (await host.call(
+      "sessionSnapshot",
+      { sessionId },
+      { hostId },
+    )) as { lastUserAgent: string | null };
+    if (snapshot.lastUserAgent === args.agent) return;
+    await syncThreadToAgent(bb, host, args);
+  } catch (error) {
+    bb.log.warn(`agent.switch failed thread=${args.threadId}: ${String(error)}`);
+  }
+}
+
+/**
+ * A thread running a helper agent with its own model shows and keeps that
+ * model and reasoning level in BB, so the composer matches what OpenCode runs
+ * and follow-up turns send the agent's settings instead of the thread's.
+ */
+async function syncThreadToAgent(
+  bb: BbPluginApi,
+  host: ReturnType<BbPluginApi["hosts"]["experimental_client"]>,
+  args: { threadId: string; agent: string },
+): Promise<void> {
+  if (syncingAgentThreads.has(args.threadId)) return;
+  syncingAgentThreads.add(args.threadId);
+  try {
+    const thread = fullThreadFields(
+      await bb.sdk.threads.get({ threadId: args.threadId }),
+    );
+    const hostId = await resolveHostId(bb, thread.environmentId);
+    if (!hostId) return;
+    const match = (await loadAgents(host, hostId)).find(
+      (agent) => agent.name === args.agent,
+    );
+    if (match?.mode !== "subagent" || !match.model) return;
+    const reasoningLevel = bbReasoningLevelForVariant(match.variant);
+    if (
+      thread.model === match.model &&
+      (!reasoningLevel || thread.reasoningLevel === reasoningLevel)
+    ) {
+      return;
+    }
+    await bb.sdk.threads.update({
+      threadId: args.threadId,
+      model: match.model,
+      ...(reasoningLevel ? { reasoningLevel } : {}),
+    });
+    bb.log.info(
+      `agent.sync thread=${args.threadId} agent=${args.agent} model=${match.model} reasoning=${reasoningLevel ?? "-"}`,
+    );
+  } catch (error) {
+    bb.log.warn(`agent.sync failed thread=${args.threadId}: ${String(error)}`);
+  } finally {
+    syncingAgentThreads.delete(args.threadId);
+  }
 }
 
 async function decideImportTarget(

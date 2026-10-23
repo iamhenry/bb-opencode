@@ -797,6 +797,33 @@ function isUserMessageText(
  * idle or errored. The parent turn may already be gone, so the thread comes
  * from the background-children registry, not the live turn.
  */
+const backgroundRefreshedAt = new Map<string, number>();
+const BACKGROUND_REFRESH_MS = 5_000;
+
+/**
+ * Keep a running background helper listed so the sidebar poll retries its
+ * thread until it binds, even after the spawning turn is gone.
+ */
+function refreshBackgroundChild(childId: string, eventType: string): void {
+  if (eventType === "session.idle" || eventType === "session.error") {
+    backgroundRefreshedAt.delete(childId);
+    return;
+  }
+  const registered = backgroundChildren.get(childId);
+  const now = Date.now();
+  if (!registered) return;
+  if (now - (backgroundRefreshedAt.get(childId) ?? 0) < BACKGROUND_REFRESH_MS) {
+    return;
+  }
+  backgroundRefreshedAt.set(childId, now);
+  noteLiveTaskChild({
+    parentThreadId: registered.threadId,
+    parentSessionId: registered.parentSessionId,
+    childSessionId: childId,
+    running: true,
+  });
+}
+
 function closeBackgroundChild(
   childId: string,
   status: "failed" | "completed",
@@ -1678,6 +1705,7 @@ async function onOpenCodeEvent(event: {
   // LiveTurn is gone, only the registry knows its delegation row. Terminal
   // child events still close the row.
   if (!resolved && backgroundChildren.has(sessionId)) {
+    refreshBackgroundChild(sessionId, event.type);
     if (event.type === "session.idle") {
       closeBackgroundChild(sessionId, "completed");
       return;
@@ -1728,12 +1756,14 @@ async function onOpenCodeEvent(event: {
   if (event.type === "session.created") {
     const parentId = eventParentId(event.properties);
     const parentThreadId = parentId ? sessionToThread.get(parentId) : undefined;
-    const parentLive = parentThreadId ? liveTurns.get(parentThreadId) : undefined;
-    if (parentLive) {
-      parentLive.liveChildIds.add(sessionId);
+    // Any child of a BB-bound session is a helper, whether or not the parent's
+    // turn is still live (background helpers outlive it). Same rule as
+    // OpenChamber and the OpenCode app: parentID decides, not timing.
+    if (parentId && parentThreadId) {
+      liveTurns.get(parentThreadId)?.liveChildIds.add(sessionId);
       noteLiveTaskChild({
-        parentThreadId: parentLive.threadId,
-        parentSessionId: parentLive.sessionId,
+        parentThreadId,
+        parentSessionId: parentId,
         childSessionId: sessionId,
         title: sessionTitle(event.properties),
         running: true,
@@ -2161,6 +2191,13 @@ function rememberTaskChild(
       label: taskDelegationLabel(part),
     });
     live.childWork.delete(childId);
+    noteLiveTaskChild({
+      parentThreadId: live.threadId,
+      parentSessionId: live.sessionId,
+      childSessionId: childId,
+      prompt: taskChildPrompt(part),
+      running: true,
+    });
     return undefined;
   }
   noteLiveTaskChild({
@@ -2585,17 +2622,22 @@ async function handlePermissionAsked(
 
 async function resolveSelectableAgent(args: {
   active: OpenCodeClient;
+  agents: OpenCodeAgent[];
   requested: string | undefined;
   /** Agent for a session OpenCode has no saved agent for yet. */
   fallback?: string;
   sessionId: string;
 }): Promise<
-  | { ok: true; agent: string; inheritSession: boolean }
+  | {
+      ok: true;
+      agent: string;
+      inheritSession: boolean;
+      model?: string;
+      variant?: string;
+    }
   | { ok: false; reason: string }
 > {
-  const agents = (await args.active.agents(
-    boundDirectory(args.sessionId),
-  )) as OpenCodeAgent[];
+  const agents = args.agents;
   if (
     !args.requested ||
     agents.some(
@@ -2631,12 +2673,49 @@ async function resolveSelectableAgent(args: {
   if (agents.length === 0) {
     return { ok: true, agent: requested || "build", inheritSession: false };
   }
+  // Not listed even after OpenCode finished loading: pass it through so
+  // OpenCode fails the turn visibly ("Agent not found"). Never `build`.
+  if (
+    args.requested &&
+    !agents.some((agent) => agent.name === args.requested)
+  ) {
+    return { ok: true, agent: args.requested, inheritSession: false };
+  }
   // ponytail: skip session.messages before prompt; this store wedges serve (~11GB RSS)
-  return resolveContinueAgent({
+  const resolved = resolveContinueAgent({
     requested,
     lastUserAgent: undefined,
     agents,
   });
+  if (!resolved.ok) return resolved;
+  // Switching to a helper agent starts it on its own configured model, as
+  // native subagents do. Once the session runs that agent, the thread's model
+  // (shown in BB, maybe picked by hand) wins, as in OpenCode and OpenChamber.
+  const match = agents.find((agent) => agent.name === resolved.agent);
+  if (match?.mode !== "subagent" || !match.model) return resolved;
+  const session = await args.active.getSession(args.sessionId);
+  return session.agent === resolved.agent
+    ? resolved
+    : { ...resolved, model: match.model, variant: match.variant };
+}
+
+/**
+ * A fresh worktree can list only built-in agents while OpenCode loads its
+ * config. Global agents (qa, reviewer) are already loaded on the server's
+ * default location, so fall back to that list instead of waiting.
+ */
+async function listAgentsFor(
+  active: OpenCodeClient,
+  sessionId: string,
+  requested: string | undefined,
+): Promise<OpenCodeAgent[]> {
+  const agents = (await active.agents(boundDirectory(sessionId))) as OpenCodeAgent[];
+  if (!requested || agents.some((agent) => agent.name === requested)) {
+    return agents;
+  }
+  const global = (await active.agents()) as OpenCodeAgent[];
+  const match = global.find((agent) => agent.name === requested);
+  return match ? [...agents, match] : agents;
 }
 
 const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
@@ -4029,8 +4108,10 @@ async function runPrompt(args: {
   const options = providerOptions(args.options);
   const requested =
     typeof options.agent === "string" ? options.agent : undefined;
+  const agents = await listAgentsFor(active, args.sessionId, requested);
   const resolved = await resolveSelectableAgent({
     active,
+    agents,
     requested,
     fallback:
       typeof options.defaultAgent === "string" ? options.defaultAgent : undefined,
@@ -4041,12 +4122,14 @@ async function runPrompt(args: {
     return;
   }
   const bound = sessions.get(args.threadId);
-  const model = await resolvePromptModel(
-    args.sessionId,
-    args.options,
-    active,
-    resolved.inheritSession,
-  );
+  const model = resolved.model
+    ? ({ ok: true, id: resolved.model } as const)
+    : await resolvePromptModel(
+        args.sessionId,
+        args.options,
+        active,
+        resolved.inheritSession,
+      );
   if (!model.ok) {
     failIssuedTurn(args.threadId, model.reason);
     return;
@@ -4065,7 +4148,9 @@ async function runPrompt(args: {
   try {
     const variant = resolved.inheritSession
       ? lastVariantFromMessages([])
-      : openCodeVariantFor(reasoningLevelOf(args.options));
+      : resolved.model
+        ? resolved.variant
+        : openCodeVariantFor(reasoningLevelOf(args.options));
     const slash = parseLeadingSlash(firstTextPart(args.input));
     if (isCompactRequest(args.input)) {
       await runCompact({

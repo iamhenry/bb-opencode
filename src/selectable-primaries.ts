@@ -6,6 +6,8 @@ export interface OpenCodeAgent {
   hidden?: boolean;
   native?: boolean;
   description?: string;
+  model?: string;
+  variant?: string;
 }
 
 export function isSelectablePrimary(agent: OpenCodeAgent): boolean {
@@ -108,6 +110,10 @@ export function resolveContinueAgent(args: {
     )
   ) {
     return { ok: true, agent: args.requested, inheritSession: false };
+  }
+  // An explicit subagent request (e.g. a spawned qa helper) runs as asked.
+  if (listedUsableAgent(args.agents, args.requested)?.mode === "subagent") {
+    return { ok: true, agent: args.requested!, inheritSession: false };
   }
   const hydrated = hydratePickerAgent({
     lastUserAgent: args.lastUserAgent,
