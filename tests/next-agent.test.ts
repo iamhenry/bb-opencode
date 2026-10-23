@@ -3,6 +3,7 @@ import {
   armNextAgent,
   consumeNextAgent,
   createNextAgentStore,
+  NEXT_AGENT_TTL_MS,
   peekNextAgent,
   resolveComposerProvider,
   resolvePromptAgent,
@@ -16,6 +17,16 @@ describe("next agent + composer chrome", () => {
     armNextAgent(store, "proj_1", "plan");
     expect(consumeNextAgent(store, "proj_1")).toBe("plan");
     expect(consumeNextAgent(store, "proj_1")).toBeUndefined();
+  });
+
+  it("drops an armed agent nobody claimed within the expiry", () => {
+    const store = createNextAgentStore();
+    armNextAgent(store, "proj_1", "qa", 0);
+    expect(consumeNextAgent(store, "proj_1", NEXT_AGENT_TTL_MS + 1)).toBe(
+      undefined,
+    );
+    armNextAgent(store, "proj_1", "qa", 0);
+    expect(consumeNextAgent(store, "proj_1", NEXT_AGENT_TTL_MS)).toBe("qa");
   });
 
   it("prefers a stamped agent, then next, then the configured default", () => {

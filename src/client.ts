@@ -32,6 +32,10 @@ export interface OpenCodeAgentInfo {
   hidden?: boolean;
   native?: boolean;
   description?: string;
+  /** `provider/model` the agent is configured to run on, if any. */
+  model?: string;
+  /** OpenCode variant (reasoning level) the agent is configured with. */
+  variant?: string;
 }
 
 export interface OpenCodeClient {
@@ -177,6 +181,13 @@ function splitModel(ref: string): { providerID: string; id: string } | undefined
   const index = ref.indexOf("/");
   if (index <= 0) return undefined;
   return { providerID: ref.slice(0, index), id: ref.slice(index + 1) };
+}
+
+function agentModelId(model: unknown): string | undefined {
+  const ref = model as { providerID?: unknown; id?: unknown } | undefined;
+  return typeof ref?.providerID === "string" && typeof ref.id === "string"
+    ? `${ref.providerID}/${ref.id}`
+    : undefined;
 }
 
 function textOf(parts: unknown): string {
@@ -456,6 +467,11 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
         mode: typeof agent.mode === "string" ? agent.mode : undefined,
         hidden: agent.hidden === true,
         description: typeof agent.description === "string" ? agent.description : undefined,
+        model: agentModelId(agent.model),
+        variant:
+          typeof (agent.model as Rec | undefined)?.variant === "string"
+            ? ((agent.model as Rec).variant as string)
+            : undefined,
       }));
     },
     async getConfig(directory) {

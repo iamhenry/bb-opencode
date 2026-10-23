@@ -3768,7 +3768,7 @@ describe("provider bridge", () => {
     expect(fake.lastConfigDirectory).toBe("/tmp/a");
   });
 
-  it("runs a new root stamped with a subagent as the default primary", async () => {
+  it("runs a root asked for a subagent as that subagent on its own model", async () => {
     const fake = installFake();
     send({ id: "start", method: "thread/start", params: sessionParams() });
     await flush();
@@ -3783,24 +3783,61 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
-    expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
-    expect(fake.calls.promptAsync).toBe(1);
-    expect(
-      messages.flatMap(
-        (message) =>
-          ((message.params as {
-            deltas?: Array<{ kind: string; status?: string; error?: { message?: string } }>;
-          })?.deltas ?? []),
-      ),
-    ).not.toContainEqual(
-      expect.objectContaining({
-        kind: "turn.boundary",
-        status: "failed",
-        error: {
-          message: "Unknown or non-selectable OpenCode agent: general",
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "general",
+      model: { providerID: "openai", modelID: "gpt-6-luna" },
+      variant: "xhigh",
+    });
+  });
+
+  it("keeps a manually picked model once the session already runs the helper agent", async () => {
+    const fake = installFake();
+    const getSession = fake.client.getSession.bind(fake.client);
+    fake.client.getSession = async (id: string) => ({
+      ...(await getSession(id)),
+      agent: "general",
+    });
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: {
+          ...fullOptions,
+          model: "anthropic/claude-sonnet-5-5",
+          providerOptions: { agent: "general" },
         },
       }),
-    );
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "general",
+      model: { providerID: "anthropic", modelID: "claude-sonnet-5-5" },
+    });
+  });
+
+  it("finds a global agent a still-loading worktree has not listed yet", async () => {
+    const fake = installFake();
+    const builtins = fake.agents.filter((agent) => agent.mode !== "subagent");
+    fake.client.agents = async (directory?: string) =>
+      directory
+        ? builtins
+        : [...builtins, { name: "qa", mode: "subagent", model: "openai/gpt-6-luna" }];
+    send({ id: "start", method: "thread/start", params: sessionParams() });
+    await flush();
+    send({
+      id: "turn",
+      method: "turn/start",
+      params: turnParams({
+        options: { ...fullOptions, providerOptions: { agent: "qa" } },
+      }),
+    });
+    await flush();
+    expect(fake.lastPrompt?.body).toMatchObject({
+      agent: "qa",
+      model: { providerID: "openai", modelID: "gpt-6-luna" },
+    });
   });
 
   it("does not approve unknown permission asks under full (ISC-64)", async () => {
@@ -4404,7 +4441,7 @@ describe("provider bridge", () => {
       }),
     });
     await flush();
-    expect(askedDirs).toEqual(["/tmp/a"]);
+    expect(askedDirs[0]).toBe("/tmp/a");
     expect(fake.calls.promptAsync).toBe(1);
     expect(fake.lastPrompt?.body).toMatchObject({ agent: "build" });
   });

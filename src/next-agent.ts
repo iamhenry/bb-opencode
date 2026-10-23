@@ -1,36 +1,71 @@
 export const UNBOUND_NEXT_AGENT_KEY = "*";
 
-export function createNextAgentStore(): Map<string, string> {
+/** An armed agent left unclaimed this long is dropped, so a failed spawn
+ * can't turn a thread opened much later into that agent. The new-thread
+ * composer re-arms well inside this window while it stays open. */
+export const NEXT_AGENT_TTL_MS = 60_000;
+
+type Armed = { agent: string; at: number };
+export type NextAgentStore = Map<string, Armed>;
+
+export function createNextAgentStore(): NextAgentStore {
   return new Map();
 }
 
 export function armNextAgent(
-  store: Map<string, string>,
+  store: NextAgentStore,
   projectId: string,
   agent: string,
+  now = Date.now(),
 ): void {
-  store.set(projectId, agent);
+  store.set(projectId, { agent, at: now });
+}
+
+function liveAgent(
+  store: NextAgentStore,
+  key: string,
+  now: number,
+): string | undefined {
+  const armed = store.get(key);
+  if (!armed) return undefined;
+  if (now - armed.at > NEXT_AGENT_TTL_MS) {
+    store.delete(key);
+    return undefined;
+  }
+  return armed.agent;
 }
 
 export function consumeNextAgent(
-  store: Map<string, string>,
+  store: NextAgentStore,
   projectId: string,
+  now = Date.now(),
 ): string | undefined {
-  const agent = store.get(projectId);
-  if (agent === undefined) return undefined;
+  const agent = liveAgent(store, projectId, now);
   store.delete(projectId);
   return agent;
 }
 
-export function peekNextAgent(
-  store: Map<string, string>,
+/** One new thread claims the armed agent; later threads don't inherit it. */
+export function takeNextAgent(
+  store: NextAgentStore,
   projectId?: string | null,
+  now = Date.now(),
 ): string | undefined {
-  if (projectId) {
-    const hit = store.get(projectId);
-    if (hit) return hit;
-  }
-  return store.get(UNBOUND_NEXT_AGENT_KEY);
+  return (
+    (projectId ? consumeNextAgent(store, projectId, now) : undefined) ??
+    consumeNextAgent(store, UNBOUND_NEXT_AGENT_KEY, now)
+  );
+}
+
+export function peekNextAgent(
+  store: NextAgentStore,
+  projectId?: string | null,
+  now = Date.now(),
+): string | undefined {
+  return (
+    (projectId ? liveAgent(store, projectId, now) : undefined) ??
+    liveAgent(store, UNBOUND_NEXT_AGENT_KEY, now)
+  );
 }
 
 export function resolvePromptAgent(args: {

@@ -39,6 +39,8 @@ export interface FakeOpenCode {
     mode?: string;
     hidden?: boolean;
     description?: string;
+    model?: string;
+    variant?: string;
   }>;
   emit: (event: { type: string; properties?: unknown }) => void;
   promptImpl?: (id: string, body: Record<string, unknown>) => Promise<unknown>;
@@ -96,7 +98,7 @@ export function createFakeOpenCode(): FakeOpenCode {
       { name: "compaction", mode: "primary", hidden: true },
       { name: "title", mode: "primary", hidden: true },
       { name: "explore", mode: "subagent" },
-      { name: "general", mode: "subagent" },
+      { name: "general", mode: "subagent", model: "openai/gpt-6-luna", variant: "xhigh" },
     ],
     emit(event) {
       handler?.(event);

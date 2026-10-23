@@ -200,6 +200,19 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     visible,
   ]);
 
+  // The server drops an unclaimed new-thread arm after a minute. Keep it
+  // fresh while this new-thread composer is open.
+  useEffect(() => {
+    if (threadId || !visible) return;
+    const timer = window.setInterval(() => {
+      const nextAgent = agentRef.current;
+      if (composerAgentShouldArm({ visible, agent: nextAgent })) {
+        stamp(nextAgent, false);
+      }
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [projectId, rpc, scopeProjectId, threadId, visible]);
+
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const place = () => {
