@@ -2,6 +2,8 @@ import { definePluginApp } from "@get-bb/plugin-sdk/app";
 import {
   CompactComposerAgentPicker,
   ComposerAgentPicker,
+  agentRowDisabled,
+  openAgentSheet,
 } from "./src/app/composer-agent.js";
 import { OpenCodeProviderIcon } from "./src/app/provider-icon.js";
 import { RevertDock } from "./src/app/revert-dock.js";
@@ -59,6 +61,15 @@ export default definePluginApp((app) => {
     id: "opencode-agent",
     scopes: ["thread", "queued-message", "new-thread"],
     actions: [{ id: "agent", component: ComposerAgentPicker }],
+    plusMenu: [
+      {
+        id: "agent",
+        label: "OpenCode agent",
+        description: "Pick the OpenCode primary agent",
+        disabled: (view) => agentRowDisabled(view.scope),
+        run: ({ view }) => openAgentSheet(view.scope),
+      },
+    ],
     banners: [
       {
         id: "agent-compact",
