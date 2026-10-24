@@ -82,6 +82,16 @@
   box-shadow: var(--shadow-md, 0 8px 24px rgb(0 0 0 / 0.28));
 }
 
+/* Compact: bottom sheet opened from the composer's "+" menu. */
+.oc-agent-menu--sheet {
+  inset: auto 0 0 0;
+  max-width: none;
+  max-height: 60vh;
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  border-radius: 0.9rem 0.9rem 0 0;
+  box-shadow: 0 -8px 32px rgb(0 0 0 / 0.35);
+}
+
 .oc-agent-menu__heading {
   padding: 0.4rem 0.5rem 0.3rem;
   color: var(--muted-foreground, #a1a1aa);

@@ -1,8 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   useBbContext,
   useComposerView,
+  type PluginComposerScope,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../../contract.js";
@@ -30,6 +37,39 @@ const FALLBACK_OPTIONS = [
   { name: "plan", description: "Planning primary" },
   { name: "orchestrator", description: "Orchestrator primary" },
 ];
+
+// Compact composers have no room for a chip. The "+" menu row (app.tsx) flips
+// opens the sheet for the composer that was tapped (keyed by its scope); only
+// that composer's compact picker renders it.
+let openKey: string | null = null;
+const readyKeys = new Set<string>();
+const sheetListeners = new Set<() => void>();
+export function scopeKey(scope: PluginComposerScope): string {
+  switch (scope.kind) {
+    case "new-thread":
+      return `new-thread:${scope.projectId ?? ""}`;
+    case "side-chat":
+      return `side-chat:${scope.tabId}`;
+    case "queued-message":
+      return `queued:${scope.threadId}:${scope.queuedMessageId}`;
+    default:
+      return `thread:${scope.threadId}`;
+  }
+}
+function setOpenKey(next: string | null) {
+  openKey = next;
+  sheetListeners.forEach((listener) => listener());
+}
+export function openAgentSheet(scope: PluginComposerScope) {
+  setOpenKey(scopeKey(scope));
+}
+export function agentRowDisabled(scope: PluginComposerScope) {
+  return !readyKeys.has(scopeKey(scope));
+}
+const subscribeSheet = (listener: () => void) => {
+  sheetListeners.add(listener);
+  return () => void sheetListeners.delete(listener);
+};
 
 export function ComposerAgentPicker() {
   return <AgentPicker layout="expanded" />;
@@ -63,7 +103,18 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const [agent, setAgent] = useState(() => lastArmedComposerAgent() || "build");
   const userPicked = useRef(false);
   const previousThreadId = useRef(threadId);
-  const [open, setOpen] = useState(false);
+  const isSheet = layout === "compact";
+  const myKey = scopeKey(view.scope);
+  const sheetIsOpen = useSyncExternalStore(
+    subscribeSheet,
+    () => openKey === myKey,
+  );
+  const [openLocal, setOpenLocal] = useState(false);
+  const setOpen = (next: boolean) => {
+    if (!isSheet) setOpenLocal(next);
+    else if (next) setOpenKey(myKey);
+    else if (openKey === myKey) setOpenKey(null);
+  };
   const [menuPos, setMenuPos] = useState({
     top: 0,
     left: 0,
@@ -162,6 +213,18 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
     });
   const layoutMatch = layout === "compact" ? wantsBanner : !wantsBanner;
   const visible = layoutMatch && (boundOpenCode || newThreadOpenCode);
+  const open = isSheet ? sheetIsOpen && visible : openLocal;
+
+  // Only a visible compact picker owns its "+" row and sheet; release both
+  // when it hides or unmounts (thread switch, provider change).
+  useEffect(() => {
+    if (!isSheet || !visible) return;
+    readyKeys.add(myKey);
+    return () => {
+      readyKeys.delete(myKey);
+      if (openKey === myKey) setOpenKey(null);
+    };
+  }, [isSheet, visible, myKey]);
 
   const stamp = (nextAgent: string, queued: boolean) => {
     if (!nextAgent) return;
@@ -288,18 +351,17 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
   const options = chrome?.options?.length ? chrome.options : FALLBACK_OPTIONS;
   const selected = displayedComposerAgent(options, agent, chrome?.status);
   const agentIsSelectable = options.some((option) => option.name === agent);
+  // Sheet mode has no trigger button, so the guard moves to the menu below.
 
   return (
     <>
       <span ref={rootRef} hidden data-opencode-agent-probe="true" />
       {visible ? (
         <>
-          <button
+          {isSheet ? null : <button
             ref={triggerRef}
             type="button"
-            className={
-              layout === "compact" ? "oc-agent oc-agent--banner" : "oc-agent"
-            }
+            className="oc-agent"
             data-opencode-agent-picker="true"
             data-layout={layout}
             data-open={open && agentIsSelectable ? "true" : "false"}
@@ -308,24 +370,30 @@ function AgentPicker({ layout }: { layout: "expanded" | "compact" }) {
             aria-label={`OpenCode agent: ${selected?.name ?? "build"}`}
             title={chrome?.error || selected?.description || "OpenCode agent"}
             disabled={!agentIsSelectable}
-            onClick={() => setOpen((value) => !value)}
+            onClick={() => setOpen(!open)}
           >
             <BotIcon />
             <span className="oc-agent__name">{selected?.name ?? "build"}</span>
             {agentIsSelectable ? <ChevronIcon /> : null}
-          </button>
+          </button>}
           {open && agentIsSelectable
             ? createPortal(
                 <div
                   ref={menuRef}
-                  className="oc-agent-menu"
+                  className={
+                    isSheet ? "oc-agent-menu oc-agent-menu--sheet" : "oc-agent-menu"
+                  }
                   role="listbox"
                   aria-label="Primary agents"
-                  style={{
-                    top: menuPos.top,
-                    left: menuPos.left,
-                    maxHeight: menuPos.maxHeight,
-                  }}
+                  style={
+                    isSheet
+                      ? undefined
+                      : {
+                          top: menuPos.top,
+                          left: menuPos.left,
+                          maxHeight: menuPos.maxHeight,
+                        }
+                  }
                 >
                   <div className="oc-agent-menu__heading">Primary agents</div>
                   {options.map((option) => (
