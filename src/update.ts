@@ -668,6 +668,10 @@ export async function runInstallWrap(
   const after = readCliVersion(canonical);
   releaseExclusive(token);
   if (code !== 0 || after !== target || !isVersionInWindow(after ?? "")) return 1;
+  // Activate the new version too; skipped (never fails the install) when a session is busy.
+  await restartToApply(
+    join(process.env.HOME ?? "/tmp", ".bb", "plugins", "opencode"),
+  ).catch(() => undefined);
   return 0;
 }
 
