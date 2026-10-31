@@ -2,6 +2,7 @@ import { OpenCode } from "@opencode/client";
 import { debugLog } from "./debug-log.js";
 import {
   createV2EventState,
+  markBbSession,
   translateV2Event,
   v1Messages,
   v1PermissionAsk,
@@ -242,6 +243,7 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
     sessionID: string,
     body: Rec,
   ): Promise<void> {
+    markBbSession(sessionID);
     let seen = applied.get(sessionID);
     if (!seen) {
       const info = (await sdk.session.get({ sessionID })) as unknown as Rec;
@@ -283,8 +285,19 @@ function wrap(url: string, sdk: Sdk): OpenCodeClient {
         seen.model = key;
       }
     }
-    const system = typeof body.system === "string" ? body.system : undefined;
-    if (system !== undefined && system !== seen.system) {
+    // The entry also marks BB ownership for the managed subagent hook, even
+    // when this BB prompt has no additional project instructions.
+    let system = typeof body.system === "string" ? body.system : seen.system;
+    if (system === undefined) {
+      const entries = await sdk.session.instructions.entry.list({ sessionID });
+      const stored = entries.find((entry) => entry.key === "bb");
+      if (stored) {
+        if (typeof stored.value === "string") seen.system = stored.value;
+        return;
+      }
+      system = "";
+    }
+    if (system !== seen.system) {
       await sdk.session.instructions.entry.put({ sessionID, key: "bb", value: system });
       seen.system = system;
     }

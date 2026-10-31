@@ -3,7 +3,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Service } from "@opencode/client/service";
 import { endpointHeadersFor, rememberEndpointHeaders } from "./client.js";
-import { exclusiveKind, holdBlockMessage, inspectHold } from "./hold.js";
+import { acquireExclusive, exclusiveKind, holdBlockMessage, inspectHold, releaseExclusive } from "./hold.js";
+import { debugLog } from "./debug-log.js";
+import { managedServiceEnvironment, MANAGED_SUBAGENT_PLUGIN_ID } from "./managed-subagents.js";
+import { listLiveTaskChildren } from "./task-live.js";
 
 const SERVICE_LOG_LIMIT = 40;
 const SERVICE_LOG_TAIL_BYTES = 256 * 1024;
@@ -146,8 +149,68 @@ export async function serviceIdle(url: string): Promise<boolean | "unknown"> {
 
 /** Stop the shared service and start it again from `binary` (TUI clients reconnect). */
 export async function restartService(binary: string): Promise<void> {
+  const env = managedServiceEnvironment(sharedLockDir());
   await Service.stop();
-  await register(await Service.ensure({ command: [binary, "serve", "--service"] }));
+  await register(await Service.ensure({ command: [binary, "serve", "--service"], env }));
+}
+
+let managedActivationTimer: ReturnType<typeof setInterval> | undefined;
+let managedActivationBusy = false;
+
+async function managedPluginConfigured(url: string): Promise<boolean> {
+  const query = new URLSearchParams({ "location[directory]": sharedLockDir() });
+  const response = await fetch(`${url}/api/config?${query}`, {
+    headers: endpointHeadersFor(url),
+    signal: AbortSignal.timeout(INFO_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`Cannot inspect BB subagent policy (${response.status})`);
+  // Plugin instances are lazy: /api/plugin is empty before the first tool.
+  // Inspect loaded config instead, so an idle, correctly configured service
+  // is not restarted just because no session has used the hook yet.
+  const entries = await response.json() as Array<{ info?: { plugins?: Array<string | { package?: string }> } }>;
+  const directory = join(sharedLockDir(), MANAGED_SUBAGENT_PLUGIN_ID);
+  return entries.some((entry) => entry.info?.plugins?.some((plugin) =>
+    (typeof plugin === "string" ? plugin : plugin.package) === directory,
+  ));
+}
+
+/** An already-running service cannot receive a new environment until it is idle. */
+function activateManagedPluginWhenIdle(binary: string): void {
+  if (managedActivationTimer) return;
+  managedActivationTimer = setInterval(() => {
+    if (managedActivationBusy) return;
+    managedActivationBusy = true;
+    void (async () => {
+      const info = await serviceInfo();
+      if (!info) return;
+      if (await managedPluginConfigured(info.url)) {
+        stopManagedPluginActivation();
+        return;
+      }
+      if (listLiveTaskChildren().some((child) => child.running) || await serviceIdle(info.url) !== true) return;
+      // Busy services don't acquire a restart hold that could reject a new BB turn.
+      const token = acquireExclusive("restart", MANAGED_SUBAGENT_PLUGIN_ID);
+      if (!token) return;
+      try {
+        const current = await serviceInfo();
+        if (!current || await managedPluginConfigured(current.url)) return;
+        if (listLiveTaskChildren().some((child) => child.running) || await serviceIdle(current.url) !== true) return;
+        // Stop retrying before the restart: a broken hook must not cause a restart loop.
+        stopManagedPluginActivation();
+        await restartService(binary);
+        debugLog("BB subagent policy activated on idle service restart");
+      } finally {
+        releaseExclusive(token);
+      }
+    })().catch((error) => debugLog(`BB subagent policy activation: ${String(error)}`))
+      .finally(() => { managedActivationBusy = false; });
+  }, 2_000);
+  managedActivationTimer.unref?.();
+}
+
+export function stopManagedPluginActivation(): void {
+  clearInterval(managedActivationTimer);
+  managedActivationTimer = undefined;
 }
 
 /**
@@ -177,10 +240,17 @@ export async function attachOrSpawn(args: {
       );
     }
     const binary = args.binary ?? resolveOpenCodeBinary() ?? "opencode";
-    endpoint = await Service.ensure({ command: [binary, "serve", "--service"] });
+    endpoint = await Service.ensure({
+      command: [binary, "serve", "--service"],
+      env: managedServiceEnvironment(sharedLockDir()),
+    });
   }
   if (!endpoint) throw new Error("OpenCode service did not start");
   const url = await register(endpoint);
+  if (args.spawn !== false) {
+    managedServiceEnvironment(sharedLockDir());
+    activateManagedPluginWhenIdle(args.binary ?? resolveOpenCodeBinary() ?? "opencode");
+  }
   const port = Number(new URL(url).port) || 0;
   return { url, pid: 0, port, spawned: false };
 }

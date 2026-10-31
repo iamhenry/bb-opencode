@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createV2EventState, translateV2Event, v1Messages, v1Session } from "../src/v2-map.js";
+import { createV2EventState, markBbSession, translateV2Event, v1Messages, v1Session } from "../src/v2-map.js";
 
 // Event shapes are the ones OpenCode 2.0.18 emitted in the live BB smokes.
 const ses = "ses_1";
@@ -141,5 +141,53 @@ describe("V2 event translation", () => {
     expect(first?.info).toMatchObject({ role: "user", model: { providerID: "ollama-cloud", modelID: "glm-5.3-flash" } });
     expect(first?.info).not.toHaveProperty("variant");
     expect(second?.info).toMatchObject({ variant: "high" });
+  });
+});
+
+describe("V2 subagent background policy", () => {
+  const part = (out: ReturnType<typeof translate>) =>
+    (out.at(-1)?.properties as { part: Record<string, any> }).part;
+
+  const launch = (sessionID: string, id: string, background?: boolean) => [
+    { type: "session.tool.input.started", data: { sessionID, assistantMessageID: mid, id, name: "subagent" } },
+    {
+      type: "session.tool.called",
+      data: {
+        sessionID,
+        assistantMessageID: mid,
+        id,
+        input: { agent: "qa", description: "hi", prompt: "hi", ...(background === undefined ? {} : { background }) },
+      },
+    },
+  ];
+
+  it("keeps a BB session's delegation row open as background, even for background: false", () => {
+    markBbSession("ses_bb_owner");
+    const out = translate([
+      ...launch("ses_bb_owner", "call_bb", false),
+      { type: "session.tool.progress", data: { sessionID: "ses_bb_owner", id: "call_bb", metadata: { sessionID: "ses_child_bb" } } },
+    ]);
+    const delegation = part(out);
+    expect(delegation.tool).toBe("task");
+    expect(delegation.state.metadata).toMatchObject({ sessionID: "ses_child_bb", background: true });
+    // The hook changes execution only; the model's stored input is untouched.
+    expect(delegation.state.input).toMatchObject({ background: false });
+  });
+
+  it("leaves a non-BB subagent call stock", () => {
+    const out = translate([
+      ...launch("ses_stock", "call_stock"),
+      { type: "session.tool.progress", data: { sessionID: "ses_stock", id: "call_stock", metadata: { sessionID: "ses_child_stock" } } },
+    ]);
+    expect(part(out).state.metadata).not.toHaveProperty("background");
+  });
+
+  it("marks a completed launcher whose child is still running as background", () => {
+    const out = translate([
+      ...launch("ses_stock", "call_done"),
+      { type: "session.tool.progress", data: { sessionID: "ses_stock", id: "call_done", metadata: { sessionID: "ses_child_done", status: "running" } } },
+      { type: "session.tool.success", data: { sessionID: "ses_stock", id: "call_done", content: [{ type: "text", text: "launched" }] } },
+    ]);
+    expect(part(out).state).toMatchObject({ status: "completed", metadata: { background: true } });
   });
 });
