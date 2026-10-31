@@ -22,6 +22,19 @@ export function v1ToolName(name: string): string {
   return name;
 }
 
+/**
+ * Sessions owned by a BB thread. The managed hook forces background on every
+ * `subagent` call there, but only for execution: the stored tool input keeps
+ * whatever the model sent. Remembering the session here lets the mapper mark
+ * the part as background from its first update, so BB keeps the delegation row
+ * open (and its card and count visible) until the child actually idles.
+ */
+const bbSessions = new Set<string>();
+
+export function markBbSession(sessionID: string): void {
+  if (sessionID) bbSessions.add(sessionID);
+}
+
 function v1ToolInput(name: string, input: Rec): Rec {
   if (name === "subagent" && typeof input.agent === "string") {
     return { ...input, subagent_type: input.agent };
@@ -89,7 +102,14 @@ function toolPart(args: {
   output?: string;
   error?: string;
 }): Rec {
-  const background = args.tool.name === "subagent" && args.tool.input.background === true;
+  // execute.before hooks change execution, not the stored model input. A
+  // completed launcher with a still-running child is background work too, and
+  // in a BB session every subagent call is forced to background by policy.
+  const background = args.tool.name === "subagent" && (
+    args.tool.input.background === true ||
+    bbSessions.has(args.sessionID) ||
+    (args.status === "completed" && args.tool.metadata.status === "running")
+  );
   const metadata = background ? { ...args.tool.metadata, background: true } : args.tool.metadata;
   return {
     id: args.id,

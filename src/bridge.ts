@@ -104,7 +104,7 @@ import {
   unwrapQuestionAsk,
   type BbUserQuestionPayload,
 } from "./questions.js";
-import { attachOrSpawn, isAbortTimeout } from "./process.js";
+import { attachOrSpawn, isAbortTimeout, stopManagedPluginActivation } from "./process.js";
 import { randomUUID } from "node:crypto";
 import { buildPrompt } from "./prompt-builder.js";
 import { formatSkillAppendix, type SkillConfigureRoot } from "./skill-appendix.js";
@@ -3296,20 +3296,22 @@ const handlers: Record<string, (id: JsonRpcId, params: unknown) => void> = {
           const ids = new Set<string>([parsed.data.providerThreadId]);
           if (live) {
             for (const childId of live.liveChildIds) ids.add(childId);
-            try {
-              const children = await active.sessionChildren(
-                parsed.data.providerThreadId,
-              );
-              for (const child of children) ids.add(child.id);
-            } catch {
-              /* listed children are best-effort */
-            }
+          }
+          for (const [childId, child] of backgroundChildren) {
+            if (child.parentSessionId === parsed.data.providerThreadId) ids.add(childId);
           }
           for (const sessionId of ids) {
             try {
               await active.abort(sessionId, boundDirectory(sessionId));
             } catch {
               /* already idle */
+            }
+            try {
+              // Stop descendants even after the launching turn has ended. A
+              // helper may itself have spawned background work (Mission children).
+              for (const child of await active.sessionChildren(sessionId)) ids.add(child.id);
+            } catch {
+              /* listed children are best-effort */
             }
           }
           if (live && !live.parentBoundaryEmitted) {
@@ -4319,6 +4321,7 @@ export function handleLine(line: string): void {
 }
 
 function disposeBridgeRuntime(): void {
+  stopManagedPluginActivation();
   titleWatchEpoch += 1;
   if (titleTimer) {
     clearInterval(titleTimer);
