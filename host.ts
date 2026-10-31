@@ -6,7 +6,7 @@ import {
 } from "@get-bb/plugin-sdk/host";
 import { hostContract } from "./contract.js";
 import { PROVIDER_ID } from "./src/identity.js";
-import { opencodeNativeRoots } from "./src/native-roots.js";
+import { resolveOpenCodeNativeRoots } from "./src/native-roots.js";
 import {
   handleListAgents,
   handleListCommands,
@@ -145,7 +145,7 @@ export default experimental_defineHostEntry({
         return { skills: [], commands: [] };
       }
       const { answer } = experimental_filterResolvedNativeRoots(
-        opencodeNativeRoots({
+        await resolveOpenCodeNativeRoots({
           cwd: input.cwd,
           homeDir: homedir(),
         }),
